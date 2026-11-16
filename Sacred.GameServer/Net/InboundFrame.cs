@@ -4,12 +4,12 @@ namespace Sacred.GameServer.Net;
 public readonly struct InboundFrame
 {
     public const uint Disconnected = uint.MaxValue;
-    public readonly ClientConnection Connection;
+    public readonly IClientLink Connection;
     public readonly uint Sender, Type;
     public readonly byte[] Payload;
     public readonly int Length;
 
-    public InboundFrame(ClientConnection connection, uint sender, uint type, byte[] payload, int length)
+    public InboundFrame(IClientLink connection, uint sender, uint type, byte[] payload, int length)
     { Connection = connection; Sender = sender; Type = type; Payload = payload; Length = length; }
 
     public ReadOnlySpan<byte> Span => Payload.AsSpan(0, Length);

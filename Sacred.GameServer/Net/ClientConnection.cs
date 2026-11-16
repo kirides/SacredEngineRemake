@@ -12,7 +12,7 @@ namespace Sacred.GameServer.Net;
 /// the game loop. Send: the game loop appends frames to a pooled fill buffer; <see cref="Flush"/> swaps it with the in-flight buffer
 /// and starts one reusable SocketAsyncEventArgs send. No per-packet allocation on either path.
 /// </summary>
-public sealed class ClientConnection
+public sealed class ClientConnection : IClientLink
 {
     private const int InitialReceive = 16 * 1024, InitialSend = 16 * 1024;
     private readonly Socket _socket;
@@ -28,8 +28,9 @@ public sealed class ClientConnection
     public IPEndPoint? RemoteEndPoint { get; }
     /// <summary>The server address this client reached (the LAN address the original puts into roster record 0).</summary>
     public IPEndPoint? LocalEndPoint { get; }
+    public string Transport => "tcp";
     /// <summary>Game loop owned state.</summary>
-    public object? Session;
+    public object? Session { get; set; }
 
     public ClientConnection(Socket socket, ConcurrentQueue<InboundFrame> inbox)
     {

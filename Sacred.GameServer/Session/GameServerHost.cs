@@ -23,9 +23,10 @@ public sealed partial class GameServerHost : IDisposable
     private readonly AdmissionRules _rules;
     private readonly ConcurrentQueue<InboundFrame> _inbox = new();
     private readonly TcpAcceptor _acceptor;
+    private readonly List<IClientListener> _listeners = new(2);   // _acceptor first, then extra transports (KCP, ...)
     private readonly PlayerSession?[] _slots = new PlayerSession?[MaxSlots + 1];
     private readonly List<PlayerSession> _sessions = new(64);
-    private readonly List<(ClientConnection Connection, long Due)> _retired = new(16);
+    private readonly List<(IClientLink Connection, long Due)> _retired = new(16);
     private readonly byte[] _batch = new byte[GoldWire.MaximumBatchBytes + 16];   // decode scratch
     private readonly byte[] _build = new byte[256 * 1024];                           // outgoing batch scratch
     private readonly byte[] _envelope = new byte[256 * 1024 + 64];                   // outgoing envelope scratch
@@ -49,12 +50,22 @@ public sealed partial class GameServerHost : IDisposable
     {
         _config = config; _rules = rules; _lan = lan;
         _acceptor = new TcpAcceptor(config.TcpPort, _inbox);
+        _listeners.Add(_acceptor);
         InitializeSession();
     }
 
     public void Stop() => _stop = true;
 
-    public void Start() => _acceptor.Start();
+    /// <summary>Adds another transport (for example reliable UDP); it feeds the same inbox, so sessions work the same on it.
+    /// Call before <see cref="Start"/>.</summary>
+    public IClientListener AddListener(Func<ConcurrentQueue<InboundFrame>, IClientListener> create)
+    {
+        var listener = create(_inbox);
+        _listeners.Add(listener);
+        return listener;
+    }
+
+    public void Start() { foreach (var listener in _listeners) listener.Start(); }
 
     public void Run()
     {
@@ -79,7 +90,8 @@ public sealed partial class GameServerHost : IDisposable
     {
         var now = _clock.ElapsedMilliseconds;
         Tick++;
-        while (_acceptor.Accepted.TryDequeue(out var accepted)) Session(accepted);
+        foreach (var listener in _listeners)
+            while (listener.Accepted.TryDequeue(out var accepted)) Session(accepted);
         while (_inbox.TryDequeue(out var frame))
         {
             try { Handle(frame, now); }
@@ -101,7 +113,7 @@ public sealed partial class GameServerHost : IDisposable
         if (_lan is not null && now >= _nextLanMs) { _nextLanMs = now + 3000; _lan.Announce(PlayerCount); }
     }
 
-    private PlayerSession Session(ClientConnection connection)
+    private PlayerSession Session(IClientLink connection)
     {
         if (connection.Session is PlayerSession existing) return existing;
         var created = new PlayerSession { Connection = connection, LastReceiveMs = _clock.ElapsedMilliseconds, LastKeepAliveMs = _clock.ElapsedMilliseconds };
@@ -330,7 +342,7 @@ public sealed partial class GameServerHost : IDisposable
 
     public void Dispose()
     {
-        _acceptor.Dispose();
+        foreach (var listener in _listeners) listener.Dispose();
         _lan?.Dispose();
     }
 }

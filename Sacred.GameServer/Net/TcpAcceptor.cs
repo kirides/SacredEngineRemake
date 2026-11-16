@@ -5,16 +5,17 @@ using System.Net.Sockets;
 namespace Sacred.GameServer.Net;
 
 /// <summary>Accepts TCP clients with one reusable SocketAsyncEventArgs and queues them for the game loop.</summary>
-public sealed class TcpAcceptor : IDisposable
+public sealed class TcpAcceptor : IClientListener
 {
     private readonly Socket _listener = new(Socket.OSSupportsIPv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
     private readonly SocketAsyncEventArgs _accept = new();
     private readonly ConcurrentQueue<InboundFrame> _inbox;
-    private readonly ConcurrentQueue<ClientConnection> _accepted = new();
+    private readonly ConcurrentQueue<IClientLink> _accepted = new();
     private volatile bool _stopped;
 
     public int Port { get; }
-    public ConcurrentQueue<ClientConnection> Accepted => _accepted;
+    public string Transport => "tcp";
+    public ConcurrentQueue<IClientLink> Accepted => _accepted;
 
     public TcpAcceptor(int port, ConcurrentQueue<InboundFrame> inbox)
     {

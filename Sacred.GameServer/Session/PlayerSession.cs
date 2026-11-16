@@ -7,7 +7,7 @@ public enum SessionState { Connected, LoggedIn, SlotAssigned, Playing, Closed }
 /// <summary>Per client state, owned by the game loop thread.</summary>
 public sealed class PlayerSession
 {
-    public required ClientConnection Connection { get; init; }
+    public required IClientLink Connection { get; init; }
     public uint TinCatId;
     public byte Slot;
     public SessionState State;
