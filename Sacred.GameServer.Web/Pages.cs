@@ -119,27 +119,22 @@ internal static class Pages
         Form(sb, "lock", $"<input type=\"hidden\" name=\"value\" value=\"{(o.Locked ? 0 : 1)}\"><button class=\"tile {(o.Locked ? "active" : "")}\">{Icon(o.Locked ? "lock" : "unlock")}<b>{(o.Locked ? "Locked" : "Open")}</b><small>{(o.Locked ? "Click to let players join" : "Click to stop new players")}</small></button>");
         Form(sb, "pause", $"<input type=\"hidden\" name=\"value\" value=\"{(o.Paused ? 0 : 1)}\"><button class=\"tile {(o.Paused ? "active" : "")}\">{Icon(o.Paused ? "pause" : "play")}<b>{(o.Paused ? "Paused" : "Running")}</b><small>{(o.Paused ? "Click to continue" : "Click to pause the game")}</small></button>");
         sb.Append("</div>");
-        Setting(sb, "Server name", "name", $"<input name=\"text\" type=\"text\" maxlength=\"60\" value=\"{E(o.Name)}\" required>", "Save");
-        Setting(sb, "Max players", "max-players", $"<input name=\"value\" type=\"number\" min=\"1\" max=\"16\" value=\"{o.MaxPlayers}\">", "Save");
-        Setting(sb, "Password", "password", $"<input name=\"text\" type=\"password\" maxlength=\"32\" placeholder=\"{(o.PasswordSet ? "set - type to change, empty removes" : "none")}\" autocomplete=\"new-password\">", "Save");
-        var mode = new StringBuilder("<select name=\"mode\" aria-label=\"Game mode\">");
-        for (var i = 0; i < Modes.Length; i++) mode.Append($"<option value=\"{i}\"{(i == o.Mode ? " selected" : "")}>{Modes[i]}</option>");
-        mode.Append("</select><select name=\"level\" aria-label=\"Level\">");
-        for (var i = 0; i < Levels.Length; i++) mode.Append($"<option value=\"{i}\"{(i == o.Level ? " selected" : "")}>{Levels[i]}</option>");
-        mode.Append("</select>");
-        Setting(sb, "Game mode", "mode", mode.ToString(), "Apply", o.WorldAvailable ? "The host world is running; the mode can only change in the lobby." : "Only possible before the host world exists.");
+        sb.Append("<form method=\"post\" action=\"actions/settings\" class=\"settings\">");
+        sb.Append($"<label class=\"f\"><span>Server name</span><input name=\"text\" type=\"text\" maxlength=\"60\" value=\"{E(o.Name)}\" required></label>");
+        sb.Append($"<label class=\"f narrow\"><span>Max players</span><input name=\"max\" type=\"number\" min=\"1\" max=\"16\" value=\"{o.MaxPlayers}\"></label>");
+        sb.Append($"<label class=\"f\"><span>Password</span><input name=\"password\" type=\"password\" maxlength=\"32\" placeholder=\"{(o.PasswordSet ? "unchanged - type to replace" : "none")}\" autocomplete=\"new-password\"></label>");
+        if (o.PasswordSet) sb.Append("<label class=\"check\"><input type=\"checkbox\" name=\"clearPassword\" value=\"1\"> Remove the password</label>");
+        sb.Append("<div class=\"f\"><span>Game mode</span><div class=\"ctl\"><select name=\"mode\" aria-label=\"Game mode\">");
+        for (var i = 0; i < Modes.Length; i++) sb.Append($"<option value=\"{i}\"{(i == o.Mode ? " selected" : "")}>{Modes[i]}</option>");
+        sb.Append("</select><select name=\"level\" aria-label=\"Level\">");
+        for (var i = 0; i < Levels.Length; i++) sb.Append($"<option value=\"{i}\"{(i == o.Level ? " selected" : "")}>{Levels[i]}</option>");
+        sb.Append("</select></div>");
+        if (o.WorldAvailable) sb.Append("<small class=\"dim\">The host world is running; the mode can only change in the lobby.</small>");
+        sb.Append("</div><div class=\"row end\"><button class=\"primary\">Save settings</button></div></form>");
         sb.Append("<details class=\"danger\"><summary>Danger zone</summary><div class=\"row\">");
         Form(sb, "end-session", $"<button class=\"bad\">{Icon("kick")}End session</button>", "End the session?", "Every player is kicked and the session is reset.", false, inline: true);
         Form(sb, "shutdown", $"<button class=\"bad\">{Icon("power")}Shut down server</button>", "Shut the server down?", "The process exits and does not restart by itself.", false, inline: true);
         sb.Append("</div></details></section>");
-    }
-
-    private static void Setting(StringBuilder sb, string label, string action, string control, string button, string? hint = null)
-    {
-        sb.Append("<form method=\"post\" action=\"actions/").Append(action).Append("\" class=\"setting\"><label><span>").Append(E(label)).Append("</span><div class=\"ctl\">").Append(control)
-          .Append("<button class=\"primary\">").Append(E(button)).Append("</button></div>");
-        if (hint is not null) sb.Append("<small class=\"dim\">").Append(E(hint)).Append("</small>");
-        sb.Append("</label></form>");
     }
 
     private static void Bans(StringBuilder sb, IReadOnlyList<BanEntry> bans)
@@ -235,7 +230,7 @@ button.icon{padding:.4rem;width:2.1rem;height:2.1rem}
 .toggles{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin-bottom:.9rem}.toggles form{display:block}
 .tile{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:.7rem;text-align:left;width:100%;padding:.75rem .9rem;justify-items:start}.tile .i{grid-row:span 2;align-self:center;width:1.5rem;height:1.5rem;color:var(--ok)}.tile b{line-height:1.2}.tile small{color:var(--dim);font-size:.75rem}
 .tile.active{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--card2))}.tile.active .i{color:var(--warn)}
-.setting{margin:.2rem 0 .7rem}.setting label{display:grid;gap:.3rem}.setting label>span{font-size:.8rem;color:var(--dim)}.ctl{display:flex;gap:.5rem}.ctl input[type=text],.ctl input[type=password],.ctl input[type=number]{flex:1}.ctl input[type=number]{max-width:8rem;flex:none}
+.settings{display:grid;gap:.8rem}.f{display:grid;gap:.3rem}.f>span{font-size:.8rem;color:var(--dim)}.f.narrow input{max-width:8rem}.ctl{display:flex;gap:.5rem}.ctl select{flex:1}.check{display:flex;align-items:center;gap:.5rem;font-size:.85rem;color:var(--dim)}.check input{min-height:0}.settings .row.end{display:flex;justify-content:flex-end}
 .small{font-size:.85rem}.dim{color:var(--dim)}
 .add{display:flex;gap:.5rem;margin-top:.7rem}.add input{flex:1}
 .ban{display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding:.5rem 0;border-top:1px solid var(--line)}.ban small{display:block;color:var(--dim);font-size:.78rem}

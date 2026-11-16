@@ -185,12 +185,47 @@ public sealed class WebUiServer : IAsyncDisposable
         { response.StatusCode = StatusCodes.Status415UnsupportedMediaType; return; }
         var form = await request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
         var name = (string)context.GetRouteValue("command")!;
+        if (name == "settings") { var (saved, problem) = Settings(form); await Respond(context, saved, problem).ConfigureAwait(false); return; }
         var body = new CommandRequest(Int(form["slot"]), Int(form["value"]), form["text"], form["reason"], form["address"]);
         // The chat box posts "to" (0 = everybody) and the mode form "mode"/"level".
         if (name == "say") { name = Int(form["to"]) is var to and > 0 ? "message" : "broadcast"; body = body with { Slot = Int(form["to"]) }; }
         if (name == "mode") body = body with { Value = Int(form["mode"]), Slot = Int(form["level"]) };
         var (_, error) = Run(name, body);
-        var notice = error ?? "Done.";
+        await Respond(context, error is null ? "Done." : null, error).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The one settings form (name, max players, password, mode and level): only values that differ from the server's current
+    /// state become commands, so saving never re-sends (or resets) what the admin did not touch.
+    /// </summary>
+    private (string? Notice, string? Error) Settings(IFormCollection form)
+    {
+        var current = _admin.Overview();
+        var commands = new List<string>();
+        void Send(string name, CommandRequest body, string what, out string? error)
+        {
+            var (_, e) = Run(name, body);
+            error = e;
+            if (e is null) commands.Add(what);
+        }
+        string? failure = null;
+        var text = Clean(form["text"]);
+        if (text is not null && text != current.Name) { Send("name", new CommandRequest(Text: text), "name", out var e); failure ??= e; }
+        var max = Int(form["max"]);
+        if (max != 0 && max != current.MaxPlayers) { Send("max-players", new CommandRequest(Value: max), "max players", out var e); failure ??= e; }
+        var password = form["password"].ToString();
+        if (password.Length > 0) { Send("password", new CommandRequest(Text: password), "password", out var e); failure ??= e; }
+        else if (form["clearPassword"] == "1" && current.PasswordSet) { Send("password", new CommandRequest(Text: ""), "password removed", out var e); failure ??= e; }
+        var mode = Int(form["mode"]); var level = Int(form["level"]);
+        if ((mode != current.Mode || level != current.Level) && !current.WorldAvailable) { Send("mode", new CommandRequest(Value: mode, Slot: level), "game mode", out var e); failure ??= e; }
+        if (failure is not null) return (null, failure);
+        return (commands.Count == 0 ? "Nothing to change." : "Saved: " + string.Join(", ", commands) + ".", null);
+    }
+
+    private async Task Respond(HttpContext context, string? notice, string? error = null)
+    {
+        var request = context.Request; var response = context.Response;
+        notice = error ?? notice ?? "Done.";
         var wantsJson = request.Headers.Accept.ToString().Contains("application/json", StringComparison.OrdinalIgnoreCase);
         if (wantsJson) { response.StatusCode = error is null ? 200 : 400; await Json(response, new CommandResult(error is null, error), WebUiJson.Default.CommandResult).ConfigureAwait(false); return; }
         response.StatusCode = StatusCodes.Status303SeeOther;

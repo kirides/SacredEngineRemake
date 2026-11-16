@@ -303,6 +303,27 @@ public class WebAdminTests
     }
 
     [TestMethod]
+    public async Task SettingsFormSavesOnlyWhatChanged()
+    {
+        var (server, _, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = new Uri($"http://127.0.0.1:{server.Ports[0]}") };
+        await using (server)
+        {
+            static FormUrlEncodedContent Form(params (string, string)[] pairs) => new(pairs.Select(p => KeyValuePair.Create(p.Item1, p.Item2)));
+            // Same values as the fake server's state (Realm, 16 players, mode 1, level 0, no password): nothing to do.
+            var same = await client.PostAsync("/actions/settings", Form(("text", "Realm"), ("max", "16"), ("password", ""), ("mode", "1"), ("level", "0")));
+            StringAssert.Contains(Uri.UnescapeDataString(same.Headers.Location!.ToString()), "Nothing to change");
+            Assert.AreEqual(0, admin.Commands.Count);
+            var saved = await client.PostAsync("/actions/settings", Form(("text", "New realm"), ("max", "8"), ("password", "pw"), ("mode", "2"), ("level", "3")));
+            Assert.AreEqual(HttpStatusCode.SeeOther, saved.StatusCode);
+            CollectionAssert.AreEqual(new[] { AdminCommandKind.SetName, AdminCommandKind.SetMaxPlayers, AdminCommandKind.SetPassword, AdminCommandKind.SetMode }, admin.Commands.Select(c => c.Kind).ToArray());
+            Assert.AreEqual(new AdminCommand(AdminCommandKind.SetMode, 3, 2), admin.Commands[3]);
+            var bad = await client.PostAsync("/actions/settings", Form(("text", "Realm"), ("max", "99"), ("mode", "1"), ("level", "0")));
+            StringAssert.Contains(Uri.UnescapeDataString(bad.Headers.Location!.ToString()), "1..16");
+        }
+    }
+
+    [TestMethod]
     public async Task PasswordCorsFramingAndHostChecks()
     {
         var options = new WebUiOptions { Enabled = true, Port = 0, Password = "s3cret", CorsOrigins = ["https://panel.example"], FrameAncestors = ["https://panel.example"] };
