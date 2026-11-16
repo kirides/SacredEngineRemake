@@ -4,6 +4,7 @@ using Sacred.GameServer;
 using Sacred.GameServer.Config;
 using Sacred.GameServer.Lan;
 using Sacred.GameServer.Lobby;
+using Sacred.GameServer.Net.Sbt;
 using Sacred.GameServer.Session;
 using Sacred.Network.Admission;
 
@@ -21,6 +22,7 @@ if (args.Contains("--help") || args.Contains("-h"))
           --trace                   log every received and sent message (opcode, sender, origin, first 32 bytes)
           --network-lobby=lobby.example.org --network-lobbyport=7066   register the game in an Open Internet lobby
           --lobby-channel=5         lobby channel of the game (GameServer.exe uses 5)
+          --udp-port=2105           Sacred Bild UDP transport (KCP) for players running Sacred Bild; 0 turns it off
           --server-name="My realm"  --public-address=203.0.113.5  --lan-announce=0  --tick-ms=20  --config=path
         """);
     return 0;
@@ -51,6 +53,13 @@ var lan = config.LanAnnounce ? new LanAnnouncer(config, announcedVersion, advert
 GameServerHost host;
 try { host = new GameServerHost(config, rules, lan); }
 catch (System.Net.Sockets.SocketException e) { Log.Info($"ERROR: The TCP port seems to be already in use! ({e.SocketErrorCode})"); return 3; }
+
+if (config.UdpPort > 0)
+{
+    // Sacred Bild players reach the game over its UDP transport (SBT/KCP) when the host answers, else they fall back to TCP.
+    try { var udp = host.AddListener(inbox => new SbtListener(config.UdpPort, inbox, () => host.TcpPort)); Log.Info($"UDP transport (Sacred Bild) on port {udp.Port}"); }
+    catch (System.Net.Sockets.SocketException e) { Log.Info($"WARNING: UDP port {config.UdpPort} unavailable ({e.SocketErrorCode}), Sacred Bild players use TCP."); }
+}
 
 LobbyClient? lobby = null;
 if (config.LobbyHost is { } lobbyHost)

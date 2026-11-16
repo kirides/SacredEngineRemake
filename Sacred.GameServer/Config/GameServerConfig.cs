@@ -16,6 +16,8 @@ public sealed class GameServerConfig
     /// <summary>UDP port the clients listen on for LAN announcements (original NETWORK_PORT_LISTEN, default 2005 at 0x4F59FC).</summary>
     public int ListenPort { get; set; } = 2005;
     public int LobbyPort { get; set; }
+    /// <summary>UDP port of the Sacred Bild transport (SBT/KCP); 0 turns it off. Sacred Bild's default is 2105.</summary>
+    public int UdpPort { get; set; } = 2105;
     public string? Password { get; set; }
     public PreconfigMode Mode { get; set; }
     public int Level { get; set; }
@@ -79,6 +81,7 @@ public sealed class GameServerConfig
             case "NETWORK_PORT_TCP" or "PORT": TcpPort = Int(value, TcpPort); break;
             case "NETWORK_PORT_LISTEN" or "LISTEN_PORT": ListenPort = Int(value, ListenPort); break;
             case "NETWORK_LOBBYPORT": LobbyPort = Int(value, LobbyPort); break;
+            case "UDP_PORT" or "NETWORK_PORT_UDP": UdpPort = Math.Clamp(Int(value, UdpPort), 0, 65535); break;
             case "NETWORK_PASSWORD" or "PASSWORD": Password = value.Length == 0 ? null : value; break;
             case "NETWORK_PRECONFIG_MODE": Mode = (PreconfigMode)Math.Clamp(Int(value, 0), 0, 4); break;
             case "NETWORK_PRECONFIG_LEVEL": Level = Math.Clamp(Int(value, 0), 0, 5); break;
