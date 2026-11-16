@@ -17,7 +17,10 @@ public sealed class PlayerSession
     public ushort RxSequence;
     public bool PasswordAccepted;
     public int PasswordTries;
-    public bool IsHost;
+    public bool IsHost;          // +0x72
+    public bool InGame;          // +0x75, set by 0x17/0x18
+    public uint LatencyMs;
+    public bool ProbePending;
     public long LastReceiveMs, LastKeepAliveMs;
 
     public string Describe() => Slot != 0 ? $"#{Slot} {Name}" : $"{Connection.RemoteEndPoint}";

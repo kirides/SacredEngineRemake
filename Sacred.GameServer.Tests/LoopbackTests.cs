@@ -124,21 +124,21 @@ public class LoopbackTests
         using var server = new Running(Config());
         await using var first = await Connect(server.Host.TcpPort, FirstContact("A", identity: 1));
         await using var second = await Connect(server.Host.TcpPort, FirstContact("B", identity: 2));
-        var text = ChatPayload("hello");
-        await first.SendAsync(new GoldMessage(0x032, 1, 1, 0, text));
+        var text = new byte[4 + 12];
+        System.Text.Encoding.Unicode.GetBytes("hello", text.AsSpan(4));
+        await first.SendAsync(new GoldMessage(0x005, 1, 1, 0, text));
         GoldMessage? chat = null;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         while (chat is null)
         {
             var batch = await second.Events.ReadAsync(timeout.Token);
-            if (batch is GoldMessagesReceived received) chat = received.Messages.FirstOrDefault(m => m.Opcode == 0x032);
+            if (batch is GoldMessagesReceived received) chat = received.Messages.FirstOrDefault(m => m.Opcode == 0x005);
         }
         Assert.AreEqual((byte)0, chat.Sender);
         Assert.AreEqual((byte)1, chat.Origin);
-        var decoded = Sacred.Network.Gameplay.GoldChatCodec.Decode(chat);
+        var decoded = Sacred.Network.Gameplay.GoldChannelChatCodec.Decode(chat);
         Assert.AreEqual("hello", decoded.Text);
-        Assert.AreEqual("A", decoded.Name);   // stamped by the server from the admitted player name
-        Assert.AreEqual(1u, decoded.Speaker);
+        Assert.AreEqual(Sacred.Network.Gameplay.GoldChatChannel.Public, decoded.Channel);
     }
 
     [TestMethod]
@@ -161,14 +161,14 @@ public class LoopbackTests
                 await Task.Delay(5);
             }
             Assert.AreEqual(GoldAdmissionPhase.SlotAssigned, first.Admission.Phase);
-            var payload = ChatPayload(new string('x', 200));
-            new Random(1).NextBytes(payload.AsSpan(300, 100)); // mixed content: exercises literals and matches
-            payload[^2] = payload[^1] = 0;
-            var small = ChatPayload("hi");
+            var payload = new byte[4 + 2 * 120 + 2];
+            for (var i = 0; i < 120; i++) payload[4 + i * 2] = (byte)('a' + (i * 7) % 26); // long line: deflate path
+            var small = new byte[4 + 6];
+            "h\0i\0"u8.CopyTo(small.AsSpan(4));                  // short line: raw path
             long allocated = 0;
             for (var round = 0; round < 300; round++)
             {
-                await first.SendAsync(new GoldMessage(0x032, first.Admission.PlayerSlot, first.Admission.PlayerSlot, 0, round % 2 == 0 ? payload : small));
+                await first.SendAsync(new GoldMessage(0x005, first.Admission.PlayerSlot, first.Admission.PlayerSlot, 0, round % 2 == 0 ? payload : small));
                 await Task.Delay(2);
                 var before = GC.GetAllocatedBytesForCurrentThread();
                 host.RunTick();

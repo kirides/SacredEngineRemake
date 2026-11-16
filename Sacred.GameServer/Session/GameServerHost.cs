@@ -16,7 +16,7 @@ namespace Sacred.GameServer.Session;
 /// Everything below <see cref="Run"/> executes on one thread; I/O threads only enqueue verified frames. The loop and packet paths
 /// use preallocated scratch buffers, pooled arrays and reusable socket args and do not allocate.
 /// </summary>
-public sealed class GameServerHost : IDisposable
+public sealed partial class GameServerHost : IDisposable
 {
     public const int MaxSlots = 16;
     private readonly GameServerConfig _config;
@@ -49,6 +49,7 @@ public sealed class GameServerHost : IDisposable
     {
         _config = config; _rules = rules; _lan = lan;
         _acceptor = new TcpAcceptor(config.TcpPort, _inbox);
+        InitializeSession();
     }
 
     public void Stop() => _stop = true;
@@ -180,48 +181,6 @@ public sealed class GameServerHost : IDisposable
         Route(s, m);
     }
 
-    /// <summary>Gameplay routing. Stage 1 relays chat only; every other opcode is logged once so that the next stage can be driven by real traffic.</summary>
-    private void Route(PlayerSession s, in GoldMessageView m)
-    {
-        switch (m.Opcode)
-        {
-            case 0x032: // chat: speaker word and name are stamped by the server (no spoofing)
-                RelayChat(s, m);
-                break;
-            case 0x0B: // empty keep-alive pulse of the client
-                break;
-            default:
-                if (m.Opcode < _seenUnhandled.Length && !_seenUnhandled[m.Opcode])
-                {
-                    _seenUnhandled[m.Opcode] = true;
-                    Log.Info($"unhandled opcode 0x{m.Opcode:X3} ({m.Payload.Length} bytes) from {s.Describe()}");
-                }
-                break;
-        }
-    }
-
-    private const int ChatNameOffset = 8, ChatTextOffset = 264;
-
-    private void RelayChat(PlayerSession s, in GoldMessageView m)
-    {
-        if (m.Payload.Length < ChatTextOffset + 2 || m.Payload.Length > _relay.Length) return;
-        var chat = _relay.AsSpan(0, m.Payload.Length);
-        m.Payload.CopyTo(chat);
-        BinaryPrimitives.WriteUInt32LittleEndian(chat, s.Slot);
-        var name = chat.Slice(ChatNameOffset, ChatTextOffset - ChatNameOffset);
-        name.Clear();
-        var chars = Math.Min(s.Name.Length, name.Length / 2 - 1);
-        for (var i = 0; i < chars; i++) BinaryPrimitives.WriteUInt16LittleEndian(name[(i * 2)..], s.Name[i]);
-        var recipient = BinaryPrimitives.ReadInt32LittleEndian(chat[4..]);
-        if (recipient > 0)
-        {
-            if (recipient <= MaxSlots && _slots[recipient] is { } target && target.State >= SessionState.SlotAssigned)
-                SendMessage(target, 0x032, 0, s.Slot, chat);
-            return;
-        }
-        Broadcast(0x032, s.Slot, chat, except: s);
-    }
-
     private void OnFirstContact(PlayerSession s, in GoldMessageView m)
     {
         if (s.State != SessionState.LoggedIn || m.Sender != 0) { Drop(s, "unexpected FIRSTCONTACT"); return; }
@@ -233,22 +192,21 @@ public sealed class GameServerHost : IDisposable
         if (reason == 0)
         {
             for (byte i = 1; i <= MaxSlots; i++) if (_slots[i] is null) { slot = i; break; }
-            if (slot == 0 || PlayerCount >= _config.MaxPlayers) { Reject(s, RejectionReason.LobbyRefused, 0); return; }
+            if (slot == 0 || PlayerCount >= _maxPlayers || _locked) { Reject(s, RejectionReason.LobbyRefused, 0); return; }
         }
         if (reason != 0) { Reject(s, reason, mask); return; }
 
         s.Slot = slot; _slots[slot] = s; s.State = SessionState.SlotAssigned; PlayerCount++;
         s.LobbyIdentity = identity; s.Name = AdmissionRules.PlayerName(m.Payload) ?? "";
         s.PasswordAccepted = _config.Password is null;
-        var hostAssigned = false;
-        foreach (var other in _sessions) if (other.IsHost && other.State != SessionState.Closed) hostAssigned = true;
-        s.IsHost = !hostAssigned;
+        s.IsHost = HostSession() is null;
         Span<byte> reply = stackalloc byte[6];
-        reply[0] = (byte)(s.IsHost ? 1 : 0);
+        // Flags (FUN_004eb0a0): 1 = assigned client host, 4 = host world available (server flag 0x80).
+        reply[0] = (byte)((s.IsHost ? 1 : 0) | (!s.IsHost && _hostWorldAvailable ? 4 : 0));
         reply[1] = slot;
         SendMessage(s, 0x11, 0, 0, reply);
         Span<byte> flags = stackalloc byte[4];
-        BinaryPrimitives.WriteUInt32LittleEndian(flags, _config.GameFlags());
+        BinaryPrimitives.WriteUInt32LittleEndian(flags, _gameFlags);
         SendMessage(s, 0x01E, 0, 0, flags);
         Log.Info($"FIRSTCONTACT from {s.Connection.RemoteEndPoint}: '{s.Name}' admitted as #{slot}{(s.IsHost ? " (host)" : "")}");
     }
@@ -283,16 +241,13 @@ public sealed class GameServerHost : IDisposable
 
     private void Retire(PlayerSession s, long now)
     {
-        if (s.State == SessionState.Closed) return;
-        if (s.Slot != 0 && _slots[s.Slot] == s) { _slots[s.Slot] = null; PlayerCount--; }
-        Log.Info($"{s.Describe()} disconnected");
-        var wasHost = s.IsHost;
-        s.State = SessionState.Closed; s.IsHost = false;
-        _sessions.Remove(s);
+        if (s.State != SessionState.Closed)
+        {
+            Log.Info($"{s.Describe()} disconnected");
+            RemovePlayer(s, ReasonLeft, notifyVictim: false);
+        }
+        if (!_sessions.Remove(s)) return;
         _retired.Add((s.Connection, now + 1000));
-        if (wasHost)
-            foreach (var other in _sessions)
-                if (other.State >= SessionState.SlotAssigned) { other.IsHost = true; SendMessage(other, 0x00D, 0, 0, default); Log.Info($"host role moved to #{other.Slot}"); break; }
     }
 
     // ---- sending ----------------------------------------------------------------------------------------------------
