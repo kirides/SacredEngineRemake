@@ -48,6 +48,13 @@ Case `0x022` at 0x4CAF67 accepts the rename only if the sender is the host, flag
 - Hero values: combat arts are 22-byte records, combos 38-byte records (both on the wire), status modifiers 28-byte records (file only). The compact value stream (0x169/0x16C/0x16E/0x16F) carries only some +0x08 fields; 0x16B carries the full block.
 - Saved object lists can hold items in no slot: items attached to the hero model (base flag 0x400, +0x2C parent = hero).
 
+## Quest state and chunk CD (authoritative-mode findings, Sacred.exe Gold)
+
+- The hero file's loader (0x6058A0) handles chunks C0..CE only (C5/C9 are no-ops). None of them holds the quest journal, script variables or actual quests: 0x1B8..0x1BE, 0x1C6/0x1C7, 0x1C9/0x1CA and 0x1D3..0x1D5 are world (interpreter) state, not hero state.
+- Chunk CD (decoded type CC) is the explored map, not scripts. Writer 0x605396..0x60545E: `[0xB00BB00B][u32 area count][0][0]`, then per area index i `[u32 i][u32 0][128-byte mask from area +0x180]` (0x622B80), or `[u32 i][0xDEADB00B]` when there is no area i; area 0's first dword is written as 0x20202020. Reader 0x606901 (save version >= 0x1A) copies each mask back (0x622BA0), which sets area flag 0x1000 and counts the area in cStatsManager (0x4249C0) when the mask is not empty. Real Gold saves: 6051 areas, area 0 absent, 822824 bytes.
+- The mask is 32x32 bits at 2-unit resolution: 0x622B10 sets bit ((x - x0) / 2, (y - y0) / 2), called through 0x638E00 from 0x5997C0, which acts only for the local player's hero whenever its tile position changes and reveals the radius tables at 0x8915CC / 0x891328. The copy-out 0x622B80 is called only by the save writer and the map renderer (0x6CE109); the merge 0x622C10 has no caller; none of these addresses is stored as a constant. No message carries the masks, so a server cannot reproduce them.
+- The hero's quest pairs are the inventory stream's 8-byte `[key][word04]` records (count at +4436). `0x145` `[u32 key][u32 word04]`: Sacred.exe 0x5D8280(inventory, key, word04, send) posts 0x145 when send is set, the inventory id is below 0x11 and the game is networked, then appends locally; the append is refused when an existing pair has the same key or an existing pair's word04 is 0 (0x5D8402..0x5D8411). Callers (0x4AAEFB scripts: the local player's inventory; 0x558267/0x55923C pick-ups: the picking hero's; 0x4868F6) pass send = 1. The receiver (0x7DE5F3) applies it to its own local player's inventory with send = 0. GameServer.exe forwards 0x145 in party mode (5) and keeps nothing.
+
 ## Sacred Bild UDP transport (SBT)
 
 Host side of Sacred Bild's LAN transport, `--udp-port` (default 2105). Little-endian, magic `SBT` + type, datagrams at most 1200 bytes.

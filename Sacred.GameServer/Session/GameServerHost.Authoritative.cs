@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using Sacred.GameServer.Auth;
+using Sacred.GameServer.Auth.Hero;
 using Sacred.GameServer.Lobby;
 using Sacred.GameServer.Wire;
 
@@ -66,6 +67,9 @@ public sealed partial class GameServerHost
                 return true;
             case 0x141: case 0x142: case 0x11D: case 0x11E: case 0x13E: case 0x13F: case 0x122:   // pick-up, equipment, inventory
                 MarkHeroChanged(s);
+                return true;
+            case QuestRecords.Opcode:                                                                // quest pair (GameServerHost.Quests.cs)
+                CaptureQuestRecord(s, m);
                 return true;
             case 0x01E when options.LockDifficulty && s.IsHost && m.Payload.Length >= 4:
             {
