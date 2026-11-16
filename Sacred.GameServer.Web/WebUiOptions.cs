@@ -63,7 +63,7 @@ public sealed class WebUiOptions
 
     private static readonly Dictionary<string, string> SwitchMappings = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["--webui-enabled"] = "WebUi:Enabled", ["--webui-hostname"] = "WebUi:Hostname", ["--webui-port"] = "WebUi:Port",
+        ["--webui-enabled"] = "WebUi:Enabled", ["--webserver"] = "WebUi:Enabled", ["--webui-hostname"] = "WebUi:Hostname", ["--webui-port"] = "WebUi:Port",
         ["--webui-password"] = "WebUi:Password", ["--webui-cors-origins"] = "WebUi:CorsOrigins",
         ["--webui-frame-ancestors"] = "WebUi:FrameAncestors", ["--webui-allowed-hosts"] = "WebUi:AllowedHosts",
         ["--webui-path-base"] = "WebUi:PathBase",

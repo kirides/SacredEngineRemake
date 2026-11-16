@@ -165,7 +165,7 @@ public class WebAdminTests
             var viaLine = WebUiOptions.From(WebUiOptions.BuildConfiguration([$"--webui-config={file}", "--WebUi:Port=9200", "--webui-hostname", "0.0.0.0", "--tick-ms=20", "-x"]));
             Assert.AreEqual(9200, viaLine.Port);                                  // command line beats file
             Assert.AreEqual("0.0.0.0", viaLine.Hostname);
-            var bare = WebUiOptions.From(WebUiOptions.BuildConfiguration(["--webui-enabled", "--webui-port=9300", "--trace"]));
+            var bare = WebUiOptions.From(WebUiOptions.BuildConfiguration(["--webserver", "--webui-port=9300", "--trace"]));
             Assert.IsTrue(bare.Enabled);                                          // a bare switch must not swallow the next argument
             Assert.AreEqual(9300, bare.Port);
             Assert.IsFalse(WebUiOptions.From(WebUiOptions.BuildConfiguration([])).Enabled);

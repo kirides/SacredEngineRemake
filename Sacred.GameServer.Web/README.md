@@ -3,7 +3,7 @@
 A management page and JSON API for `SacredGameServer`, off by default.
 
 ```
-SacredGameServer --webui-enabled --webui-port=8080 --webui-password=secret --game-dir=/srv/sacred
+SacredGameServer --webserver --webui-port=8080 --webui-password=secret --game-dir=/srv/sacred
 ```
 
 Open `http://127.0.0.1:8080/`: overview, players (kick, ban), live chat, broadcast and private messages from the server,
@@ -18,30 +18,30 @@ in the working directory, or `--webui-config=path`), command line (`--WebUi:Port
 
 | Key | Default | Meaning |
 |---|---|---|
-| `Enabled` | `false` | start the UI |
+| `Enabled` | `false` | start the UI (`--webserver`, or `--WebUi:Enabled=true`) |
 | `Hostname` | `127.0.0.1` | bind address or name (`localhost`, a DNS name, `*`/`0.0.0.0` for all interfaces) |
 | `Port` | `8080` | TCP port |
 | `Password` | none | HTTP Basic (any user) or `Authorization: Bearer <password>`. **Required** when `Hostname` is not loopback |
 | `CorsOrigins` | none | origins allowed to call the API from a browser; `*` allows all |
 | `FrameAncestors` | none | who may embed the page in a frame: `self`, `*` or origins (CSP `frame-ancestors`; default `none`) |
 | `AllowedHosts` | none | accepted `Host` headers; on password-less loopback only localhost/127.0.0.1/the hostname are accepted (DNS rebinding) |
-| `StaticDirectory` | embedded page | serve `index.html` from this directory instead (custom pages, embedding into a site) |
 | `PathBase` | none | URL prefix behind a reverse proxy |
 
-Embedding the page on another site: `https://panel.example/gs.html` can load `index.html?api=https://gs.example:8080&token=PASSWORD`
-(list the origin in `CorsOrigins`) or frame it (list it in `FrameAncestors`). The token is kept in `sessionStorage` and removed from the URL.
+To put the UI on another site, list that origin in `FrameAncestors` and frame the server. `CorsOrigins` is for scripts or pages that call the JSON API directly with `Authorization: Bearer`.
 
-## API
+## Endpoints (minimal API, no controllers)
 
-`GET /api/overview | players | bans`, `GET /api/chat?after=ID&wait=SECONDS` (long poll, max 25 s),
-`POST /api/{broadcast|message|kick|ban|unban|lock|pause|max-players|password|name|mode|end-session|shutdown}` with a JSON body
-(`slot`, `value`, `text`, `reason`, `address`). POST needs `Content-Type: application/json`.
+* `GET /` server rendered page; its forms post to `/actions/{say|kick|ban|unban|lock|pause|max-players|password|name|mode|end-session|shutdown}` and are answered with a redirect back (Post/Redirect/Get). Cross-site posts (`Sec-Fetch-Site`, foreign `Origin`) are refused.
+* `GET /fragment` the server rendered state block (header, players, bans) the page swaps in every 3 s.
+* `GET /api/chat/stream[?after=ID]` chat as Server-Sent Events (`id`, `event: chat`, JSON `data`; resumes with `Last-Event-ID`; keep-alive comment every 15 s). `GET /api/chat?after=ID` is the same data as one JSON page.
+* `GET /api/overview | players | bans` and `POST /api/{command}` with the same command names and a JSON body (`slot`, `value`, `text`, `reason`, `address`; needs `Content-Type: application/json`).
 
 ## Design
 
 * `Sacred.GameServer.Web` only knows `IServerAdmin`; `GameServerHost` implements it (`Session/GameServerHost.Admin.cs`).
 * The game loop stays the only writer: commands go through a bounded queue and run in the tick; reads come from a snapshot
   refreshed four times a second; chat goes into a preallocated ring of char buffers. No allocation on the packet path.
-* Kestrel with `CreateSlimBuilder`, one request delegate, source generated JSON: trim/AOT clean (no ILC warnings).
+* Kestrel with `CreateSlimBuilder`, minimal API endpoints, source generated JSON: trim/AOT clean (no ILC warnings). The project trims only with Native AOT: ILLink-trimming a JIT publish breaks Kestrel (`TypeLoadException` on `X509Certificate2Collection`).
+* One deployable unit: the UI is compiled into `SacredGameServer`; without `--webserver` Kestrel is never loaded.
 * Bans are by IP address, kept in memory (they are lost on restart). A banned address is refused at FIRSTCONTACT (reason 3).
 * Server messages use origin slot 0 like the server's own frames; how the stock client labels them is unverified.
