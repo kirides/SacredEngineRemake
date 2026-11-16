@@ -7,7 +7,7 @@ New project only: no existing file of the repository is modified. It reuses the 
 (FIRSTCONTACT layout, data fingerprints, build reader). The `Sacred.Network` *client* classes allocate per frame, so the wire
 path here is separate and allocation free.
 
-## Status (stage 3: session flow, routing, lobby)
+## Status (stage 4: session flow, routing, lobby, object world)
 
 | Area | State |
 | --- | --- |
@@ -26,7 +26,7 @@ path here is separate and allocation free.
 | `Gameserver.cfg` keys | `NETWORK_PORT_TCP`, `NETWORK_PORT_LISTEN`, `NETWORK_PASSWORD`, `NETWORK_PRECONFIG_MODE/LEVEL/MAXPLAYERS`, `LADDER_EXPORT` parsed (defaults 2005/2006 are from the exe's default-port functions, mode->flag mapping is best effort) |
 | Lobby registration (Open Internet) | done, see "Lobby" below; verified against `sacred-lobby` (Go) |
 | Closed Net characters | relay as in the original: a block 11 from the lobby is sent to the matching player as 0x132; the server-side hero load (`CHARACTER_SAVEGAME`) needs the world (roadmap) |
-| Server-side object world (`FUN_004cd040` streams it to a joiner on 0x017) | **not yet**: the biggest gap, see roadmap |
+| Object world (`Session/ObjectMirror.cs`, `GameServerHost.World.cs`) | done as a mirror: 0x16E/0x16F are absorbed and streamed once to each in-game player lacking the object (`FUN_004cd040`), the whole world goes to a participant before its 0x017 answer (by reference order), 0x169/0x16C/0x11A/0x11B absorbed + forwarded, 0x16B/0x16D/0x14B absorbed only, 0x166/0x167 from the owner delete and notify holders, from others only clear their bit (case 0x4C4D86). The mirror keeps the latest serialized state; it does not apply later field updates (0x165 position etc.) like the original's real objects do |
 
 Opcodes not covered by the table or a case are logged once per opcode (`unhandled opcode 0x...`) and dropped, like the
 original's default case (`0x4CC598`). Real client traffic against this server shows what is still missing.
@@ -101,9 +101,10 @@ online, lobby kick, Closed Net character, lobby shutdown).
 
 ## Roadmap (what the original GameServer does that this does not yet)
 
-1. Server-side object world: `FUN_004cd040` streams the server's objects to a joiner on 0x017, and the banks are serialized
-   from current state instead of replaying the host's upload. The world also loads Closed Net heroes (`CHARACTER_SAVEGAME`)
-   and uploads them on save/leave.
+1. Real server objects instead of the serialized mirror: apply field updates (position 0x165, values, inventory) so
+   streamed objects are current, serialize the banks from current state instead of replaying the host's upload, load
+   Closed Net heroes (`CHARACTER_SAVEGAME`) and upload them on save/leave. `Sacred.Network`'s object codecs and
+   `Sacred.GameplayHost` are the building blocks.
 2. Authoritative mode (optional): the server owns sector state (balance, enemy and game difficulty) from its config instead
    of the first client entering a sector, and checks client reports (hero stats, items, gold, damage, kills) against the
    data tables; later a full simulation (monsters, loot, combat, scripts). John's C++ re-creation of Sacred.exe

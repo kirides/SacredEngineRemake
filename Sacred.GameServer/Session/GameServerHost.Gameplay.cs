@@ -40,6 +40,7 @@ public sealed partial class GameServerHost
     /// <summary>Gameplay routing (after admission and password).</summary>
     private void Route(PlayerSession s, in GoldMessageView m)
     {
+        if (WorldMessage(s, m)) return;
         var mode = Routing.Mode(m.Opcode);
         if (mode != RouteMode.None) { Forward(s, m, mode, Routing.IncludeSender(m.Opcode)); return; }
         switch (m.Opcode)
@@ -169,8 +170,9 @@ public sealed partial class GameServerHost
             Log.Info($"Host: The world has {_sectorCount} sectors. #{s.Slot} is in the game, joiners may follow.");
             return;
         }
+        StreamWorldTo(s);
         SendMessage(s, 0x017, 0, s.Slot, default);
-        Log.Info($"#{s.Slot} {s.Name} entered the world");
+        Log.Info($"#{s.Slot} {s.Name} entered the world ({_world.Count} objects)");
     }
 
     private void StoreWorldBank(PlayerSession s, in GoldMessageView m)
@@ -271,7 +273,7 @@ public sealed partial class GameServerHost
         var slot = s.Slot;
         var wasHost = s.IsHost;
         s.IsHost = false;
-        if (slot != 0 && _slots[slot] == s) { _slots[slot] = null; PlayerCount--; LobbyPlayerRemoved(s); }
+        if (slot != 0 && _slots[slot] == s) { _slots[slot] = null; PlayerCount--; LobbyPlayerRemoved(s); _world.Forget(slot); }
         s.State = SessionState.Closed;
         Span<byte> departure = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(departure, reason);
@@ -291,6 +293,7 @@ public sealed partial class GameServerHost
                 return;
             }
         _locked = false; _hostWorldAvailable = false;
+        _world.Clear();
         Array.Clear(_worldBankLength);
         for (var slot = 1; slot <= MaxSlots; slot++)
             if (_slots[slot] is { } other) RemovePlayer(other, ReasonSessionEnded, notifyVictim: true);
