@@ -56,3 +56,8 @@ KCP: conv = session id, stream mode, MTU 1184, windows 128/256, nodelay(1, 10, 1
 ## Sending
 
 All sending goes through `Net/IClientLink` (frame in/out, flush, close) and `IClientListener`. Sessions have an identity independent of the socket, so TCP and KCP links are interchangeable.
+
+## Web admin (remake only, `Sacred.GameServer.Web`)
+
+- Server chat uses the relayed player chat layout with the server as origin: 0x005 `[u32 0][UTF-16 text, max 0xFE bytes]` to everybody, 0x003 `[u32 target slot][text]` to one player, both with sender 0 and origin 0 (slot 0 is the session record of the 0x1B roster). Kick uses 0x157 `[reason]` to the player and 0x150 to the others (reason 8 when none is given); lock, pause, max players and flags reuse 0x019/0x01A, 0x134/0x135, 0x023 and 0x01E from the server. A banned address is answered with the FIRSTCONTACT rejection 3 (`LobbyRefused`).
+- Not checked against a real client: how the stock client displays a chat line with origin 0.
