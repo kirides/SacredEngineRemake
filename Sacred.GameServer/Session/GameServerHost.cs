@@ -93,6 +93,7 @@ public sealed partial class GameServerHost : IDisposable
             if (s.State >= SessionState.LoggedIn && now - s.LastKeepAliveMs >= 5_000) { s.LastKeepAliveMs = now; SendControl(s, TinCatWire.StayingAlive, 2); }
         }
         PumpLobby();
+        PumpEnvironment(now);
         OnTick?.Invoke(Tick);
         foreach (var s in _sessions) s.Connection.Flush();
         for (var i = _retired.Count - 1; i >= 0; i--)
@@ -208,16 +209,21 @@ public sealed partial class GameServerHost : IDisposable
         reply[0] = (byte)((s.IsHost ? 1 : 0) | (!s.IsHost && _hostWorldAvailable ? 4 : 0));
         reply[1] = slot;
         SendMessage(s, 0x11, 0, 0, reply);
-        Span<byte> flags = stackalloc byte[4];
-        BinaryPrimitives.WriteUInt32LittleEndian(flags, _gameFlags);
-        SendMessage(s, 0x01E, 0, 0, flags);
+        // No 0x01E here: the original sends the flags only as the echo of the host's 0x01E (checked against a real session).
         Log.Info($"FIRSTCONTACT from {s.Connection.RemoteEndPoint}: '{s.Name}' admitted as #{slot}{(s.IsHost ? " (host)" : "")}");
         AnnounceToLobby(s);
         // The original then queues two internal commands (0x4EBE2A, 0x4EBF08): 0x101 = roster for a session without password,
         // and 0x41 = first time probe (0x43). The client waits for its own roster record before it lists itself in the lobby.
+        // Then the queued internal commands, in the original's order: 0x101 (roster when no password), 0x41 (time probe 0x43),
+        // 0x153 (3000 refs for the host, 1000 for a joiner once the host world exists), 0x40E (world environment 0x00B) and
+        // 0x151 (announce the newcomer to the others), as seen in a captured GameServer.exe session.
         SeedRosterEntry(s, m.Payload);
         if (s.PasswordAccepted) SendRoster(s);
         SendProbe(s);
+        if (s.IsHost) GrantReferences(s, HostReferenceGrant);
+        else if (_hostWorldAvailable) GrantReferences(s, JoinerReferenceGrant);
+        SendEnvironment(s);
+        Broadcast(0x151, s.Slot, default, except: s);
     }
 
     private void OnPassword(PlayerSession s, in GoldMessageView m)

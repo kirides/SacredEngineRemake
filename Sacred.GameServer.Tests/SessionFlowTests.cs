@@ -140,7 +140,6 @@ public class SessionFlowTests
     {
         using var server = new Server(c => c.Mode = PreconfigMode.PlayerKiller);
         using var host = RawClient.Admit(server.Port, "Host", 1);
-        host.WaitFor(0x01E); // initial flags sent on admission
         host.Send(0x01E, Word(0xFFFFFFFF));
         var flags = BinaryPrimitives.ReadUInt32LittleEndian(host.WaitFor(0x01E).Payload);
         Assert.AreEqual(0xFFFE8F72u | 0x40u, flags);

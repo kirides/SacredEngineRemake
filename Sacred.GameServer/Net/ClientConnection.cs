@@ -26,6 +26,8 @@ public sealed class ClientConnection
     private int _sending, _closed;
 
     public IPEndPoint? RemoteEndPoint { get; }
+    /// <summary>The server address this client reached (the LAN address the original puts into roster record 0).</summary>
+    public IPEndPoint? LocalEndPoint { get; }
     /// <summary>Game loop owned state.</summary>
     public object? Session;
 
@@ -34,6 +36,7 @@ public sealed class ClientConnection
         _socket = socket;
         _inbox = inbox;
         RemoteEndPoint = socket.RemoteEndPoint as IPEndPoint;
+        LocalEndPoint = socket.LocalEndPoint as IPEndPoint;
         _receive.Completed += (_, e) => OnReceive(e);
         _send.Completed += (_, e) => OnSend(e);
     }

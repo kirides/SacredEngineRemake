@@ -27,6 +27,7 @@ public sealed class PlayerSession
     /// <summary>This player's 834-byte record of the 0x1B roster (FUN_004d3030), built from FIRSTCONTACT and updated by client 0x1B.</summary>
     public readonly byte[] RosterEntry = new byte[GameServerHost.RosterEntryBytes];
     public bool Ready;               // +0x7A, set by 0x0F
+    public ushort CurrentSector;     // sector the player stands in (word +0 of its last 0x148)
     public bool CharacterReceived;   // +0x8D, Closed Net character delivered
 
     public string Describe() => Slot != 0 ? $"#{Slot} {Name}" : $"{Connection.RemoteEndPoint}";

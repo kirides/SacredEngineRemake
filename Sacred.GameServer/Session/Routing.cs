@@ -63,9 +63,10 @@ public static class Routing
         foreach (var opcode in (ReadOnlySpan<ushort>)[0x10E, 0x10F, 0x122, 0x123, 0x129, 0x12A, 0x12B, 0x12C, 0x130, 0x131, 0x13E,
             0x144, 0x14F, 0x155, 0x172, 0x176, 0x18A, 0x197, 0x19C, 0x19D])
             Consumed[opcode] = true;
-        // Commands the original's own menu/lobby thread posts into its queue (lobby connect/logout 0x10A..0x10C, remove player
-        // 0x109, 0x152..0x15B). A client must not be able to trigger them, so they are dropped.
-        foreach (var opcode in (ReadOnlySpan<ushort>)[0x109, 0x10A, 0x10B, 0x10C, 0x152, 0x153, 0x154, 0x15A, 0x15B])
+        // Commands the original's own menu/lobby thread posts into its queue (lobby connect/logout 0x10A..0x10C, 0x109, release
+        // refs 0x152, savegame start positions 0x15A, host hand-over 0x15B). A client must not be able to trigger them, so they
+        // are dropped. 0x153/0x154 are client requests (Session/GameServerHost.References.cs).
+        foreach (var opcode in (ReadOnlySpan<ushort>)[0x109, 0x10A, 0x10B, 0x10C, 0x152, 0x15A, 0x15B])
             Internal[opcode] = true;
     }
 

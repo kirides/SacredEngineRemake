@@ -25,12 +25,24 @@ public sealed partial class GameServerHost
 
     private readonly byte[] _roster = new byte[RosterBytes];
     private readonly byte[] _rosterSent = new byte[RosterBytes];
+    private uint _rosterServerAddress;
+
+    /// <summary>IPv4 as the original stores it in the roster: a.b.c.d becomes the u32 a*2^24 + b*2^16 + c*2^8 + d (written little endian).</summary>
+    private static uint RosterAddress(System.Net.IPEndPoint? endPoint)
+    {
+        if (endPoint is null) return 0;
+        Span<byte> ip = stackalloc byte[16];
+        var address = endPoint.Address.IsIPv4MappedToIPv6 ? endPoint.Address.MapToIPv4() : endPoint.Address;
+        if (!address.TryWriteBytes(ip, out var written) || written != 4) return 0;
+        return (uint)(ip[0] << 24 | ip[1] << 16 | ip[2] << 8 | ip[3]);
+    }
 
     /// <summary>Admission (0x4EB80F): seed the player's record from its FIRSTCONTACT payload.</summary>
     private static void SeedRosterEntry(PlayerSession s, ReadOnlySpan<byte> contact)
     {
         var e = s.RosterEntry.AsSpan();
         e.Clear();
+        BinaryPrimitives.WriteUInt32LittleEndian(e, RosterAddress(s.Connection.RemoteEndPoint)); // player +4 (run 8: record 0 held the server's LAN IP)
         if (contact.Length < ContactProfile + RosterProfileBytes) return;
         e[RosterClass] = contact[ContactClass];
         e[RosterBlock] = contact[ContactBlock];
@@ -45,6 +57,8 @@ public sealed partial class GameServerHost
     {
         var roster = _roster.AsSpan();
         roster.Clear();
+        if (_rosterServerAddress == 0 && trigger is not null) _rosterServerAddress = RosterAddress(trigger.Connection.LocalEndPoint);
+        BinaryPrimitives.WriteUInt32LittleEndian(roster, _rosterServerAddress);   // [0x6341bc]: 14 13 09 0a = 10.9.19.20
         var name = _config.ServerName.AsSpan();
         Encoding.Unicode.GetBytes(name.Length > RosterNameBytes / 2 - 1 ? name[..(RosterNameBytes / 2 - 1)] : name, roster.Slice(RosterName, RosterNameBytes));
         var any = false;
@@ -98,8 +112,7 @@ public sealed partial class GameServerHost
         SendRoster(null);
     }
 
-    /// <summary>0x21 (case 0x4CAE40): connection speed 0..2 (anything else resets it to 0), then the roster. Record +0x00 (player
-    /// +4 in the original) is left 0: its source is not identified yet.</summary>
+    /// <summary>0x21 (case 0x4CAE40): connection speed 0..2 (anything else resets it to 0), then the roster.</summary>
     private void OnConnectionSpeed(PlayerSession s, in GoldMessageView m)
     {
         var value = m.Payload.Length >= 4 ? BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) : 0;

@@ -59,6 +59,9 @@ public sealed partial class GameServerHost
             case 0x00F: OnPeerReady(s); return;                     // 0x4CA1E1
             case 0x01B: OnPlayerData(s, m); return;                 // 0x4CAC65 -> FUN_004d2ee0
             case 0x021: OnConnectionSpeed(s, m); return;            // 0x4CAE40
+            case 0x148: OnSectorEntry(s, m); return;                // 0x4C7202 -> FUN_004cf0d0
+            case 0x153: OnReferenceRequest(s, m); return;           // 0x4C48B5 -> FUN_004d6110
+            case 0x154: OnTriggerRequest(s, m); return;             // 0x4C4B10
             case 0x015: case 0x016: return;                         // upload begin (0x4C9ABD): state only, data follows
             case 0x017: case 0x018: WorldStart(s, m); return;       // 0x4C9F72
             case 0x019: case 0x01A: SetLock(s, m); return;          // 0x4CA469 / 0x4CA3D9
@@ -172,6 +175,8 @@ public sealed partial class GameServerHost
             _sectorCount = m.Payload.Length >= 4 ? BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) : 0;
             _hostWorldAvailable = true;
             SendAll(0x018, s.Slot, default);
+            for (var slot = 1; slot <= MaxSlots; slot++)             // 0x4CA0A4: 1000 refs to every other connected player
+                if (_slots[slot] is { IsHost: false } other && other.State >= SessionState.SlotAssigned) GrantReferences(other, JoinerReferenceGrant);
             Log.Info($"Host: The world has {_sectorCount} sectors. #{s.Slot} is in the game, joiners may follow.");
             return;
         }
@@ -278,7 +283,11 @@ public sealed partial class GameServerHost
         var slot = s.Slot;
         var wasHost = s.IsHost;
         s.IsHost = false;
-        if (slot != 0 && _slots[slot] == s) { _slots[slot] = null; PlayerCount--; LobbyPlayerRemoved(s); _world.Forget(slot); }
+        if (slot != 0 && _slots[slot] == s)
+        {
+            _slots[slot] = null; PlayerCount--; LobbyPlayerRemoved(s); _world.Forget(slot);
+            ReleaseReferences(slot); LeaveAllSectors(slot);
+        }
         s.State = SessionState.Closed;
         Span<byte> departure = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(departure, reason);
@@ -300,6 +309,7 @@ public sealed partial class GameServerHost
         _locked = false; _hostWorldAvailable = false;
         _world.Clear();
         Array.Clear(_worldBankLength);
+        _poolCount = -1; ResetSectors();                              // a new session starts with fresh refs and sectors
         for (var slot = 1; slot <= MaxSlots; slot++)
             if (_slots[slot] is { } other) RemovePlayer(other, ReasonSessionEnded, notifyVictim: true);
         if (PlayerCount == 0) Log.Info("Clientdata reseted.");
