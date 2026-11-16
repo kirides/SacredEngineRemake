@@ -61,6 +61,7 @@ if (config.Auth.Enabled && config.GameDirectory is { } itemDir)
 {
     host.ItemFootprints = Sacred.GameServer.Auth.Hero.ItemFootprints.Load(itemDir, out var itemError);
     if (itemError is not null) Log.Info($"WARNING: item tables not read from '{itemDir}' ({itemError}); unseen items are saved as 1x1.");
+    else if (host.ItemFootprints is { } tables) Log.Info($"Item tables: {tables.FromRows} types with a Weapon.pak footprint (of {Sacred.GameServer.Auth.Hero.ItemFootprints.ResourceCount}) from '{itemDir}'.");
 }
 
 if (config.UdpPort > 0)
