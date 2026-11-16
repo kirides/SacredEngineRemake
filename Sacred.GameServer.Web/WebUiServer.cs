@@ -1,11 +1,11 @@
 using System.Net;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -13,19 +13,22 @@ using Microsoft.Extensions.Logging;
 namespace Sacred.GameServer.Web;
 
 /// <summary>
-/// The management UI: one embedded page plus a small JSON API under <c>/api</c>. Plain request delegate with a path switch (no
-/// routing/reflection), source generated JSON, so it stays trim and AOT clean. Chat is delivered by long polling (<c>/api/chat</c>),
-/// which also works cross-origin with an Authorization header, unlike EventSource.
+/// The management UI on Kestrel with minimal API endpoints (<c>MapGet</c>/<c>MapPost</c>, no controllers):
+/// <list type="bullet">
+/// <item><c>GET /</c> server rendered page (<see cref="Pages"/>), forms post to <c>/actions/*</c> and redirect back,</item>
+/// <item><c>GET /fragment</c> the server rendered state block the page swaps in every few seconds,</item>
+/// <item><c>GET /api/chat/stream</c> chat as Server-Sent Events, <c>/api/*</c> JSON for scripts.</item>
+/// </list>
+/// Endpoints are plain <see cref="RequestDelegate"/>s (no reflection or model binding), JSON is source generated: trim and AOT clean.
 /// </summary>
 public sealed class WebUiServer : IAsyncDisposable
 {
-    private const int MaxText = 200, MaxLongPollSeconds = 25;
+    private const int MaxText = 200;
     private readonly WebUiOptions _options;
     private readonly IServerAdmin _admin;
     private readonly Action<string> _log;
     private readonly byte[] _passwordHash;
     private WebApplication? _app;
-    private byte[]? _indexPage;
 
     public WebUiServer(WebUiOptions options, IServerAdmin admin, Action<string> log)
     {
@@ -62,7 +65,9 @@ public sealed class WebUiServer : IAsyncDisposable
                 kestrel.Listen(address, _options.Port, listen => listen.Protocols = HttpProtocols.Http1AndHttp2);
         });
         var app = builder.Build();
-        app.Run(Handle);
+        if (_options.PathBase.Length > 0) app.UsePathBase(_options.PathBase);
+        app.Use(Gate);
+        MapEndpoints(app);
         await app.StartAsync().ConfigureAwait(false);
         _app = app;
         var ports = new List<int>();
@@ -84,12 +89,131 @@ public sealed class WebUiServer : IAsyncDisposable
         if (_app is not null) { await _app.StopAsync().ConfigureAwait(false); await _app.DisposeAsync().ConfigureAwait(false); }
     }
 
-    // ---- request handling -------------------------------------------------------------------------------------------
+    // ---- endpoints ----------------------------------------------------------------------------------------------------
 
-    private async Task Handle(HttpContext context)
+    private void MapEndpoints(WebApplication app)
+    {
+        app.MapGet("/", (RequestDelegate)PageEndpoint);
+        app.MapGet("/fragment", (RequestDelegate)FragmentEndpoint);
+        app.MapGet("/api/overview", (RequestDelegate)(c => Json(c.Response, _admin.Overview(), WebUiJson.Default.ServerOverview)));
+        app.MapGet("/api/players", (RequestDelegate)(c => Json(c.Response, _admin.Players().ToArray(), WebUiJson.Default.PlayerInfoArray)));
+        app.MapGet("/api/bans", (RequestDelegate)(c => Json(c.Response, _admin.Bans().ToArray(), WebUiJson.Default.BanEntryArray)));
+        app.MapGet("/api/chat", (RequestDelegate)ChatPageEndpoint);
+        app.MapGet("/api/chat/stream", (RequestDelegate)ChatStreamEndpoint);
+        app.MapPost("/api/{command}", (RequestDelegate)ApiCommandEndpoint);
+        app.MapPost("/actions/{command}", (RequestDelegate)FormActionEndpoint);
+    }
+
+    private async Task PageEndpoint(HttpContext context)
+    {
+        var notice = context.Request.Query["notice"].ToString();
+        var html = Pages.Index(_admin, string.IsNullOrEmpty(notice) ? null : notice);
+        await Html(context.Response, html).ConfigureAwait(false);
+    }
+
+    private Task FragmentEndpoint(HttpContext context) => Html(context.Response, Pages.State(_admin));
+
+    private async Task ChatPageEndpoint(HttpContext context)
+    {
+        var head = _admin.ChatHead;
+        var after = long.TryParse(context.Request.Query["after"], out var a) && a >= 0 ? a : Math.Max(0, head - 100);
+        var entries = _admin.ChatSince(after, 200);
+        await Json(context.Response, new ChatPage(entries.Count > 0 ? entries[^1].Id : Math.Max(after, head), entries.ToArray()), WebUiJson.Default.ChatPage).ConfigureAwait(false);
+    }
+
+    /// <summary>Server-Sent Events: one <c>chat</c> event per line, <c>id</c> = chat id so EventSource resumes with Last-Event-ID.</summary>
+    private async Task ChatStreamEndpoint(HttpContext context)
+    {
+        var response = context.Response;
+        response.ContentType = "text/event-stream";
+        response.Headers.CacheControl = "no-cache";
+        response.Headers["X-Accel-Buffering"] = "no";
+        var last = long.TryParse(context.Request.Headers["Last-Event-ID"], out var resume) ? resume
+            : long.TryParse(context.Request.Query["after"], out var after) && after >= 0 ? after : Math.Max(0, _admin.ChatHead - 50);
+        var cancel = context.RequestAborted;
+        var idle = 0;
+        try
+        {
+            await response.WriteAsync("retry: 3000\n\n", cancel).ConfigureAwait(false);
+            await response.Body.FlushAsync(cancel).ConfigureAwait(false);
+            while (!cancel.IsCancellationRequested)
+            {
+                var entries = _admin.ChatSince(last, 100);
+                if (entries.Count == 0)
+                {
+                    await Task.Delay(200, cancel).ConfigureAwait(false);
+                    if (++idle < 75) continue;               // ~15 s: keep proxies from closing an idle stream
+                    idle = 0;
+                    await response.WriteAsync(": keep-alive\n\n", cancel).ConfigureAwait(false);
+                    await response.Body.FlushAsync(cancel).ConfigureAwait(false);
+                    continue;
+                }
+                idle = 0;
+                foreach (var entry in entries)
+                {
+                    var data = JsonSerializer.Serialize(entry, WebUiJson.Default.ChatEntry);
+                    await response.WriteAsync($"id: {entry.Id}\nevent: chat\ndata: {data}\n\n", cancel).ConfigureAwait(false);
+                    last = entry.Id;
+                }
+                await response.Body.FlushAsync(cancel).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task ApiCommandEndpoint(HttpContext context)
+    {
+        var response = context.Response;
+        // Only JSON bodies: a cross-site form post cannot send this content type without a CORS preflight.
+        if (context.Request.ContentType is null || !context.Request.ContentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
+        { response.StatusCode = StatusCodes.Status415UnsupportedMediaType; return; }
+        CommandRequest body;
+        try { body = await JsonSerializer.DeserializeAsync(context.Request.Body, WebUiJson.Default.CommandRequest, context.RequestAborted).ConfigureAwait(false) ?? new CommandRequest(); }
+        catch (JsonException) { await Fail(response, 400, "invalid JSON").ConfigureAwait(false); return; }
+        var (status, error) = Run((string)context.GetRouteValue("command")!, body);
+        if (error is not null) await Fail(response, status, error).ConfigureAwait(false);
+        else await Json(response, new CommandResult(true, null), WebUiJson.Default.CommandResult).ConfigureAwait(false);
+    }
+
+    /// <summary>The HTML forms: urlencoded body, answered with a redirect back to the page (Post/Redirect/Get).</summary>
+    private async Task FormActionEndpoint(HttpContext context)
+    {
+        var request = context.Request; var response = context.Response;
+        // Cookie-less Basic auth is attached by the browser to cross-site posts too: refuse anything a foreign page started.
+        if (request.Headers["Sec-Fetch-Site"].ToString() == "cross-site") { response.StatusCode = StatusCodes.Status403Forbidden; return; }
+        if (request.ContentType is null || !request.ContentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
+        { response.StatusCode = StatusCodes.Status415UnsupportedMediaType; return; }
+        var form = await request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
+        var name = (string)context.GetRouteValue("command")!;
+        var body = new CommandRequest(Int(form["slot"]), Int(form["value"]), form["text"], form["reason"], form["address"]);
+        // The chat box posts "to" (0 = everybody) and the mode form "mode"/"level".
+        if (name == "say") { name = Int(form["to"]) is var to and > 0 ? "message" : "broadcast"; body = body with { Slot = Int(form["to"]) }; }
+        if (name == "mode") body = body with { Value = Int(form["mode"]), Slot = Int(form["level"]) };
+        var (_, error) = Run(name, body);
+        var notice = error ?? "Done.";
+        var wantsJson = request.Headers.Accept.ToString().Contains("application/json", StringComparison.OrdinalIgnoreCase);
+        if (wantsJson) { response.StatusCode = error is null ? 200 : 400; await Json(response, new CommandResult(error is null, error), WebUiJson.Default.CommandResult).ConfigureAwait(false); return; }
+        response.StatusCode = StatusCodes.Status303SeeOther;
+        response.Headers.Location = $"{_options.PathBase}/?notice={Uri.EscapeDataString(notice)}";
+    }
+
+    private static int Int(string? value) => int.TryParse(value, out var n) ? n : 0;
+
+    private (int Status, string? Error) Run(string name, CommandRequest body)
+    {
+        var (command, error) = Build(name, body);
+        if (error is not null) return (name is "" ? 404 : 400, error);
+        if (!_admin.Submit(command)) return (503, "command queue full");
+        return (200, null);
+    }
+
+    // ---- gate: headers, host, CORS, auth --------------------------------------------------------------------------------
+
+    private async Task Gate(HttpContext context, Func<Task> next)
     {
         var request = context.Request; var response = context.Response;
         SetSecurityHeaders(response);
+        if (_options.PathBase.Length > 0 && !request.PathBase.HasValue) { response.StatusCode = StatusCodes.Status404NotFound; return; }
         if (!HostAllowed(request.Host.Host)) { response.StatusCode = StatusCodes.Status400BadRequest; return; }
         var origin = request.Headers.Origin.ToString();
         var corsAllowed = origin.Length > 0 && OriginAllowed(origin);
@@ -104,23 +228,13 @@ public sealed class WebUiServer : IAsyncDisposable
         if (HttpMethods.IsOptions(request.Method)) { response.StatusCode = corsAllowed ? StatusCodes.Status204NoContent : StatusCodes.Status403Forbidden; return; }
         // A foreign origin that is not allowed must not drive the API with the browser's cached credentials.
         if (origin.Length > 0 && !corsAllowed && !SameOrigin(origin, request)) { response.StatusCode = StatusCodes.Status403Forbidden; return; }
-
         if (!Authorized(request))
         {
             response.StatusCode = StatusCodes.Status401Unauthorized;
             response.Headers.WWWAuthenticate = "Basic realm=\"Sacred GameServer\", charset=\"UTF-8\"";
             return;
         }
-
-        var path = request.Path.Value ?? "/";
-        if (_options.PathBase.Length > 0)
-        {
-            if (!path.StartsWith(_options.PathBase, StringComparison.Ordinal)) { response.StatusCode = StatusCodes.Status404NotFound; return; }
-            path = path[_options.PathBase.Length..];
-            if (path.Length == 0) path = "/";
-        }
-        if (path.StartsWith("/api/", StringComparison.Ordinal)) await Api(context, path[5..]).ConfigureAwait(false);
-        else await Static(context, path).ConfigureAwait(false);
+        await next().ConfigureAwait(false);
     }
 
     private void SetSecurityHeaders(HttpResponse response)
@@ -129,8 +243,8 @@ public sealed class WebUiServer : IAsyncDisposable
         headers.XContentTypeOptions = "nosniff";
         headers["Referrer-Policy"] = "no-referrer";
         headers.CacheControl = "no-store";
-        string ancestors = FrameAncestors();
-        headers.ContentSecurityPolicy = $"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src *; img-src 'self' data:; frame-ancestors {ancestors}; base-uri 'none'; form-action 'self'";
+        var ancestors = FrameAncestors();
+        headers.ContentSecurityPolicy = $"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors {ancestors}; base-uri 'none'; form-action 'self'";
         if (ancestors == "'none'") headers.XFrameOptions = "DENY";
         else if (ancestors == "'self'") headers.XFrameOptions = "SAMEORIGIN";
     }
@@ -177,82 +291,7 @@ public sealed class WebUiServer : IAsyncDisposable
         return CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(candidate)), _passwordHash);
     }
 
-    // ---- static page ------------------------------------------------------------------------------------------------
-
-    private async Task Static(HttpContext context, string path)
-    {
-        var response = context.Response;
-        if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method)) { response.StatusCode = StatusCodes.Status405MethodNotAllowed; return; }
-        if (path != "/" && path != "/index.html") { response.StatusCode = StatusCodes.Status404NotFound; return; }
-        var page = LoadIndex();
-        if (page is null) { response.StatusCode = StatusCodes.Status404NotFound; return; }
-        response.ContentType = "text/html; charset=utf-8";
-        response.ContentLength = page.Length;
-        if (HttpMethods.IsHead(context.Request.Method)) return;
-        await response.Body.WriteAsync(page, context.RequestAborted).ConfigureAwait(false);
-    }
-
-    private byte[]? LoadIndex()
-    {
-        if (_options.StaticDirectory is { } directory)
-        {
-            var file = Path.Combine(directory, "index.html");
-            return File.Exists(file) ? File.ReadAllBytes(file) : null;
-        }
-        if (_indexPage is not null) return _indexPage;
-        using var stream = typeof(WebUiServer).Assembly.GetManifestResourceStream("wwwroot/index.html");
-        if (stream is null) return null;
-        var buffer = new byte[stream.Length];
-        stream.ReadExactly(buffer);
-        return _indexPage = buffer;
-    }
-
-    // ---- API ----------------------------------------------------------------------------------------------------------
-
-    private async Task Api(HttpContext context, string name)
-    {
-        var request = context.Request; var response = context.Response;
-        if (HttpMethods.IsGet(request.Method))
-        {
-            switch (name)
-            {
-                case "overview": await Json(response, _admin.Overview(), WebUiJson.Default.ServerOverview).ConfigureAwait(false); return;
-                case "players": await Json(response, _admin.Players().ToArray(), WebUiJson.Default.PlayerInfoArray).ConfigureAwait(false); return;
-                case "bans": await Json(response, _admin.Bans().ToArray(), WebUiJson.Default.BanEntryArray).ConfigureAwait(false); return;
-                case "chat": await Chat(context).ConfigureAwait(false); return;
-            }
-            response.StatusCode = StatusCodes.Status404NotFound;
-            return;
-        }
-        if (!HttpMethods.IsPost(request.Method)) { response.StatusCode = StatusCodes.Status405MethodNotAllowed; return; }
-        // Only JSON bodies: a cross-site form post cannot send this content type without a CORS preflight.
-        if (request.ContentType is null || !request.ContentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
-        { response.StatusCode = StatusCodes.Status415UnsupportedMediaType; return; }
-        CommandRequest body;
-        try { body = await JsonSerializer.DeserializeAsync(request.Body, WebUiJson.Default.CommandRequest, context.RequestAborted).ConfigureAwait(false) ?? new CommandRequest(); }
-        catch (JsonException) { await Fail(response, 400, "invalid JSON").ConfigureAwait(false); return; }
-        var (command, error) = Build(name, body);
-        if (error is not null) { await Fail(response, 400, error).ConfigureAwait(false); return; }
-        if (!_admin.Submit(command)) { await Fail(response, 503, "command queue full").ConfigureAwait(false); return; }
-        await Json(response, new CommandResult(true, null), WebUiJson.Default.CommandResult).ConfigureAwait(false);
-    }
-
-    private async Task Chat(HttpContext context)
-    {
-        var query = context.Request.Query;
-        var head = _admin.ChatHead;
-        long after = long.TryParse(query["after"], out var a) && a >= 0 ? a : Math.Max(0, head - 100);
-        var wait = int.TryParse(query["wait"], out var w) ? Math.Clamp(w, 0, MaxLongPollSeconds) : 0;
-        var deadline = Environment.TickCount64 + wait * 1000L;
-        IReadOnlyList<ChatEntry> entries = _admin.ChatSince(after, 200);
-        while (entries.Count == 0 && Environment.TickCount64 < deadline && !context.RequestAborted.IsCancellationRequested)
-        {
-            try { await Task.Delay(150, context.RequestAborted).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
-            entries = _admin.ChatSince(after, 200);
-        }
-        var last = entries.Count > 0 ? entries[^1].Id : Math.Max(after, _admin.ChatHead);
-        await Json(context.Response, new ChatPage(last, entries.ToArray()), WebUiJson.Default.ChatPage).ConfigureAwait(false);
-    }
+    // ---- commands -----------------------------------------------------------------------------------------------------
 
     private static (AdminCommand Command, string? Error) Build(string name, CommandRequest b)
     {
@@ -266,16 +305,16 @@ public sealed class WebUiServer : IAsyncDisposable
             case "kick": return Slot(b.Slot) ? (new(AdminCommandKind.Kick, b.Slot, b.Value), null) : (default, "slot 1..16 required");
             case "ban":
                 if (Slot(b.Slot)) return (new(AdminCommandKind.Ban, b.Slot, Text: Clean(b.Reason) ?? ""), null);
-                if (b.Address is { Length: > 0 and <= 64 } address && IPAddress.TryParse(address, out var ip))
+                if (b.Address is { Length: > 0 and <= 64 } address && IPAddress.TryParse(address.Trim(), out var ip))
                     return (new(AdminCommandKind.BanAddress, Text: ip.ToString() + "|" + (Clean(b.Reason) ?? "")), null);
                 return (default, "slot or a valid address required");
             case "unban":
-                return b.Address is { Length: > 0 and <= 64 } lifted && IPAddress.TryParse(lifted, out var parsed)
+                return b.Address is { Length: > 0 and <= 64 } lifted && IPAddress.TryParse(lifted.Trim(), out var parsed)
                     ? (new(AdminCommandKind.Unban, Text: parsed.ToString()), null) : (default, "valid address required");
             case "lock": return (new(AdminCommandKind.Lock, Value: b.Value != 0 ? 1 : 0), null);
             case "pause": return (new(AdminCommandKind.Pause, Value: b.Value != 0 ? 1 : 0), null);
             case "max-players": return b.Value is >= 1 and <= 16 ? (new(AdminCommandKind.SetMaxPlayers, Value: b.Value), null) : (default, "value 1..16 required");
-            case "password": return (new(AdminCommandKind.SetPassword, Text: b.Text is { Length: <= 32 } pw ? pw : null), b.Text is { Length: > 32 } ? "password too long" : null);
+            case "password": return b.Text is { Length: > 32 } ? (default, "password too long") : (new(AdminCommandKind.SetPassword, Text: b.Text), null);
             case "name": return text is null ? (default, "text required") : (new(AdminCommandKind.SetName, Text: text), null);
             case "mode":
                 return b.Value is >= 0 and <= 4 && b.Slot is >= 0 and <= 5 ? (new(AdminCommandKind.SetMode, b.Slot, b.Value), null) : (default, "value 0..4 and slot (level) 0..5 required");
@@ -305,6 +344,12 @@ public sealed class WebUiServer : IAsyncDisposable
     {
         response.ContentType = "application/json; charset=utf-8";
         await JsonSerializer.SerializeAsync(response.Body, value, info, response.HttpContext.RequestAborted).ConfigureAwait(false);
+    }
+
+    private static async Task Html(HttpResponse response, string html)
+    {
+        response.ContentType = "text/html; charset=utf-8";
+        await response.WriteAsync(html, response.HttpContext.RequestAborted).ConfigureAwait(false);
     }
 
     private static async Task Fail(HttpResponse response, int status, string message)

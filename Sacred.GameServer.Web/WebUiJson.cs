@@ -11,6 +11,7 @@ public sealed record ChatPage(long Last, ChatEntry[] Entries);
 [JsonSerializable(typeof(PlayerInfo[]))]
 [JsonSerializable(typeof(BanEntry[]))]
 [JsonSerializable(typeof(ChatPage))]
+[JsonSerializable(typeof(ChatEntry))]
 [JsonSerializable(typeof(CommandRequest))]
 [JsonSerializable(typeof(CommandResult))]
 internal sealed partial class WebUiJson : JsonSerializerContext;

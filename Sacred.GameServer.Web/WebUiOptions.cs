@@ -23,8 +23,6 @@ public sealed class WebUiOptions
     public string[] FrameAncestors { get; init; } = [];
     /// <summary>Host names the server answers to (Host header check). Empty on loopback binds: localhost, 127.0.0.1 and the hostname.</summary>
     public string[] AllowedHosts { get; init; } = [];
-    /// <summary>Serve the page from this directory instead of the embedded copy (to customise it or embed it into a site).</summary>
-    public string? StaticDirectory { get; init; }
     /// <summary>URL prefix when the UI sits behind a reverse proxy path (for example /sacred).</summary>
     public string PathBase { get; init; } = "";
 
@@ -65,10 +63,10 @@ public sealed class WebUiOptions
 
     private static readonly Dictionary<string, string> SwitchMappings = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["--webui-enabled"] = "WebUi:Enabled", ["--webui-hostname"] = "WebUi:Hostname", ["--webui-port"] = "WebUi:Port",
+        ["--webui-enabled"] = "WebUi:Enabled", ["--webserver"] = "WebUi:Enabled", ["--webui-hostname"] = "WebUi:Hostname", ["--webui-port"] = "WebUi:Port",
         ["--webui-password"] = "WebUi:Password", ["--webui-cors-origins"] = "WebUi:CorsOrigins",
         ["--webui-frame-ancestors"] = "WebUi:FrameAncestors", ["--webui-allowed-hosts"] = "WebUi:AllowedHosts",
-        ["--webui-static-directory"] = "WebUi:StaticDirectory", ["--webui-path-base"] = "WebUi:PathBase",
+        ["--webui-path-base"] = "WebUi:PathBase",
     };
 
     public static WebUiOptions From(IConfiguration configuration)
@@ -86,7 +84,6 @@ public sealed class WebUiOptions
             CorsOrigins = List(section, "CorsOrigins"),
             FrameAncestors = List(section, "FrameAncestors"),
             AllowedHosts = List(section, "AllowedHosts"),
-            StaticDirectory = string.IsNullOrWhiteSpace(section["StaticDirectory"]) ? null : section["StaticDirectory"],
             PathBase = pathBase,
         };
     }

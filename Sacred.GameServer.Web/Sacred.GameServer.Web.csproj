@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
     Web management UI of the headless GameServer: a small Kestrel host (AOT/trim friendly, no reflection, source generated JSON)
-    plus a single embedded page. It knows the game server only through IServerAdmin, so it has no reference to Sacred.GameServer
+    plus a server rendered page (minimal API endpoints, SSE chat). It knows the game server only through IServerAdmin, so it has no reference to Sacred.GameServer
     (which references this project and implements the interface).
   -->
   <PropertyGroup>
@@ -16,6 +16,5 @@
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <EmbeddedResource Include="wwwroot/**" LogicalName="wwwroot/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

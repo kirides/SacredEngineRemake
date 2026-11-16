@@ -25,7 +25,7 @@ if (args.Contains("--help") || args.Contains("-h"))
           --lobby-channel=5         lobby channel of the game (GameServer.exe uses 5)
           --closed-net              the lobby is a Closed Internet lobby: fetch every player's hero from it (implied for channels other than 5)
           --udp-port=2105           Sacred Bild UDP transport (KCP) for players running Sacred Bild; 0 turns it off
-          --webui-enabled --webui-hostname=127.0.0.1 --webui-port=8080 --webui-password=secret   management web UI (see docs: WebUi:* keys,
+          --webserver --webui-hostname=127.0.0.1 --webui-port=8080 --webui-password=secret   management web UI (see docs: WebUi:* keys,
                             webui.json, SACRED_GS_WebUi__Port environment variables; command line wins over file over environment)
           --server-name="My realm"  --public-address=203.0.113.5  --lan-announce=0  --tick-ms=20  --config=path
         """);
@@ -75,15 +75,8 @@ if (config.LobbyHost is { } lobbyHost)
     lobby.Start();
 }
 
-WebUiServer? webUi = null;
-var webOptions = WebUiOptions.From(WebUiOptions.BuildConfiguration(args));
-if (webOptions.Enabled)
-{
-    if (WebUiServer.Validate(webOptions) is { } problem) { Log.Info("ERROR: " + problem); return 2; }
-    try { webUi = new WebUiServer(webOptions, host, Log.Info); webUi.StartAsync().GetAwaiter().GetResult(); }
-    catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or InvalidOperationException)
-    { Log.Info($"WARNING: web UI not started: {e.Message}"); webUi = null; }
-}
+IAsyncDisposable? webUi = null;
+if (WebUiLauncher.Enabled(args)) { webUi = WebUiLauncher.Start(args, host, out var webError); if (webError is not null) return 2; }
 
 using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, c => { c.Cancel = true; host.Stop(); });
 using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, c => { c.Cancel = true; host.Stop(); });
