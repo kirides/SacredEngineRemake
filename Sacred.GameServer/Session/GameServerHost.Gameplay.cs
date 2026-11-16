@@ -308,7 +308,7 @@ public sealed partial class GameServerHost
             SendMessage(s, 0x157, 0, 0, kick);
             s.Connection.Flush();
         }
-        if (_config.Auth.Enabled) SaveHero(s, "leave");
+        if (_config.Auth.Enabled) AuthoritativeLeave(s);
         var slot = s.Slot;
         if (slot != 0 && _slots[slot] == s) RecordChat(ChatKind.System, s, -1, reason == ReasonLeft ? "left" : $"removed (reason {reason})");
         var wasHost = s.IsHost;
