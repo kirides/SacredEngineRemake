@@ -63,6 +63,8 @@ public static class Routing
         foreach (var opcode in (ReadOnlySpan<ushort>)[0x10E, 0x10F, 0x122, 0x123, 0x129, 0x12A, 0x12B, 0x12C, 0x130, 0x131, 0x13E,
             0x144, 0x14F, 0x155, 0x172, 0x176, 0x17F, 0x18A, 0x197, 0x19C, 0x19D])
             Consumed[opcode] = true;
+        // 0x14F (9940 bytes, sent on entering and on leaving): the player's statistics block; case 0x4C6030 copies it into the
+        // cStatsManager slot of the sender (FUN_00477500 / FUN_00477490, 0x26D4 bytes) and does nothing else.
         // 0x17F NW_FIGHT_ENEMY_SPOTTED (case 0x4C61C7 -> FUN_004CE530, pairs [creature ref][value]): sets/clears the creature's
         // 0x8000 fight flag in the server's own object and sends 0x119 (ref, flags) to the in-game players only when it changed,
         // then hands creatures over to the spotting player (FUN_004D6950). Needs the real object state, so it is consumed here.
