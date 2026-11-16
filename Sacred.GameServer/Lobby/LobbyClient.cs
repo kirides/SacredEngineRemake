@@ -59,6 +59,26 @@ public sealed class LobbyClient : IDisposable
         _outbox.Enqueue(frame);
     }
 
+    /// <summary>Message 19: asks sacred-lobby for a Closed Net character block (answered with PublicData 11, which the game loop
+    /// receives as a <see cref="LobbyEventKind.Character"/> event).</summary>
+    public void RequestCharacter(int permId, ushort block)
+    {
+        var frame = Build(LobbyProtocol.ServerDataRequest, 14, out var body);
+        LobbyProtocol.WriteDataRequest(body, permId, block);
+        _outbox.Enqueue(frame);
+    }
+
+    /// <summary>Message 18: stores a changed character block (preview + sizes + zlib save) at the lobby. At most
+    /// <see cref="LobbyProtocol.MaxBlock"/> bytes: sacred-lobby refuses partial uploads.</summary>
+    public bool UploadCharacter(int permId, ushort block, ReadOnlySpan<byte> data)
+    {
+        if (data.Length is <= 0x230 or > LobbyProtocol.MaxBlock) return false;
+        var frame = Build(LobbyProtocol.ServerDataUpload, 18 + data.Length, out var body);
+        LobbyProtocol.WriteDataUpload(body, permId, block, data);
+        _outbox.Enqueue(frame);
+        return true;
+    }
+
     /// <summary>Message 46 (<c>FUN_0048d1c0</c>): the player left.</summary>
     public void PlayerLeft(int permId)
     {

@@ -103,9 +103,9 @@ public sealed class LobbyTests
         public readonly GameServerHost Host;
         public readonly LobbyClient Lobby;
         private readonly Thread _thread;
-        public Server(FakeLobby fake)
+        public Server(FakeLobby fake, int channel = LobbyProtocol.OpenNetChannel)
         {
-            var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5, ServerName = "Test realm" };
+            var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5, ServerName = "Test realm", LobbyChannel = channel };
             Host = new GameServerHost(config, new AdmissionRules(null), null);
             Host.Start();
             var record = Host.LobbyRecord(0x1234, 0);
@@ -200,6 +200,60 @@ public sealed class LobbyTests
         data.CopyTo(body, 18);
         fake.SendLobby(LobbyProtocol.PublicData, body);
         CollectionAssert.AreEqual(data, player.WaitFor(0x132).Payload);
+    }
+
+    [TestMethod]
+    public void ClosedNetPlayerTriggersAHeroRequestAndGetsTheBlock()
+    {
+        using var fake = new FakeLobby();
+        using var server = new Server(fake, channel: 1);
+        using var player = RawClient.Admit(server.Port, "Hero", 500, block: 2);
+        var request = fake.WaitFor(LobbyProtocol.ServerDataRequest).Body;
+        Assert.AreEqual(14, request.Length);
+        Assert.AreEqual(500, BinaryPrimitives.ReadInt32LittleEndian(request));
+        Assert.AreEqual(2, BinaryPrimitives.ReadUInt16LittleEndian(request.AsSpan(4)));
+        Assert.AreEqual(0, BinaryPrimitives.ReadInt32LittleEndian(request.AsSpan(6)));
+        Assert.AreEqual(0, BinaryPrimitives.ReadInt32LittleEndian(request.AsSpan(10)));
+        var data = new byte[0x1800];
+        for (var i = 0; i < data.Length; i++) data[i] = (byte)(i * 7);
+        var body = new byte[18 + data.Length];
+        BinaryPrimitives.WriteInt32LittleEndian(body, 500);
+        BinaryPrimitives.WriteUInt16LittleEndian(body.AsSpan(4), 2);
+        BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(6), data.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(14), data.Length);
+        data.CopyTo(body, 18);
+        fake.SendLobby(LobbyProtocol.PublicData, body);
+        CollectionAssert.AreEqual(data, player.WaitFor(0x132).Payload);
+    }
+
+    [TestMethod]
+    public void OpenNetPlayersKeepTheirLocalHero()
+    {
+        using var fake = new FakeLobby();
+        using var server = new Server(fake);
+        using var player = RawClient.Admit(server.Port, "Hero", 500, block: 2);
+        fake.WaitFor(LobbyProtocol.UserJoinedServer);
+        Thread.Sleep(200);
+        while (fake.Received.TryTake(out var m)) Assert.AreNotEqual(LobbyProtocol.ServerDataRequest, m.Type);
+    }
+
+    [TestMethod]
+    public void CharacterUploadFrameCarriesTheBlock()
+    {
+        using var fake = new FakeLobby();
+        using var server = new Server(fake, channel: 1);
+        var block = new byte[0x400];
+        new Random(5).NextBytes(block);
+        Assert.IsFalse(server.Lobby.UploadCharacter(9, 3, new byte[0x100]));          // not even a preview and the sizes
+        Assert.IsTrue(server.Lobby.UploadCharacter(9, 3, block));
+        var upload = fake.WaitFor(LobbyProtocol.ServerDataUpload).Body;
+        Assert.AreEqual(18 + block.Length, upload.Length);
+        Assert.AreEqual(9, BinaryPrimitives.ReadInt32LittleEndian(upload));
+        Assert.AreEqual(3, BinaryPrimitives.ReadUInt16LittleEndian(upload.AsSpan(4)));
+        Assert.AreEqual(block.Length, BinaryPrimitives.ReadInt32LittleEndian(upload.AsSpan(6)));
+        Assert.AreEqual(0, BinaryPrimitives.ReadInt32LittleEndian(upload.AsSpan(10)));
+        Assert.AreEqual(block.Length, BinaryPrimitives.ReadInt32LittleEndian(upload.AsSpan(14)));
+        CollectionAssert.AreEqual(block, upload[18..]);
     }
 
     [TestMethod]

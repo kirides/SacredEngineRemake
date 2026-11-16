@@ -225,6 +225,7 @@ public sealed partial class GameServerHost : IDisposable
         // No 0x01E here: the original sends the flags only as the echo of the host's 0x01E (checked against a real session).
         Log.Info($"FIRSTCONTACT from {s.Connection.RemoteEndPoint}: '{s.Name}' admitted as #{slot}{(s.IsHost ? " (host)" : "")}");
         AnnounceToLobby(s);
+        RequestCharacter(s);
         // The original then queues two internal commands (0x4EBE2A, 0x4EBF08): 0x101 = roster for a session without password,
         // and 0x41 = first time probe (0x43). The client waits for its own roster record before it lists itself in the lobby.
         // Then the queued internal commands, in the original's order: 0x101 (roster when no password), 0x41 (time probe 0x43),

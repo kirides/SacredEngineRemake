@@ -15,6 +15,9 @@ public static class LobbyProtocol
     public const int EnvelopeBytes = 14;
     public const int PrefixBytes = 4 + EnvelopeBytes;
 
+    public const ushort ServerDataUpload = 18, ServerDataRequest = 19;
+    public const int MaxBlock = 0x20000;          // sacred-lobby proto.MaxData: the most one data message carries
+
     public const ushort PublicData = 11, ServerLogin = 12, ServerUpdate = 13, ServerLogout = 14, Result = 15, ServerLoginResult = 38,
         UserJoinedServer = 45, UserLeftServer = 46, UserKicked = 47, ClientImportant = 48, ServerImportant = 49, ServerShutdown = 50;
 
@@ -79,6 +82,27 @@ public static class LobbyProtocol
         BinaryPrimitives.WriteInt32LittleEndian(body, permId);
         BinaryPrimitives.WriteUInt16LittleEndian(body[4..], block);
         BinaryPrimitives.WriteUInt16LittleEndian(body[6..], first ? (ushort)1 : (ushort)0);
+    }
+
+    /// <summary>Message 19 body (14 bytes), a game server asking for a player's data block: perm id, block, offset, length
+    /// (offset and length 0 = the whole block, which sacred-lobby answers with one PublicData message 11).</summary>
+    public static void WriteDataRequest(Span<byte> body, int permId, ushort block, int offset = 0, int length = 0)
+    {
+        BinaryPrimitives.WriteInt32LittleEndian(body, permId);
+        BinaryPrimitives.WriteUInt16LittleEndian(body[4..], block);
+        BinaryPrimitives.WriteInt32LittleEndian(body[6..], offset);
+        BinaryPrimitives.WriteInt32LittleEndian(body[10..], length);
+    }
+
+    /// <summary>Message 18 body, a game server storing a player's character block: perm id, block, size, offset 0, length, data.</summary>
+    public static void WriteDataUpload(Span<byte> body, int permId, ushort block, ReadOnlySpan<byte> data)
+    {
+        BinaryPrimitives.WriteInt32LittleEndian(body, permId);
+        BinaryPrimitives.WriteUInt16LittleEndian(body[4..], block);
+        BinaryPrimitives.WriteInt32LittleEndian(body[6..], data.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(body[10..], 0);
+        BinaryPrimitives.WriteInt32LittleEndian(body[14..], data.Length);
+        data.CopyTo(body[18..]);
     }
 
     private static void WriteName(Span<byte> body, string name)
