@@ -1,0 +1,300 @@
+using System.Buffers.Binary;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using Microsoft.Extensions.Configuration;
+using Sacred.GameServer.Config;
+using Sacred.GameServer.Session;
+using Sacred.GameServer.Web;
+
+namespace Sacred.GameServer.Tests;
+
+/// <summary>Host side of the web UI (snapshot, chat ring, command queue, bans) and the web layer itself (options, auth, CORS, API).</summary>
+[TestClass]
+public class WebAdminTests
+{
+    private sealed class Server : IDisposable
+    {
+        public readonly GameServerHost Host;
+        private readonly Thread _thread;
+        public Server()
+        {
+            Host = new GameServerHost(new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5 }, new AdmissionRules(null), null);
+            _thread = new Thread(Host.Run) { IsBackground = true };
+            _thread.Start();
+        }
+        public int Port => Host.TcpPort;
+        public void Dispose() { Host.Stop(); _thread.Join(); Host.Dispose(); }
+    }
+
+    private static byte[] Text(string text, uint word = 0)
+    {
+        var b = new byte[4 + text.Length * 2 + 2];
+        BinaryPrimitives.WriteUInt32LittleEndian(b, word);
+        Encoding.Unicode.GetBytes(text, b.AsSpan(4));
+        return b;
+    }
+
+    private static T Eventually<T>(Func<T> read, Func<T, bool> done)
+    {
+        T value = read();
+        for (var i = 0; i < 100 && !done(value); i++) { Thread.Sleep(20); value = read(); }
+        return value;
+    }
+
+    // ---- host -------------------------------------------------------------------------------------------------------
+
+    [TestMethod]
+    public void PlayersChatAndSystemLinesAreVisibleToTheAdmin()
+    {
+        using var server = new Server();
+        using var a = RawClient.Admit(server.Port, "Alice", 1);
+        using var b = RawClient.Admit(server.Port, "Bob", 2);
+        a.Send(0x005, Text("hello all"));
+        a.Send(0x003, Text("psst", b.Slot));
+        var chat = Eventually(() => server.Host.ChatSince(0, 100), c => c.Count(e => e.Kind != ChatKind.System) >= 2);
+        Assert.IsTrue(chat.Any(e => e.Kind == ChatKind.System && e.FromName == "Alice" && e.Text == "joined"));
+        var pub = chat.Single(e => e.Kind == ChatKind.Public);
+        Assert.AreEqual("hello all", pub.Text); Assert.AreEqual("Alice", pub.FromName); Assert.AreEqual(-1, pub.ToSlot);
+        var priv = chat.Single(e => e.Kind == ChatKind.Private);
+        Assert.AreEqual("psst", priv.Text); Assert.AreEqual(b.Slot, priv.ToSlot);
+        Assert.AreEqual(server.Host.ChatHead, chat[^1].Id);
+        Assert.AreEqual(0, server.Host.ChatSince(server.Host.ChatHead, 10).Count);
+
+        var players = Eventually(() => server.Host.Players(), p => p.Count == 2);
+        Assert.AreEqual(2, players.Count);
+        Assert.AreEqual("Alice", players[0].Name);
+        Assert.AreEqual("127.0.0.1", players[0].Address);
+        Assert.AreEqual(2, server.Host.Overview().Players);
+    }
+
+    [TestMethod]
+    public void BroadcastAndPrivateMessageReachThePlayers()
+    {
+        using var server = new Server();
+        using var a = RawClient.Admit(server.Port, "Alice", 1);
+        using var b = RawClient.Admit(server.Port, "Bob", 2);
+        Assert.IsTrue(server.Host.Submit(new AdminCommand(AdminCommandKind.Broadcast, Text: "server says hi")));
+        foreach (var client in new[] { a, b })
+        {
+            var message = client.WaitFor(0x005);
+            Assert.AreEqual((byte)0, message.Origin);
+            StringAssert.Contains(Encoding.Unicode.GetString(message.Payload, 4, message.Payload.Length - 4), "server says hi");
+        }
+        server.Host.Submit(new AdminCommand(AdminCommandKind.Message, b.Slot, Text: "only you"));
+        var direct = b.WaitFor(0x003);
+        Assert.AreEqual((uint)b.Slot, BinaryPrimitives.ReadUInt32LittleEndian(direct.Payload));
+        Assert.IsTrue(a.Silent(0x003));
+        var log = Eventually(() => server.Host.ChatSince(0, 100), c => c.Any(e => e.Kind == ChatKind.ServerMessage));
+        Assert.IsTrue(log.Any(e => e.Kind == ChatKind.Broadcast && e.Text == "server says hi"));
+    }
+
+    [TestMethod]
+    public void KickRemovesThePlayerAndBanRefusesItsAddress()
+    {
+        using var server = new Server();
+        using var a = RawClient.Admit(server.Port, "Alice", 1);
+        server.Host.Submit(new AdminCommand(AdminCommandKind.Kick, a.Slot));
+        Assert.AreEqual(0x157, a.WaitFor(0x157).Opcode);
+        Eventually(() => server.Host.Players(), p => p.Count == 0);
+        // Not banned: it may come back.
+        using (var again = RawClient.Admit(server.Port, "Alice", 1)) Assert.AreNotEqual(0, again.Slot);
+
+        using var b = RawClient.Admit(server.Port, "Bob", 2);
+        server.Host.Submit(new AdminCommand(AdminCommandKind.Ban, b.Slot, Text: "spam"));
+        b.WaitFor(0x157);
+        var bans = Eventually(() => server.Host.Bans(), x => x.Count == 1);
+        Assert.AreEqual("127.0.0.1", bans[0].Address); Assert.AreEqual("spam", bans[0].Reason);
+        Assert.AreEqual(3u, RawClient.AdmitExpectingRejection(server.Port, "Bob", 2));
+
+        server.Host.Submit(new AdminCommand(AdminCommandKind.Unban, Text: "127.0.0.1"));
+        Eventually(() => server.Host.Bans(), x => x.Count == 0);
+        using var back = RawClient.Admit(server.Port, "Bob", 2);
+        Assert.AreNotEqual(0, back.Slot);
+    }
+
+    [TestMethod]
+    public void SessionSettingsAreAppliedByTheLoop()
+    {
+        using var server = new Server();
+        using var a = RawClient.Admit(server.Port, "Alice", 1);
+        server.Host.Submit(new AdminCommand(AdminCommandKind.SetMaxPlayers, Value: 3));
+        Assert.AreEqual(3u, BinaryPrimitives.ReadUInt32LittleEndian(a.WaitFor(0x023).Payload));
+        server.Host.Submit(new AdminCommand(AdminCommandKind.Lock, Value: 1));
+        a.WaitFor(0x01A);
+        Assert.IsTrue(Eventually(() => server.Host.Overview(), o => o.Locked).Locked);
+        Assert.AreEqual(3, server.Host.Overview().MaxPlayers);
+        server.Host.Submit(new AdminCommand(AdminCommandKind.SetMode, 2, 2));          // player killer, level 2
+        var flags = BinaryPrimitives.ReadUInt32LittleEndian(a.WaitFor(0x01E).Payload);
+        Assert.AreEqual(0x40u | 0x200u, flags & (0x40u | 0x200u | 0x20u | 0x10u));
+        server.Host.Submit(new AdminCommand(AdminCommandKind.EndSession));
+        a.WaitFor(0x157);
+        Eventually(() => server.Host.Players(), p => p.Count == 0);
+    }
+
+    [TestMethod]
+    public void CommandQueueIsBounded()
+    {
+        using var server = new Server();
+        // Do not let the loop drain: stop it first.
+        server.Host.Stop();
+        Thread.Sleep(100);
+        var accepted = 0;
+        for (var i = 0; i < 1000; i++) if (server.Host.Submit(new AdminCommand(AdminCommandKind.Lock, Value: 1))) accepted++;
+        Assert.IsTrue(accepted is > 100 and <= 300, accepted.ToString());
+        Assert.IsFalse(server.Host.Submit(new AdminCommand(AdminCommandKind.None)));
+    }
+
+    // ---- options ------------------------------------------------------------------------------------------------------
+
+    [TestMethod]
+    public void CommandLineBeatsFileBeatsEnvironment()
+    {
+        var file = Path.Combine(Path.GetTempPath(), $"webui-{Guid.NewGuid():N}.json");
+        File.WriteAllText(file, """{ "WebUi": { "Enabled": true, "Port": 9100, "Hostname": "localhost", "CorsOrigins": ["https://a.example", "https://b.example"] } }""");
+        Environment.SetEnvironmentVariable("SACRED_GS_WebUi__Port", "9000");
+        Environment.SetEnvironmentVariable("SACRED_GS_WebUi__PathBase", "sacred/");
+        try
+        {
+            var viaFile = WebUiOptions.From(WebUiOptions.BuildConfiguration([$"--webui-config={file}"]));
+            Assert.IsTrue(viaFile.Enabled);
+            Assert.AreEqual(9100, viaFile.Port);                                  // file beats environment
+            Assert.AreEqual("/sacred", viaFile.PathBase);                         // environment fills what the file lacks
+            CollectionAssert.AreEqual(new[] { "https://a.example", "https://b.example" }, viaFile.CorsOrigins);
+            var viaLine = WebUiOptions.From(WebUiOptions.BuildConfiguration([$"--webui-config={file}", "--WebUi:Port=9200", "--webui-hostname", "0.0.0.0", "--tick-ms=20", "-x"]));
+            Assert.AreEqual(9200, viaLine.Port);                                  // command line beats file
+            Assert.AreEqual("0.0.0.0", viaLine.Hostname);
+            var bare = WebUiOptions.From(WebUiOptions.BuildConfiguration(["--webui-enabled", "--webui-port=9300", "--trace"]));
+            Assert.IsTrue(bare.Enabled);                                          // a bare switch must not swallow the next argument
+            Assert.AreEqual(9300, bare.Port);
+            Assert.IsFalse(WebUiOptions.From(WebUiOptions.BuildConfiguration([])).Enabled);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("SACRED_GS_WebUi__Port", null);
+            Environment.SetEnvironmentVariable("SACRED_GS_WebUi__PathBase", null);
+            File.Delete(file);
+        }
+    }
+
+    [TestMethod]
+    public void ExposedBindWithoutPasswordIsRefused()
+    {
+        Assert.IsNotNull(WebUiServer.Validate(new WebUiOptions { Hostname = "0.0.0.0" }));
+        Assert.IsNull(WebUiServer.Validate(new WebUiOptions { Hostname = "0.0.0.0", Password = "x" }));
+        Assert.IsNull(WebUiServer.Validate(new WebUiOptions { Hostname = "127.0.0.1" }));
+        Assert.IsNull(WebUiServer.Validate(new WebUiOptions { Hostname = "localhost" }));
+    }
+
+    // ---- web layer ----------------------------------------------------------------------------------------------------
+
+    private sealed class FakeAdmin : IServerAdmin
+    {
+        public readonly List<AdminCommand> Commands = new();
+        public readonly List<ChatEntry> Chat = new();
+        public ServerOverview Overview() => new("Realm", 5, 1.5, 2006, 2105, 1, 16, false, false, false, false, 0x20, 1, 0, false, false, null, "test");
+        public IReadOnlyList<PlayerInfo> Players() => [new PlayerInfo(1, "Alice", "10.0.0.1", "tcp", true, true, true, true, 12, 3.5)];
+        public long ChatHead => Chat.Count;
+        public IReadOnlyList<ChatEntry> ChatSince(long afterId, int max) => Chat.Where(c => c.Id > afterId).Take(max).ToList();
+        public IReadOnlyList<BanEntry> Bans() => [];
+        public bool Submit(in AdminCommand command) { Commands.Add(command); return true; }
+    }
+
+    private static async Task<(WebUiServer Server, HttpClient Client, FakeAdmin Admin)> StartWeb(WebUiOptions options)
+    {
+        var admin = new FakeAdmin();
+        var server = new WebUiServer(options, admin, _ => { });
+        await server.StartAsync();
+        var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{server.Ports[0]}") };
+        return (server, client, admin);
+    }
+
+    private static StringContent Json(string json) => new(json, Encoding.UTF8, "application/json");
+
+    [TestMethod]
+    public async Task ApiServesStateAndAcceptsCommands()
+    {
+        var (server, client, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        await using (server) using (client)
+        {
+            using var overview = JsonDocument.Parse(await client.GetStringAsync("/api/overview"));
+            Assert.AreEqual("Realm", overview.RootElement.GetProperty("name").GetString());
+            using var players = JsonDocument.Parse(await client.GetStringAsync("/api/players"));
+            Assert.AreEqual("Alice", players.RootElement[0].GetProperty("name").GetString());
+            StringAssert.Contains(await client.GetStringAsync("/"), "<html");
+
+            Assert.AreEqual(HttpStatusCode.OK, (await client.PostAsync("/api/broadcast", Json("""{"text":"  hi\u0007 there "}"""))).StatusCode);
+            Assert.AreEqual(HttpStatusCode.OK, (await client.PostAsync("/api/kick", Json("""{"slot":3,"value":8}"""))).StatusCode);
+            Assert.AreEqual(HttpStatusCode.OK, (await client.PostAsync("/api/ban", Json("""{"address":"203.0.113.9","reason":"x"}"""))).StatusCode);
+            Assert.AreEqual(new AdminCommand(AdminCommandKind.Broadcast, Text: "hi there"), admin.Commands[0]);
+            Assert.AreEqual(new AdminCommand(AdminCommandKind.Kick, 3, 8), admin.Commands[1]);
+            Assert.AreEqual(new AdminCommand(AdminCommandKind.BanAddress, Text: "203.0.113.9|x"), admin.Commands[2]);
+
+            Assert.AreEqual(HttpStatusCode.BadRequest, (await client.PostAsync("/api/kick", Json("""{"slot":99}"""))).StatusCode);
+            Assert.AreEqual(HttpStatusCode.BadRequest, (await client.PostAsync("/api/ban", Json("""{"address":"not an ip"}"""))).StatusCode);
+            Assert.AreEqual(HttpStatusCode.BadRequest, (await client.PostAsync("/api/broadcast", Json("not json"))).StatusCode);
+            Assert.AreEqual(HttpStatusCode.UnsupportedMediaType, (await client.PostAsync("/api/broadcast", new StringContent("text=x", Encoding.UTF8, "application/x-www-form-urlencoded"))).StatusCode);
+            Assert.AreEqual(HttpStatusCode.NotFound, (await client.GetAsync("/api/nothing")).StatusCode);
+            Assert.AreEqual(3, admin.Commands.Count);
+        }
+    }
+
+    [TestMethod]
+    public async Task ChatLongPollReturnsNewLinesAndTimesOutEmpty()
+    {
+        var (server, client, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        await using (server) using (client)
+        {
+            using var empty = JsonDocument.Parse(await client.GetStringAsync("/api/chat?after=0&wait=1"));
+            Assert.AreEqual(0, empty.RootElement.GetProperty("entries").GetArrayLength());
+            var pending = client.GetStringAsync("/api/chat?after=0&wait=5");
+            await Task.Delay(200);
+            admin.Chat.Add(new ChatEntry(1, 1000, ChatKind.Public, 1, "Alice", -1, "hello"));
+            using var page = JsonDocument.Parse(await pending);
+            Assert.AreEqual(1, page.RootElement.GetProperty("last").GetInt64());
+            Assert.AreEqual("hello", page.RootElement.GetProperty("entries")[0].GetProperty("text").GetString());
+        }
+    }
+
+    [TestMethod]
+    public async Task PasswordCorsFramingAndHostChecks()
+    {
+        var options = new WebUiOptions { Enabled = true, Port = 0, Password = "s3cret", CorsOrigins = ["https://panel.example"], FrameAncestors = ["https://panel.example"] };
+        var (server, client, _) = await StartWeb(options);
+        await using (server) using (client)
+        {
+            var denied = await client.GetAsync("/api/overview");
+            Assert.AreEqual(HttpStatusCode.Unauthorized, denied.StatusCode);
+            Assert.IsTrue(denied.Headers.WwwAuthenticate.Any());
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String("admin:wrong"u8.ToArray()));
+            Assert.AreEqual(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/overview")).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String("admin:s3cret"u8.ToArray()));
+            Assert.AreEqual(HttpStatusCode.OK, (await client.GetAsync("/api/overview")).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "s3cret");
+            var ok = await client.GetAsync("/");
+            Assert.AreEqual(HttpStatusCode.OK, ok.StatusCode);
+            StringAssert.Contains(ok.Headers.GetValues("Content-Security-Policy").Single(), "frame-ancestors https://panel.example");
+            Assert.IsFalse(ok.Headers.Contains("X-Frame-Options"));
+
+            var preflight = new HttpRequestMessage(HttpMethod.Options, "/api/kick");
+            preflight.Headers.Add("Origin", "https://panel.example");
+            var allowed = await client.SendAsync(preflight);
+            Assert.AreEqual(HttpStatusCode.NoContent, allowed.StatusCode);
+            Assert.AreEqual("https://panel.example", allowed.Headers.GetValues("Access-Control-Allow-Origin").Single());
+            var foreign = new HttpRequestMessage(HttpMethod.Get, "/api/overview");
+            foreign.Headers.Add("Origin", "https://evil.example");
+            Assert.AreEqual(HttpStatusCode.Forbidden, (await client.SendAsync(foreign)).StatusCode);
+        }
+
+        var (loopback, plain, _) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        await using (loopback) using (plain)
+        {
+            var response = await plain.GetAsync("/");
+            Assert.AreEqual("DENY", response.Headers.GetValues("X-Frame-Options").Single());
+            var rebinding = new HttpRequestMessage(HttpMethod.Get, "/api/overview");
+            rebinding.Headers.Host = "attacker.example";
+            Assert.AreEqual(HttpStatusCode.BadRequest, (await plain.SendAsync(rebinding)).StatusCode);
+        }
+    }
+}

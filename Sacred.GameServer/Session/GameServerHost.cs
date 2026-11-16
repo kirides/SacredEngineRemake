@@ -6,6 +6,7 @@ using System.Net;
 using Sacred.GameServer.Config;
 using Sacred.GameServer.Lan;
 using Sacred.GameServer.Net;
+using Sacred.GameServer.Web;
 using Sacred.GameServer.Wire;
 using Sacred.Network.Admission;
 
@@ -106,6 +107,7 @@ public sealed partial class GameServerHost : IDisposable
         }
         PumpLobby();
         PumpEnvironment(now);
+        PumpAdmin(now);
         OnTick?.Invoke(Tick);
         foreach (var s in _sessions) s.Connection.Flush();
         for (var i = _retired.Count - 1; i >= 0; i--)
@@ -203,6 +205,7 @@ public sealed partial class GameServerHost : IDisposable
         if (reason == 0 && identity != -1 && LobbyIdentityCheck)
             foreach (var other in _sessions)
                 if (other != s && other.State >= SessionState.SlotAssigned && other.LobbyIdentity == identity) { reason = RejectionReason.DuplicateIdentity; break; }
+        if (reason == 0 && IsBanned(s.Connection)) reason = RejectionReason.LobbyRefused;
         byte slot = 0;
         if (reason == 0)
         {
@@ -224,6 +227,7 @@ public sealed partial class GameServerHost : IDisposable
         SendMessage(s, 0x11, 0, 0, reply);
         // No 0x01E here: the original sends the flags only as the echo of the host's 0x01E (checked against a real session).
         Log.Info($"FIRSTCONTACT from {s.Connection.RemoteEndPoint}: '{s.Name}' admitted as #{slot}{(s.IsHost ? " (host)" : "")}");
+        RecordChat(ChatKind.System, s, -1, "joined");
         AnnounceToLobby(s);
         RequestCharacter(s);
         // The original then queues two internal commands (0x4EBE2A, 0x4EBF08): 0x101 = roster for a session without password,
