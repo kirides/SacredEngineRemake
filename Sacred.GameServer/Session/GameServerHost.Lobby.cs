@@ -90,13 +90,14 @@ public sealed partial class GameServerHost
     }
 
     /// <summary>
-    /// Closed Net (any lobby channel other than 5, GameServer.exe's Open Net channel): the character lives at the lobby, so once
+    /// Closed Net (any lobby channel other than 5, GameServer.exe's Open Net channel, or <c>--closed-net</c> for a lobby whose
+    /// channel 5 is closed too): the character lives at the lobby, so once
     /// the player is announced (message 45) its block is requested with message 19; the answer (PublicData 11) arrives as internal
     /// 0x29 and goes to the player as 0x132. Open Net players keep their local hero.
     /// </summary>
     private void RequestCharacter(PlayerSession s)
     {
-        if (Lobby is not { IsOnline: true } lobby || _config.LobbyChannel == LobbyProtocol.OpenNetChannel) return;
+        if (Lobby is not { IsOnline: true } lobby || (!_config.ClosedNet && _config.LobbyChannel == LobbyProtocol.OpenNetChannel)) return;
         if (s.LobbyIdentity is 0 or -1 || s.CharacterBlock is < 1 or > 8) return;
         lobby.RequestCharacter(s.LobbyIdentity, s.CharacterBlock);
         Log.Info($"Requesting the character (permID={s.LobbyIdentity}, block={s.CharacterBlock}) of {s.Describe()} from the lobby.");

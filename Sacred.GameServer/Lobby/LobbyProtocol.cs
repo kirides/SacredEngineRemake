@@ -85,7 +85,7 @@ public static class LobbyProtocol
     }
 
     /// <summary>Message 19 body (14 bytes), a game server asking for a player's data block: perm id, block, offset, length
-    /// (offset and length 0 = the whole block, which sacred-lobby answers with one PublicData message 11).</summary>
+    /// (GameServer.exe asks for offset 0, length 0x20000 = the whole block; sacred-lobby answers with one PublicData message 11).</summary>
     public static void WriteDataRequest(Span<byte> body, int permId, ushort block, int offset = 0, int length = 0)
     {
         BinaryPrimitives.WriteInt32LittleEndian(body, permId);

@@ -37,6 +37,9 @@ public sealed class GameServerConfig
     /// <summary>Client data version announced on LAN and to the lobby when no game data is read (--accept-any-data).</summary>
     public ushort? AnnounceVersion { get; set; }
     public string? LobbyHost { get; set; }
+    /// <summary>The lobby is a Closed Internet lobby (every channel closed, e.g. sacred-lobby `closed_net: true`): fetch each player's hero from it.
+    /// Implied for any lobby channel other than 5.</summary>
+    public bool ClosedNet { get; set; }
     /// <summary>Lobby channel of message 12 (GameServer.exe always sends 5, Open Net).</summary>
     public int LobbyChannel { get; set; } = 5;
 
@@ -96,6 +99,7 @@ public sealed class GameServerConfig
             case "MAX_PASSWORD_TRIES": MaxPasswordTries = Math.Clamp(Int(value, 3), 1, 100); break;
             case "LOBBY_HOST" or "NETWORK_LOBBY": LobbyHost = value.Length == 0 ? null : value; break;
             case "LOBBY_CHANNEL": LobbyChannel = Int(value, LobbyChannel); break;
+            case "CLOSED_NET": ClosedNet = Int(value, 1) != 0; break;
             case "TRACE": Trace = Int(value, 1) != 0; break;
             case "ANNOUNCE_VERSION" or "VERSION": AnnounceVersion = (ushort)Math.Clamp(Int(value, 0), 0, ushort.MaxValue); break;
         }

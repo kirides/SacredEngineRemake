@@ -213,7 +213,7 @@ public sealed class LobbyTests
         Assert.AreEqual(500, BinaryPrimitives.ReadInt32LittleEndian(request));
         Assert.AreEqual(2, BinaryPrimitives.ReadUInt16LittleEndian(request.AsSpan(4)));
         Assert.AreEqual(0, BinaryPrimitives.ReadInt32LittleEndian(request.AsSpan(6)));
-        Assert.AreEqual(0, BinaryPrimitives.ReadInt32LittleEndian(request.AsSpan(10)));
+        Assert.AreEqual(0x20000, BinaryPrimitives.ReadInt32LittleEndian(request.AsSpan(10)));
         var data = new byte[0x1800];
         for (var i = 0; i < data.Length; i++) data[i] = (byte)(i * 7);
         var body = new byte[18 + data.Length];

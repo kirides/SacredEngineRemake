@@ -64,7 +64,7 @@ public sealed class LobbyClient : IDisposable
     public void RequestCharacter(int permId, ushort block)
     {
         var frame = Build(LobbyProtocol.ServerDataRequest, 14, out var body);
-        LobbyProtocol.WriteDataRequest(body, permId, block);
+        LobbyProtocol.WriteDataRequest(body, permId, block, 0, LobbyProtocol.MaxBlock);   // GameServer.exe asks for offset 0, length 0x20000
         _outbox.Enqueue(frame);
     }
 

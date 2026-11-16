@@ -22,6 +22,7 @@ if (args.Contains("--help") || args.Contains("-h"))
           --trace                   log every received and sent message (opcode, sender, origin, first 32 bytes)
           --network-lobby=lobby.example.org --network-lobbyport=7066   register the game in an Open Internet lobby
           --lobby-channel=5         lobby channel of the game (GameServer.exe uses 5)
+          --closed-net              the lobby is a Closed Internet lobby: fetch every player's hero from it (implied for channels other than 5)
           --udp-port=2105           Sacred Bild UDP transport (KCP) for players running Sacred Bild; 0 turns it off
           --server-name="My realm"  --public-address=203.0.113.5  --lan-announce=0  --tick-ms=20  --config=path
         """);
