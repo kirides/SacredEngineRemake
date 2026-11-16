@@ -39,6 +39,15 @@ Case `0x022` at 0x4CAF67 accepts the rename only if the sender is the host, flag
 - Hero block: 556-byte preview (0xC3 chunk) | u32 zlib size | u32 file size | zlib(hero file).
 - Message 18 upload `[perm][block][size][offset 0][length][data]` exists in `LobbyClient.UploadCharacter` but the original has no save path (not on leave, not periodically, not from the menu). Server-side saving belongs to authoritative mode: save on every disconnect (hard ones too), periodically and after trades and drops, so killing the client cannot restore an older hero (anti-dupe).
 
+## Inventories and items (authoritative-mode findings)
+
+- `0x122` (case 0x4C5D3E) `[u32 inventory id][inventory stream]`: accepted only for id = sender slot or 17 (shared stash), otherwise logged. The stream is the file layout (writer 0x5DDA30): 256 key words, 256 cells of 12 bytes, item bar, spell bar, active slots, owner, quests, scrolls.
+- A cell holds only the item's anchor: `[ref][01 | width << 8 | height << 16][cached item type u16, retained u16]` (checked on real saves).
+- `0x13F` place (case 0x4C69EE, FUN_004d37f0) and `0x13E` pick (case 0x4C6A07, FUN_004d3740): `[item ref][cell][inventory id]`. Place runs CHEATPROTECTION_ProcessSetItem on the server's item (FUN_0040f840), re-sends a changed item as `0x16A` (0x169 layout, mode 6) and places it with the footprint from the item tables (FUN_00404470: sprite +0x18 -> table +0x1C/+0x1D, sprite 0xFA7 is 2x2).
+- Item states: file record = 247-byte physical | 0xBAADC0DE | **u8** count | count x 130-byte value records | 130-byte item data | 0, 0, 0xBAADC0DE | [0xBAADF00D + 4 words]; wire = 121-byte physical | 0xBAADC0DE | **u16** count | records | item data | [+0x1E0][0xBAADC0DE] | [weapon]. The records are the item plus one per socketed rune/gem.
+- Hero values: combat arts are 22-byte records, combos 38-byte records (both on the wire), status modifiers 28-byte records (file only). The compact value stream (0x169/0x16C/0x16E/0x16F) carries only some +0x08 fields; 0x16B carries the full block.
+- Saved object lists can hold items in no slot: items attached to the hero model (base flag 0x400, +0x2C parent = hero).
+
 ## Sacred Bild UDP transport (SBT)
 
 Host side of Sacred Bild's LAN transport, `--udp-port` (default 2105). Little-endian, magic `SBT` + type, datagrams at most 1200 bytes.

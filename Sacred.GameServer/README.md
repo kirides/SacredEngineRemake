@@ -133,6 +133,23 @@ hooks in existing files are one filter call in `Route`, one save call in `Remove
 | Damage 0x17A | attacker must be the sender's own hero or an object it owns in the server's object world, damage is clamped to `AUTH_MAX_DAMAGE` (default 0xFFFF) and forwarded; `AUTH_STRICT_ATTACKERS` also rejects unknown attackers |
 | Trade 0x198 | sender word must be the sender's slot (the original ignores a mismatch) |
 | Violations | counted per player, kick (reason 8) at `AUTH_MAX_VIOLATIONS` (default 25, 0 = never) |
-| Anti-dupe saves | hero uploaded to the lobby (message 18) when the player leaves, every `AUTH_SAVE_INTERVAL` s (default 120) and `AUTH_SAVE_DEBOUNCE_MS` after trades, pick-ups and equipment changes, through `IHeroSerializer`; no serializer is registered yet (needs real hero objects), so nothing is uploaded until the object-world stage |
+| Anti-dupe saves | Closed Net hero uploaded to the lobby (message 18) when the player leaves (hard disconnects too), every `AUTH_SAVE_INTERVAL` s (default 120) and `AUTH_SAVE_DEBOUNCE_MS` after trades, pick-ups, equipment and inventory changes. The block is written by the server from its own view (below), never taken from the client |
 
-Open: server-owned enemy/balance values (game settings 0x00C), item/stat/gold checks (0x122..0x131, 0x13E/0x13F, 0x144), kill validation, Lua API.
+### Hero saves (`Auth/Hero`, `Session/GameServerHost.HeroState.cs`)
+
+The block the lobby delivered (0x132) is the base; `HeroWriter` replaces what the server can see and keeps every other byte:
+
+| Chunk | Source |
+| --- | --- |
+| C7 hero | equipment from the hero's object states and 0x11E/0x11D; values: hit-point block, +0x08 block (0x16B full, or the compact fields of 0x169/0x16E/0x16F laid over it: experience, gold, level, skill points, attributes), combat arts (22-byte records), **combos (38-byte records, verbatim and in order)**, 9-byte records. Status modifiers, the 68-byte list and the hero attachment are file-only and stay as saved |
+| C8 objects | one record per item named by the inventories, item bars or equipment, built from the server's item state: **all value records = item + one per socketed rune/gem, in socket order** (u16 count on the wire, u8 in the file: more than 255 is refused, never truncated), item data, weapon extension. File-only fields come from the saved record of the same item. Only items the object world says the player owns are saved. Saved creatures and items attached to the hero model stay unchanged |
+| CA/CB inventories | latest 0x122 per inventory (id = slot, 17 = shared), then 0x13E pick / 0x13F place `[item ref][cell][inventory id]`. Cells hold only the item's anchor (word +4 = `01 \| w<<8 \| h<<16`); an item never seen in an inventory gets a 1x1 footprint (no item tables on the server) |
+| C3 / preview | level word; the block preview is this chunk |
+| CE | statistics extension: the 100 bytes after the 0x2670-byte primary block of 0x14F |
+| C4, CD (quests/scripts) | unchanged: the server does not see them |
+
+`HeroWriterTests` round-trip the real saves under `SACRED_HERO_SAVES` (decoded chunks identical when nothing changed) and check
+sockets, gold and combos; `AuthoritativeTests.ClosedNetHeroIsSavedFromTheServersOwnView` runs the whole flow against a fake
+lobby. Saves allocate a few buffers per save (rare event), not per packet.
+
+Open: server-owned creature values (they live in the sector owner's 0x16E/0x16F object bodies, see docs/protocol.md), item/stat/gold plausibility checks, kill validation, item footprints from the game's item tables, quest state in saves, Lua API.

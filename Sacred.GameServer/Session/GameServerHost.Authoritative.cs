@@ -15,7 +15,8 @@ namespace Sacred.GameServer.Session;
 /// <item>0x198 trade messages must carry the sender's own slot (the original ignores a mismatch, we count it as a violation);</item>
 /// <item>violations are counted per player and kick at <c>AUTH_MAX_VIOLATIONS</c>;</item>
 /// <item>anti-dupe: the hero is saved to the lobby when the player leaves, periodically and shortly after trades, pick-ups and
-/// equipment changes, through an <see cref="IHeroSerializer"/> (the server's object world, not the client's view).</item>
+/// equipment and inventory changes, from the server's own view of the hero (GameServerHost.HeroState.cs, Auth/Hero/HeroWriter)
+/// or an <see cref="IHeroSerializer"/> that replaces it.</item>
 /// </list>
 /// </summary>
 public sealed partial class GameServerHost
@@ -23,16 +24,24 @@ public sealed partial class GameServerHost
     private const uint DifficultyBits = 0xF00, ReasonCheat = 8;
     private byte[]? _heroBuffer;
 
-    /// <summary>Builds the hero block saved to the lobby; saves are skipped while this is null.</summary>
+    /// <summary>Replaces the built-in hero serializer (baseline block from the lobby + the server's live state, HeroWriter).</summary>
     public IHeroSerializer? HeroSerializer { get; set; }
 
     /// <summary>Number of hero blocks uploaded to the lobby (diagnostics and tests).</summary>
     public int HeroSaves { get; private set; }
 
+    /// <summary>A player leaves: last save, then its hero state is dropped.</summary>
+    private void AuthoritativeLeave(PlayerSession s)
+    {
+        SaveHero(s, "leave");
+        ForgetHeroState(s.Slot);
+    }
+
     /// <summary>Returns true when the message may continue through the normal routing.</summary>
     private bool AuthoritativeFilter(PlayerSession s, in GoldMessageView m)
     {
         var options = _config.Auth;
+        CaptureHeroState(s, m);
         switch (m.Opcode)
         {
             case 0x17A:
@@ -55,7 +64,7 @@ public sealed partial class GameServerHost
                 if (m.Payload.Length < 4 || BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) != s.Slot) { Violation(s, "trade message with a foreign sender"); return false; }
                 MarkHeroChanged(s);
                 return true;
-            case 0x141: case 0x142: case 0x11D: case 0x11E:        // pick-up, equipment removal/assignment
+            case 0x141: case 0x142: case 0x11D: case 0x11E: case 0x13E: case 0x13F: case 0x122:   // pick-up, equipment, inventory
                 MarkHeroChanged(s);
                 return true;
             case 0x01E when options.LockDifficulty && s.IsHost && m.Payload.Length >= 4:
@@ -105,10 +114,10 @@ public sealed partial class GameServerHost
     {
         s.HeroSaveDueMs = 0;
         s.NextPeriodicSaveMs = _clock.ElapsedMilliseconds + _config.Auth.SaveIntervalSeconds * 1000L;
-        if (HeroSerializer is not { } serializer || Lobby is not { IsOnline: true } lobby) return;
+        if (Lobby is not { IsOnline: true } lobby) return;
         if (s.LobbyIdentity is 0 or -1 || s.CharacterBlock is < 1 or > 8 || !s.CharacterReceived) return;
         var buffer = _heroBuffer ??= new byte[LobbyProtocol.MaxBlock];
-        var length = serializer.Serialize(s, buffer);
+        var length = HeroSerializer is { } serializer ? serializer.Serialize(s, buffer) : SerializeHero(s, buffer);
         if (length <= 0 || !lobby.UploadCharacter(s.LobbyIdentity, s.CharacterBlock, buffer.AsSpan(0, length))) return;
         HeroSaves++;
         Log.Info($"AUTH: hero of {s.Describe()} saved to the lobby ({reason}, {length} bytes).");
