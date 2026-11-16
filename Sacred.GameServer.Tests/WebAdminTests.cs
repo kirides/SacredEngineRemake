@@ -235,25 +235,70 @@ public class WebAdminTests
             Assert.AreEqual(HttpStatusCode.BadRequest, (await client.PostAsync("/api/ban", Json("""{"address":"not an ip"}"""))).StatusCode);
             Assert.AreEqual(HttpStatusCode.BadRequest, (await client.PostAsync("/api/broadcast", Json("not json"))).StatusCode);
             Assert.AreEqual(HttpStatusCode.UnsupportedMediaType, (await client.PostAsync("/api/broadcast", new StringContent("text=x", Encoding.UTF8, "application/x-www-form-urlencoded"))).StatusCode);
-            Assert.AreEqual(HttpStatusCode.NotFound, (await client.GetAsync("/api/nothing")).StatusCode);
+            Assert.AreEqual(HttpStatusCode.MethodNotAllowed, (await client.GetAsync("/api/nothing")).StatusCode);
             Assert.AreEqual(3, admin.Commands.Count);
         }
     }
 
     [TestMethod]
-    public async Task ChatLongPollReturnsNewLinesAndTimesOutEmpty()
+    public async Task ChatStreamsAsServerSentEvents()
     {
         var (server, client, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
         await using (server) using (client)
         {
-            using var empty = JsonDocument.Parse(await client.GetStringAsync("/api/chat?after=0&wait=1"));
-            Assert.AreEqual(0, empty.RootElement.GetProperty("entries").GetArrayLength());
-            var pending = client.GetStringAsync("/api/chat?after=0&wait=5");
-            await Task.Delay(200);
-            admin.Chat.Add(new ChatEntry(1, 1000, ChatKind.Public, 1, "Alice", -1, "hello"));
-            using var page = JsonDocument.Parse(await pending);
-            Assert.AreEqual(1, page.RootElement.GetProperty("last").GetInt64());
-            Assert.AreEqual("hello", page.RootElement.GetProperty("entries")[0].GetProperty("text").GetString());
+            admin.Chat.Add(new ChatEntry(1, 1000, ChatKind.Public, 1, "Alice", -1, "first"));
+            using var response = await client.GetAsync("/api/chat/stream?after=0", HttpCompletionOption.ResponseHeadersRead);
+            Assert.AreEqual("text/event-stream", response.Content.Headers.ContentType!.MediaType);
+            using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            string? Next(string prefix) { for (;;) { var line = reader.ReadLineAsync(timeout.Token).AsTask().GetAwaiter().GetResult(); if (line is null || line.StartsWith(prefix)) return line; } }
+            StringAssert.Contains(Next("data: ")!, "\"text\":\"first\"");
+            admin.Chat.Add(new ChatEntry(2, 2000, ChatKind.Broadcast, 0, "", -1, "<b>second</b>"));   // arrives while the stream is open
+            Assert.AreEqual("id: 2", Next("id: 2"));
+            StringAssert.Contains(Next("data: ")!, "second");
+        }
+    }
+
+    [TestMethod]
+    public async Task PageIsRenderedOnTheServerAndEscapesNetworkText()
+    {
+        var (server, client, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        await using (server) using (client)
+        {
+            admin.Chat.Add(new ChatEntry(1, 1000, ChatKind.Public, 1, "Al<script>", -1, "<img src=x onerror=alert(1)>"));
+            var page = await client.GetStringAsync("/");
+            StringAssert.Contains(page, "Realm");
+            StringAssert.Contains(page, "Al&lt;script&gt;");
+            Assert.IsFalse(page.Contains("<img src=x"));
+            StringAssert.Contains(page, "action=\"actions/kick\"");
+            StringAssert.Contains(await client.GetStringAsync("/fragment"), "Alice");
+        }
+    }
+
+    [TestMethod]
+    public async Task FormsPostAndRedirectBack()
+    {
+        var (server, _, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = new Uri($"http://127.0.0.1:{server.Ports[0]}") };
+        await using (server)
+        {
+            var say = await client.PostAsync("/actions/say", new FormUrlEncodedContent(new Dictionary<string, string> { ["to"] = "0", ["text"] = "hello" }));
+            Assert.AreEqual(HttpStatusCode.SeeOther, say.StatusCode);
+            StringAssert.Contains(say.Headers.Location!.ToString(), "notice=");
+            var pm = await client.PostAsync("/actions/say", new FormUrlEncodedContent(new Dictionary<string, string> { ["to"] = "2", ["text"] = "psst" }));
+            Assert.AreEqual(HttpStatusCode.SeeOther, pm.StatusCode);
+            await client.PostAsync("/actions/mode", new FormUrlEncodedContent(new Dictionary<string, string> { ["mode"] = "2", ["level"] = "3" }));
+            Assert.AreEqual(new AdminCommand(AdminCommandKind.Broadcast, Text: "hello"), admin.Commands[0]);
+            Assert.AreEqual(new AdminCommand(AdminCommandKind.Message, 2, Text: "psst"), admin.Commands[1]);
+            Assert.AreEqual(new AdminCommand(AdminCommandKind.SetMode, 3, 2), admin.Commands[2]);
+            // A page on another site must not be able to drive the forms with the browser's credentials.
+            var cross = new HttpRequestMessage(HttpMethod.Post, "/actions/shutdown") { Content = new FormUrlEncodedContent(new Dictionary<string, string>()) };
+            cross.Headers.Add("Sec-Fetch-Site", "cross-site");
+            Assert.AreEqual(HttpStatusCode.Forbidden, (await client.SendAsync(cross)).StatusCode);
+            var foreign = new HttpRequestMessage(HttpMethod.Post, "/actions/shutdown") { Content = new FormUrlEncodedContent(new Dictionary<string, string>()) };
+            foreign.Headers.Add("Origin", "https://evil.example");
+            Assert.AreEqual(HttpStatusCode.Forbidden, (await client.SendAsync(foreign)).StatusCode);
+            Assert.AreEqual(3, admin.Commands.Count);
         }
     }
 
