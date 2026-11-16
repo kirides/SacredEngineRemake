@@ -106,6 +106,7 @@ public sealed partial class GameServerHost : IDisposable
             if (s.State >= SessionState.LoggedIn && now - s.LastKeepAliveMs >= 5_000) { s.LastKeepAliveMs = now; SendControl(s, TinCatWire.StayingAlive, 2); }
         }
         PumpLobby();
+        if (_config.Auth.Enabled) PumpAuthoritative(now);
         PumpEnvironment(now);
         PumpAdmin(now);
         OnTick?.Invoke(Tick);

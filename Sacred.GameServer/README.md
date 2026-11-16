@@ -121,3 +121,18 @@ online, lobby kick, Closed Net character, lobby shutdown).
 5. Server-side Lua API for Sacred Gear server mods (events, per-player storage, messages/items; enough for e.g. achievements,
    not full parity with the client API).
 6. Ladder export (`LADDER_EXPORT`).
+
+## Authoritative mode (optional, `--authoritative`)
+
+Off by default: normal relay games behave like the original. Code lives in `Auth/` and `Session/GameServerHost.Authoritative.cs`; the only
+hooks in existing files are one filter call in `Route`, one save call in `RemovePlayer` and one pump call in the tick.
+
+| Stage 1 | Behaviour |
+| --- | --- |
+| Difficulty | the difficulty bits (0x100..0x800) stay what the server was configured with; a host 0x01E cannot change them (`AUTH_LOCK_DIFFICULTY`) |
+| Damage 0x17A | attacker must be the sender's own hero or an object it owns in the server's object world, damage is clamped to `AUTH_MAX_DAMAGE` (default 0xFFFF) and forwarded; `AUTH_STRICT_ATTACKERS` also rejects unknown attackers |
+| Trade 0x198 | sender word must be the sender's slot (the original ignores a mismatch) |
+| Violations | counted per player, kick (reason 8) at `AUTH_MAX_VIOLATIONS` (default 25, 0 = never) |
+| Anti-dupe saves | hero uploaded to the lobby (message 18) when the player leaves, every `AUTH_SAVE_INTERVAL` s (default 120) and `AUTH_SAVE_DEBOUNCE_MS` after trades, pick-ups and equipment changes, through `IHeroSerializer`; no serializer is registered yet (needs real hero objects), so nothing is uploaded until the object-world stage |
+
+Open: server-owned enemy/balance values (game settings 0x00C), item/stat/gold checks (0x122..0x131, 0x13E/0x13F, 0x144), kill validation, Lua API.

@@ -42,6 +42,7 @@ public sealed partial class GameServerHost
     /// <summary>Gameplay routing (after admission and password).</summary>
     private void Route(PlayerSession s, in GoldMessageView m)
     {
+        if (_config.Auth.Enabled && !AuthoritativeFilter(s, m)) return;
         if (WorldMessage(s, m)) return;
         var mode = Routing.Mode(m.Opcode);
         if (mode != RouteMode.None) { Forward(s, m, mode, Routing.IncludeSender(m.Opcode)); return; }
@@ -307,6 +308,7 @@ public sealed partial class GameServerHost
             SendMessage(s, 0x157, 0, 0, kick);
             s.Connection.Flush();
         }
+        if (_config.Auth.Enabled) SaveHero(s, "leave");
         var slot = s.Slot;
         if (slot != 0 && _slots[slot] == s) RecordChat(ChatKind.System, s, -1, reason == ReasonLeft ? "left" : $"removed (reason {reason})");
         var wasHost = s.IsHost;
