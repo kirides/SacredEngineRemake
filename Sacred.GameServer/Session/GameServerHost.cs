@@ -213,12 +213,17 @@ public sealed partial class GameServerHost : IDisposable
         SendMessage(s, 0x01E, 0, 0, flags);
         Log.Info($"FIRSTCONTACT from {s.Connection.RemoteEndPoint}: '{s.Name}' admitted as #{slot}{(s.IsHost ? " (host)" : "")}");
         AnnounceToLobby(s);
+        // The original then queues two internal commands (0x4EBE2A, 0x4EBF08): 0x101 = roster for a session without password,
+        // and 0x41 = first time probe (0x43). The client waits for its own roster record before it lists itself in the lobby.
+        SeedRosterEntry(s, m.Payload);
+        if (s.PasswordAccepted) SendRoster(s);
+        SendProbe(s);
     }
 
     private void OnPassword(PlayerSession s, in GoldMessageView m)
     {
         if (s.State != SessionState.SlotAssigned || m.Sender != s.Slot) { Drop(s, "unexpected password message"); return; }
-        if (_config.Password is not { } expected) { SendMessage(s, 0x14, 0, 0, default); s.PasswordAccepted = true; return; }
+        if (_config.Password is not { } expected) { HostSetsPassword(s, m); return; }
         if (m.Payload.Length == 0 || (m.Payload.Length & 1) != 0) { Log.Info($"Empty password received from player #{s.Slot}!"); SendMessage(s, 0x13, 0, 0, default); return; }
         var ok = m.Payload.Length == expected.Length * 2;
         for (var i = 0; ok && i < expected.Length; i++) ok = BinaryPrimitives.ReadUInt16LittleEndian(m.Payload[(i * 2)..]) == expected[i];
@@ -227,11 +232,28 @@ public sealed partial class GameServerHost : IDisposable
             s.PasswordAccepted = true; s.State = SessionState.Playing;
             Log.Info($"Player #{s.Slot} has sent the correct password.");
             SendMessage(s, 0x14, 0, 0, default);
+            SendRoster(s);
             return;
         }
         Log.Info($"#{s.Slot} has sent the wrong password!");
         SendMessage(s, 0x13, 0, 0, default);
         if (++s.PasswordTries >= _config.MaxPasswordTries) { Log.Info($"#{s.Slot} kicked: too many password tries"); s.Connection.Flush(); s.Connection.Close(); }
+    }
+
+    /// <summary>
+    /// 0x12 while no password is set (case 0x4CA33E): only the host, before the game started, may set one. The original stores
+    /// it, sets game flag 2, answers 0x14 and sends the roster. Everybody else is ignored.
+    /// </summary>
+    private void HostSetsPassword(PlayerSession s, in GoldMessageView m)
+    {
+        if (!s.IsHost || s.InGame || _hostWorldAvailable) return;
+        if (m.Payload.Length == 0 || (m.Payload.Length & 1) != 0) { Log.Info($"Empty password received from player #{s.Slot}!"); return; }
+        _config.Password = System.Text.Encoding.Unicode.GetString(m.Payload).TrimEnd('\0');
+        _gameFlags |= 0x2;
+        s.PasswordAccepted = true;
+        SendMessage(s, 0x14, 0, 0, default);
+        SendRoster(s);
+        Log.Info($"Player #{s.Slot} has set a new password.");
     }
 
     private void Reject(PlayerSession s, uint reason, uint mask)

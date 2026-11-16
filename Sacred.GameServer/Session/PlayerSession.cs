@@ -24,6 +24,9 @@ public sealed class PlayerSession
     public long LastReceiveMs, LastKeepAliveMs;
     public ushort CharacterBlock;    // +0x88, FIRSTCONTACT byte 6 (Closed Net character slot)
     public bool LobbyAnnounced;      // +0x0B, message 45 sent
+    /// <summary>This player's 834-byte record of the 0x1B roster (FUN_004d3030), built from FIRSTCONTACT and updated by client 0x1B.</summary>
+    public readonly byte[] RosterEntry = new byte[GameServerHost.RosterEntryBytes];
+    public bool Ready;               // +0x7A, set by 0x0F
     public bool CharacterReceived;   // +0x8D, Closed Net character delivered
 
     public string Describe() => Slot != 0 ? $"#{Slot} {Name}" : $"{Connection.RemoteEndPoint}";

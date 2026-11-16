@@ -56,6 +56,9 @@ public sealed partial class GameServerHost
                 if (m.Payload.Length >= 4) SendServiceCode(s, BinaryPrimitives.ReadUInt32LittleEndian(m.Payload));
                 return;
             case 0x00B: return;                                     // keep-alive pulse (no-op case group 0x4CC5BD)
+            case 0x00F: OnPeerReady(s); return;                     // 0x4CA1E1
+            case 0x01B: OnPlayerData(s, m); return;                 // 0x4CAC65 -> FUN_004d2ee0
+            case 0x021: OnConnectionSpeed(s, m); return;            // 0x4CAE40
             case 0x015: case 0x016: return;                         // upload begin (0x4C9ABD): state only, data follows
             case 0x017: case 0x018: WorldStart(s, m); return;       // 0x4C9F72
             case 0x019: case 0x01A: SetLock(s, m); return;          // 0x4CA469 / 0x4CA3D9
