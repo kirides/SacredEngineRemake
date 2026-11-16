@@ -6,6 +6,7 @@ using Sacred.GameServer.Lan;
 using Sacred.GameServer.Lobby;
 using Sacred.GameServer.Net.Sbt;
 using Sacred.GameServer.Session;
+using Sacred.GameServer.Web;
 using Sacred.Network.Admission;
 
 if (args.Contains("--help") || args.Contains("-h"))
@@ -24,6 +25,8 @@ if (args.Contains("--help") || args.Contains("-h"))
           --lobby-channel=5         lobby channel of the game (GameServer.exe uses 5)
           --closed-net              the lobby is a Closed Internet lobby: fetch every player's hero from it (implied for channels other than 5)
           --udp-port=2105           Sacred Bild UDP transport (KCP) for players running Sacred Bild; 0 turns it off
+          --webui-enabled --webui-hostname=127.0.0.1 --webui-port=8080 --webui-password=secret   management web UI (see docs: WebUi:* keys,
+                            webui.json, SACRED_GS_WebUi__Port environment variables; command line wins over file over environment)
           --server-name="My realm"  --public-address=203.0.113.5  --lan-announce=0  --tick-ms=20  --config=path
         """);
     return 0;
@@ -58,7 +61,7 @@ catch (System.Net.Sockets.SocketException e) { Log.Info($"ERROR: The TCP port se
 if (config.UdpPort > 0)
 {
     // Sacred Bild players reach the game over its UDP transport (SBT/KCP) when the host answers, else they fall back to TCP.
-    try { var udp = host.AddListener(inbox => new SbtListener(config.UdpPort, inbox, () => host.TcpPort)); Log.Info($"UDP transport (Sacred Bild) on port {udp.Port}"); }
+    try { var udp = host.AddListener(inbox => new SbtListener(config.UdpPort, inbox, () => host.TcpPort)); host.SetAdminUdpPort(udp.Port); Log.Info($"UDP transport (Sacred Bild) on port {udp.Port}"); }
     catch (System.Net.Sockets.SocketException e) { Log.Info($"WARNING: UDP port {config.UdpPort} unavailable ({e.SocketErrorCode}), Sacred Bild players use TCP."); }
 }
 
@@ -72,9 +75,20 @@ if (config.LobbyHost is { } lobbyHost)
     lobby.Start();
 }
 
+WebUiServer? webUi = null;
+var webOptions = WebUiOptions.From(WebUiOptions.BuildConfiguration(args));
+if (webOptions.Enabled)
+{
+    if (WebUiServer.Validate(webOptions) is { } problem) { Log.Info("ERROR: " + problem); return 2; }
+    try { webUi = new WebUiServer(webOptions, host, Log.Info); webUi.StartAsync().GetAwaiter().GetResult(); }
+    catch (Exception e) when (e is IOException or System.Net.Sockets.SocketException or InvalidOperationException)
+    { Log.Info($"WARNING: web UI not started: {e.Message}"); webUi = null; }
+}
+
 using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, c => { c.Cancel = true; host.Stop(); });
 using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, c => { c.Cancel = true; host.Stop(); });
 host.Run();
+if (webUi is not null) webUi.DisposeAsync().AsTask().GetAwaiter().GetResult();
 lobby?.Dispose();
 host.Dispose();
 return 0;

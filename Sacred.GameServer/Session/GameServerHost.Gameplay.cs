@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using Sacred.GameServer.Web;
 using Sacred.GameServer.Wire;
 
 namespace Sacred.GameServer.Session;
@@ -111,6 +112,7 @@ public sealed partial class GameServerHost
         if (m.Payload.Length < 4) return;
         Span<byte> payload = stackalloc byte[ChatPayloadBytes];
         BuildChat(payload, 0, m.Payload[4..]);
+        RecordChat(ChatKind.Public, s, -1, m.Payload[4..]);
         for (var slot = 1; slot <= MaxSlots; slot++)
             if (_slots[slot] is { } target && target != s && target.State >= SessionState.SlotAssigned)
                 SendMessage(target, 0x005, 0, s.Slot, payload);
@@ -124,6 +126,7 @@ public sealed partial class GameServerHost
         if (target is 0 or > MaxSlots || _slots[target] is not { } recipient || recipient.State < SessionState.SlotAssigned) return;
         Span<byte> payload = stackalloc byte[ChatPayloadBytes];
         BuildChat(payload, target, m.Payload[4..]);
+        RecordChat(ChatKind.Private, s, (int)target, m.Payload[4..]);
         SendMessage(recipient, 0x003, 0, s.Slot, payload);
     }
 
@@ -305,6 +308,7 @@ public sealed partial class GameServerHost
             s.Connection.Flush();
         }
         var slot = s.Slot;
+        if (slot != 0 && _slots[slot] == s) RecordChat(ChatKind.System, s, -1, reason == ReasonLeft ? "left" : $"removed (reason {reason})");
         var wasHost = s.IsHost;
         s.IsHost = false;
         if (slot != 0 && _slots[slot] == s)
