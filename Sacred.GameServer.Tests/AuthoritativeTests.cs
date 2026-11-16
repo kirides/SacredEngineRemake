@@ -1,0 +1,188 @@
+using System.Buffers.Binary;
+using Sacred.GameServer.Auth;
+using Sacred.GameServer.Config;
+using Sacred.GameServer.Lobby;
+using Sacred.GameServer.Session;
+
+namespace Sacred.GameServer.Tests;
+
+[TestClass]
+public class AuthoritativeTests
+{
+    private sealed class Server : IDisposable
+    {
+        public readonly GameServerHost Host;
+        public readonly LobbyClient? Lobby;
+        private readonly Thread _thread;
+        public Server(Action<GameServerConfig>? configure = null, LobbyTests.FakeLobby? fake = null, IHeroSerializer? serializer = null)
+        {
+            var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5, LobbyChannel = 1 };
+            config.Auth.Enabled = true;
+            configure?.Invoke(config);
+            Host = new GameServerHost(config, new AdmissionRules(null), null) { HeroSerializer = serializer };
+            if (fake is not null)
+            {
+                Host.Start();
+                var record = Host.LobbyRecord(0x1234, 0);
+                Lobby = new LobbyClient("127.0.0.1", fake.Port, record);
+                Host.AttachLobby(Lobby, record);
+                Lobby.Start();
+                var deadline = Environment.TickCount64 + 5000;
+                while (!Lobby.IsOnline && Environment.TickCount64 < deadline) Thread.Sleep(10);
+                Assert.IsTrue(Lobby.IsOnline);
+                Thread.Sleep(50);
+            }
+            _thread = new Thread(Host.Run) { IsBackground = true };
+            _thread.Start();
+        }
+        public int Port => Host.TcpPort;
+        public void Dispose() { Host.Stop(); _thread.Join(); Lobby?.Dispose(); Host.Dispose(); }
+    }
+
+    private sealed class FixedSerializer(byte[] block) : IHeroSerializer
+    {
+        public int Serialize(PlayerSession player, Span<byte> destination) { block.CopyTo(destination); return block.Length; }
+    }
+
+    private static byte[] Word(uint value) { var b = new byte[4]; BinaryPrimitives.WriteUInt32LittleEndian(b, value); return b; }
+
+    private static byte[] Damage(uint victim, uint damage, uint attacker)
+    {
+        var b = new byte[24];
+        BinaryPrimitives.WriteUInt32LittleEndian(b, victim);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(4), damage);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(12), attacker);
+        return b;
+    }
+
+    private static (RawClient Host, RawClient Joiner) Started(Server server)
+    {
+        var host = RawClient.Admit(server.Port, "Host", 1);
+        host.Send(0x016, default);
+        host.Send(0x018, Word(0x1964));
+        host.WaitFor(0x018);
+        var joiner = RawClient.Admit(server.Port, "Joiner", 2);
+        joiner.Send(0x015, default);
+        joiner.Send(0x017, default);
+        joiner.WaitFor(0x017);
+        return (host, joiner);
+    }
+
+    [TestMethod]
+    public void DamageGuardRules()
+    {
+        var options = new AuthoritativeOptions { MaxDamage = 100 };
+        Span<byte> copy = stackalloc byte[24];
+        Assert.AreEqual(GuardVerdict.Allow, DamageGuard.Check(Damage(5, 50, 3), 3, -1, options, copy));      // own hero
+        Assert.AreEqual(GuardVerdict.Reject, DamageGuard.Check(Damage(5, 50, 4), 3, -1, options, copy));     // another player's hero
+        Assert.AreEqual(GuardVerdict.Allow, DamageGuard.Check(Damage(5, 50, 0), 3, -1, options, copy));      // script/trap
+        Assert.AreEqual(GuardVerdict.Allow, DamageGuard.Check(Damage(5, 50, 0x1000), 3, 3, options, copy));  // owned creature
+        Assert.AreEqual(GuardVerdict.Reject, DamageGuard.Check(Damage(5, 50, 0x1000), 3, 4, options, copy)); // foreign creature
+        Assert.AreEqual(GuardVerdict.Allow, DamageGuard.Check(Damage(5, 50, 0x1000), 3, -1, options, copy)); // unknown, lenient
+        options.StrictAttackers = true;
+        Assert.AreEqual(GuardVerdict.Reject, DamageGuard.Check(Damage(5, 50, 0x1000), 3, -1, options, copy));
+        Assert.AreEqual(GuardVerdict.Clamped, DamageGuard.Check(Damage(5, 5000, 3), 3, -1, options, copy));
+        Assert.AreEqual(100u, BinaryPrimitives.ReadUInt32LittleEndian(copy[4..]));
+        Assert.AreEqual(GuardVerdict.Reject, DamageGuard.Check(new byte[8], 3, -1, options, copy));
+    }
+
+    [TestMethod]
+    public void OptionsParseFromConfigKeys()
+    {
+        var config = new GameServerConfig();
+        config.ApplyLine("authoritative");
+        config.ApplyLine("auth-max-damage=777");
+        config.ApplyLine("AUTH_MAX_VIOLATIONS:3");
+        Assert.IsTrue(config.Auth.Enabled);
+        Assert.AreEqual(777u, config.Auth.MaxDamage);
+        Assert.AreEqual(3, config.Auth.MaxViolations);
+        Assert.IsFalse(new GameServerConfig().Auth.Enabled);
+    }
+
+    [TestMethod]
+    public void ForeignDamageIsDroppedAndLimitedDamageClamped()
+    {
+        using var server = new Server(c => c.Auth.MaxDamage = 100);
+        var (host, joiner) = Started(server);
+        using (host) using (joiner)
+        {
+            joiner.Send(0x17A, Damage(host.Slot, 10, host.Slot));            // attacker is the host's hero: refused
+            Assert.IsTrue(host.Silent(0x17A));
+            joiner.Send(0x17A, Damage(host.Slot, 9999, joiner.Slot));        // own hero, too much damage: clamped
+            Assert.AreEqual(100u, BinaryPrimitives.ReadUInt32LittleEndian(host.WaitFor(0x17A).Payload.AsSpan(4)));
+            joiner.Send(0x17A, Damage(host.Slot, 40, joiner.Slot));          // plausible: unchanged
+            Assert.AreEqual(40u, BinaryPrimitives.ReadUInt32LittleEndian(host.WaitFor(0x17A).Payload.AsSpan(4)));
+        }
+    }
+
+    [TestMethod]
+    public void RelayModeLeavesDamageAlone()
+    {
+        using var server = new Server(c => c.Auth.Enabled = false);
+        var (host, joiner) = Started(server);
+        using (host) using (joiner)
+        {
+            joiner.Send(0x17A, Damage(host.Slot, 999999, host.Slot));
+            Assert.AreEqual(999999u, BinaryPrimitives.ReadUInt32LittleEndian(host.WaitFor(0x17A).Payload.AsSpan(4)));
+        }
+    }
+
+    [TestMethod]
+    public void SpoofedTradeSenderIsDroppedAndRepeatOffendersAreKicked()
+    {
+        using var server = new Server(c => c.Auth.MaxViolations = 2);
+        var (host, joiner) = Started(server);
+        using (host) using (joiner)
+        {
+            var spoof = new byte[8];
+            BinaryPrimitives.WriteUInt32LittleEndian(spoof, host.Slot);
+            joiner.Send(0x198, spoof);
+            Assert.IsTrue(host.Silent(0x198));
+            var own = new byte[8];
+            BinaryPrimitives.WriteUInt32LittleEndian(own, joiner.Slot);
+            joiner.Send(0x198, own);
+            Assert.IsTrue(joiner.Silent(0x157));                              // the genuine trade is not a violation
+            joiner.Send(0x198, spoof);                                        // second violation: kicked
+            joiner.WaitFor(0x157);
+            host.WaitFor(0x150);
+        }
+    }
+
+    [TestMethod]
+    public void HostCannotChangeTheDifficulty()
+    {
+        using var server = new Server(c => c.Level = 2);                      // Silver (0x200)
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        host.Send(0x01E, Word(0x400 | 0x20));                                 // asks for Gold
+        var echoed = BinaryPrimitives.ReadUInt32LittleEndian(host.WaitFor(0x01E).Payload);
+        Assert.AreEqual(0x200u, echoed & 0xF00);
+    }
+
+    [TestMethod]
+    public void HeroIsSavedToTheLobbyOnLeaveAndAfterATrade()
+    {
+        using var fake = new LobbyTests.FakeLobby();
+        var block = new byte[0x300];
+        new Random(9).NextBytes(block);
+        using var server = new Server(c => { c.Auth.SaveDebounceMilliseconds = 20; c.Auth.SaveIntervalSeconds = 0; }, fake, new FixedSerializer(block));
+        var player = RawClient.Admit(server.Port, "Hero", 500, block: 2);
+        fake.WaitFor(LobbyProtocol.UserJoinedServer);
+        var push = new byte[18 + 0x300];
+        BinaryPrimitives.WriteInt32LittleEndian(push, 500);
+        BinaryPrimitives.WriteUInt16LittleEndian(push.AsSpan(4), 2);
+        BinaryPrimitives.WriteInt32LittleEndian(push.AsSpan(6), 0x300);
+        BinaryPrimitives.WriteInt32LittleEndian(push.AsSpan(14), 0x300);
+        fake.SendLobby(LobbyProtocol.PublicData, push);
+        player.WaitFor(0x132);
+        player.Send(0x016, default); player.Send(0x018, Word(0x1964)); player.WaitFor(0x018);
+        var trade = new byte[8];
+        BinaryPrimitives.WriteUInt32LittleEndian(trade, player.Slot);
+        player.Send(0x198, trade);
+        var upload = fake.WaitFor(LobbyProtocol.ServerDataUpload).Body;
+        Assert.AreEqual(500, BinaryPrimitives.ReadInt32LittleEndian(upload));
+        CollectionAssert.AreEqual(block, upload[18..]);
+        player.Dispose();                                                      // disconnect saves again
+        fake.WaitFor(LobbyProtocol.ServerDataUpload);
+        Assert.IsTrue(server.Host.HeroSaves >= 2);
+    }
+}
