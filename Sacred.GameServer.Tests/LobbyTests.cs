@@ -227,6 +227,29 @@ public sealed class LobbyTests
     }
 
     [TestMethod]
+    public void AnUnaskedPushAndALaterAnswerDeliverTheHeroOnlyOnce()
+    {
+        using var fake = new FakeLobby();
+        using var server = new Server(fake, channel: 1);
+        using var player = RawClient.Admit(server.Port, "Hero", 500, block: 2);
+        fake.WaitFor(LobbyProtocol.UserJoinedServer);
+        var data = new byte[0x900];
+        new Random(8).NextBytes(data);
+        var body = new byte[18 + data.Length];
+        BinaryPrimitives.WriteInt32LittleEndian(body, 500);
+        BinaryPrimitives.WriteUInt16LittleEndian(body.AsSpan(4), 2);
+        BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(6), data.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(14), data.Length);
+        data.CopyTo(body, 18);
+        fake.SendLobby(LobbyProtocol.PublicData, body);     // the push
+        CollectionAssert.AreEqual(data, player.WaitFor(0x132).Payload);
+        fake.SendLobby(LobbyProtocol.PublicData, body);     // a second copy (answer to a request)
+        Assert.IsTrue(player.Silent(0x132, 500));
+        Thread.Sleep(2500);                                   // the ask is skipped when the block arrived first
+        while (fake.Received.TryTake(out var m)) Assert.AreNotEqual(LobbyProtocol.ServerDataRequest, m.Type);
+    }
+
+    [TestMethod]
     public void OpenNetPlayersKeepTheirLocalHero()
     {
         using var fake = new FakeLobby();

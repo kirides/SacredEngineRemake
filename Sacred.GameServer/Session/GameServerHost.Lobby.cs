@@ -29,6 +29,7 @@ public sealed partial class GameServerHost
     private void PumpLobby()
     {
         if (Lobby is not { } lobby) return;
+        AskForCharacters(_clock.ElapsedMilliseconds);
         while (lobby.Events.TryDequeue(out var e))
         {
             switch (e.Kind)
@@ -99,8 +100,24 @@ public sealed partial class GameServerHost
     {
         if (Lobby is not { IsOnline: true } lobby || (!_config.ClosedNet && _config.LobbyChannel == LobbyProtocol.OpenNetChannel)) return;
         if (s.LobbyIdentity is 0 or -1 || s.CharacterBlock is < 1 or > 8) return;
-        lobby.RequestCharacter(s.LobbyIdentity, s.CharacterBlock);
-        Log.Info($"Requesting the character (permID={s.LobbyIdentity}, block={s.CharacterBlock}) of {s.Describe()} from the lobby.");
+        // sacred-lobby pushes the block right after message 45 (as the stock GameServer.exe expects); lobbies that do not get
+        // asked with message 19 when nothing arrived within CharacterAskDelayMs.
+        s.CharacterAskDueMs = _clock.ElapsedMilliseconds + CharacterAskDelayMs;
+    }
+
+    private const int CharacterAskDelayMs = 2000;
+
+    private void AskForCharacters(long now)
+    {
+        if (Lobby is not { IsOnline: true } lobby) return;
+        for (var slot = 1; slot <= MaxSlots; slot++)
+        {
+            if (_slots[slot] is not { CharacterAskDueMs: > 0 } s || now < s.CharacterAskDueMs) continue;
+            s.CharacterAskDueMs = 0;
+            if (s.CharacterReceived) continue;
+            lobby.RequestCharacter(s.LobbyIdentity, s.CharacterBlock);
+            Log.Info($"Requesting the character (permID={s.LobbyIdentity}, block={s.CharacterBlock}) of {s.Describe()} from the lobby.");
+        }
     }
 
     /// <summary>Internal 0x29 (case 0x4CB287): a Closed Net character block for an admitted player is passed on as 0x132.</summary>
@@ -112,7 +129,10 @@ public sealed partial class GameServerHost
         for (var slot = 1; slot <= MaxSlots; slot++)
         {
             if (_slots[slot] is not { } s || s.LobbyIdentity != permId || s.CharacterBlock != block) continue;
-            s.CharacterReceived = true;
+            // Delivered once per admission: the lobby pushes the block unasked (as the stock GameServer.exe expects) and may answer our
+            // own request as well.
+            if (s.CharacterReceived) return;
+            s.CharacterReceived = true; s.CharacterAskDueMs = 0;
             SendMessage(s, 0x132, 0, 0, data);
             Log.Info($"Character savegame received from lobby (permID={permId}, block={block}, size={data.Length}), sent to player #{slot}.");
             return;

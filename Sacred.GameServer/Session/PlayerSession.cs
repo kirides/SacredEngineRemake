@@ -28,6 +28,7 @@ public sealed class PlayerSession
     public readonly byte[] RosterEntry = new byte[GameServerHost.RosterEntryBytes];
     public bool Ready;               // +0x7A, set by 0x0F
     public ushort CurrentSector;     // sector the player stands in (word +0 of its last 0x148)
+    public long CharacterAskDueMs;   // Closed Net: ask the lobby (message 19) at this time unless the block was pushed by then
     public bool CharacterReceived;   // +0x8D, Closed Net character delivered
 
     public string Describe() => Slot != 0 ? $"#{Slot} {Name}" : $"{Connection.RemoteEndPoint}";

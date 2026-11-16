@@ -61,8 +61,11 @@ public static class Routing
         // Consumed by the server's own state (inventories and NW_ITEM cheat protection 0x12x/0x13E/0x144, references, free-slot
         // checks, ...): no network effect in the original either, so they are dropped without the "unhandled" log.
         foreach (var opcode in (ReadOnlySpan<ushort>)[0x10E, 0x10F, 0x122, 0x123, 0x129, 0x12A, 0x12B, 0x12C, 0x130, 0x131, 0x13E,
-            0x144, 0x14F, 0x155, 0x172, 0x176, 0x18A, 0x197, 0x19C, 0x19D])
+            0x144, 0x14F, 0x155, 0x172, 0x176, 0x17F, 0x18A, 0x197, 0x19C, 0x19D])
             Consumed[opcode] = true;
+        // 0x17F NW_FIGHT_ENEMY_SPOTTED (case 0x4C61C7 -> FUN_004CE530, pairs [creature ref][value]): sets/clears the creature's
+        // 0x8000 fight flag in the server's own object and sends 0x119 (ref, flags) to the in-game players only when it changed,
+        // then hands creatures over to the spotting player (FUN_004D6950). Needs the real object state, so it is consumed here.
         // Commands the original's own menu/lobby thread posts into its queue (lobby connect/logout 0x10A..0x10C, 0x109, release
         // refs 0x152, savegame start positions 0x15A, host hand-over 0x15B). A client must not be able to trigger them, so they
         // are dropped. 0x153/0x154 are client requests (Session/GameServerHost.References.cs).
