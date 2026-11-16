@@ -218,10 +218,10 @@ public sealed partial class GameServerHost : IDisposable
         s.IsHost = HostSession() is null;
         Span<byte> reply = stackalloc byte[6];
         // Flags (FUN_004eb0a0): 1 = assigned client host, 4 = host world available (server flag 0x80).
-        reply[0] = (byte)((s.IsHost ? 1 : 0) | (!s.IsHost && _hostWorldAvailable ? 4 : 0));
+        // 0x08 (0x4EB93D): the lobby is connected (FUN_0048d100), i.e. an Internet game; run 10: 09 for the Open Net host.
+        reply[0] = (byte)((s.IsHost ? 1 : 0) | (!s.IsHost && _hostWorldAvailable ? 4 : 0) | (LobbyIdentityCheck ? 8 : 0));
         reply[1] = slot;
         SendMessage(s, 0x11, 0, 0, reply);
-        SendEnvironment(s);                                           // run 8: 0x00B follows 0x011 in the same tick
         // No 0x01E here: the original sends the flags only as the echo of the host's 0x01E (checked against a real session).
         Log.Info($"FIRSTCONTACT from {s.Connection.RemoteEndPoint}: '{s.Name}' admitted as #{slot}{(s.IsHost ? " (host)" : "")}");
         AnnounceToLobby(s);

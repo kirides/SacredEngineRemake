@@ -24,6 +24,7 @@ public sealed partial class GameServerHost
     public uint GameFlags => _gameFlags;
     public bool IsLocked => _locked;
     public bool HostWorldAvailable => _hostWorldAvailable;
+    public string SessionName => _config.ServerName;
 
     private void InitializeSession()
     {
@@ -63,6 +64,7 @@ public sealed partial class GameServerHost
             case 0x153: OnReferenceRequest(s, m); return;           // 0x4C48B5 -> FUN_004d6110
             case 0x154: OnTriggerRequest(s, m); return;             // 0x4C4B10
             case 0x14C: OnSectorMessage(s, m); return;              // 0x4C70D7
+            case 0x022: OnSessionName(s, m); return;                // 0x4CAF67
             case 0x015: case 0x016: return;                         // upload begin (0x4C9ABD): state only, data follows
             case 0x017: case 0x018: WorldStart(s, m); return;       // 0x4C9F72
             case 0x019: case 0x01A: SetLock(s, m); return;          // 0x4CA469 / 0x4CA3D9
@@ -135,6 +137,27 @@ public sealed partial class GameServerHost
     }
 
     // ---- service codes (0x009) --------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// 0x022 (case 0x4CAF67): the host renames the session (UTF-16) while in the lobby screen. Refused with service code 0x64
+    /// (0x4C4A6D) when the sender is not the host, the name is locked (flag 0x08) or the host is already in the game; in an
+    /// Internet game the original refuses it as well (run 10: the Open Net host's 0x022 got 0x009 0x64 before the 0x023
+    /// echo), so the lobby's game name stays.
+    /// </summary>
+    private void OnSessionName(PlayerSession s, in GoldMessageView m)
+    {
+        if (!s.IsHost || (_gameFlags & 0x08) != 0 || s.InGame || !s.PasswordAccepted || Lobby is not null)
+        {
+            SendServiceCode(s, 0x64);
+            return;
+        }
+        var payload = m.Payload;
+        if ((payload.Length & ~1) == 0) return;
+        var text = System.Text.Encoding.Unicode.GetString(payload[..(payload.Length & ~1)]);
+        var end = text.IndexOf('\0');
+        _config.ServerName = end >= 0 ? text[..end] : text;
+        Log.Info($"Session name is now '{_config.ServerName}'.");   // roster record 0 and the LAN/lobby record pick it up
+    }
 
     private void SendServiceCode(PlayerSession s, uint code)
     {

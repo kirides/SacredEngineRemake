@@ -96,9 +96,19 @@ public sealed class ObjectMirror
         _objects.Clear();
     }
 
-    /// <summary>Sector word of a stored state (24-byte prefix: [ref][type][x][y][surface][sector]); 0 when unknown.</summary>
-    public static ushort Sector(Entry entry) =>
-        entry.LongPrefix && entry.Length >= 24 ? BinaryPrimitives.ReadUInt16LittleEndian(entry.Payload[20..]) : (ushort)0;
+    /// <summary>Offsets inside an 8-byte-prefix state (0x16E): [ref][type] then the object's own serialization
+    /// [0xFEEDF00D][ref][type][flags u32][sector u16][x u32][y u32]... (run 8: five carried/placed items).</summary>
+    public const int ShortFlags = 20, ShortSector = 24, ShortX = 26, ShortY = 30, ShortMinimum = 34;
+
+    /// <summary>Sector word of a stored state: from the 24-byte prefix ([ref][type][x][y][surface][sector]) or from the
+    /// object data of a 0x16E state; 0 when unknown.</summary>
+    public static ushort Sector(Entry entry)
+    {
+        var p = entry.Payload;
+        if (entry.LongPrefix) return p.Length >= 24 ? BinaryPrimitives.ReadUInt16LittleEndian(p[20..]) : (ushort)0;
+        return p.Length >= ShortMinimum && BinaryPrimitives.ReadUInt32LittleEndian(p[8..]) == 0xFEEDF00D
+            ? BinaryPrimitives.ReadUInt16LittleEndian(p[ShortSector..]) : (ushort)0;
+    }
 
     /// <summary>The opcode the original streamer uses: 0x16F with a position, 0x16E (8-byte prefix) without one.</summary>
     public static ushort StreamOpcode(Entry entry, out int prefix, out bool hasPosition)

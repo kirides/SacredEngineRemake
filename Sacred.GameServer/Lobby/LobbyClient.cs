@@ -20,7 +20,7 @@ public readonly record struct LobbyEvent(LobbyEventKind Kind, int PermId = 0, us
 public sealed class LobbyClient : IDisposable
 {
     private const uint LogMeOff = 4;
-    private const int KeepAliveMs = 15_000, SilenceTimeoutMs = 70_000, MaxBackoffMs = 60_000;
+    private const int KeepAliveMs = 15_000, MaxBackoffMs = 60_000;
     private readonly string _host;
     private readonly int _port;
     private readonly Thread _thread;
@@ -94,6 +94,7 @@ public sealed class LobbyClient : IDisposable
     {
         Log.Info($"LOBBY: connecting to {_host}:{_port}");
         var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
         _socket = socket;
         socket.Connect(_host, _port);
         var reader = new FrameReader(socket);
@@ -136,7 +137,8 @@ public sealed class LobbyClient : IDisposable
         while (!_stop)
         {
             if (reader.TryRead(50, out var type, out var payload)) { lastReceive = Environment.TickCount64; OnFrame(type, payload); }
-            if (Environment.TickCount64 - lastReceive > SilenceTimeoutMs) throw new IOException("lobby connection timed out");
+            // No silence time-out: the lobby only answers our messages, and GameServer.exe idles on the connection indefinitely
+            // (checked against sacred-lobby for 100+ s). A dead lobby shows as a socket error (TCP keep-alive below).
             while (_online && _outbox.TryDequeue(out var frame)) { Send(socket, frame); lastSend = Environment.TickCount64; }
             byte[]? update = null;
             lock (_gate)

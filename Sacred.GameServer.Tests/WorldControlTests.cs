@@ -134,4 +134,44 @@ public class WorldControlTests
         host.Send(0x14C, message);
         CollectionAssert.AreEqual(message, joiner.WaitFor(0x14C).Payload);
     }
+
+    [TestMethod]
+    public void ShortStatesAreStreamedWithTheirEmbeddedSector()
+    {
+        using var server = new Server();
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        host.WaitFor(0x153);
+        // run 8, ref 0x1A3: [ref][type] FEEDF00D [ref][type][flags 0x201][sector 0x0B1F][x][y] ...
+        var upload = Convert.FromHexString("a3010000811300000df0edfea30100008113000001020000" + "1f0b" + "0e990200" + "e94b0200" + "aabbccdd");
+        host.Send(0x16E, upload);
+        var entry = Convert.FromHexString("5d0b00001f0b200b210b5e0b9d0b9c0b9b0b5c0b5d0b" + new string('0', 36 * 2) + "7c080000");
+        host.Send(0x148, entry);
+        var back = host.WaitFor(0x169).Payload;
+        Assert.AreEqual(upload.Length + 16, back.Length);
+        Assert.AreEqual("a3010000811300000e990200e94b0200000000001f0b00000df0edfea3010000811300000100400" + "01f0b0e990200e94b0200aabbccdd",
+            Convert.ToHexString(back).ToLowerInvariant());
+    }
+
+    [TestMethod]
+    public void AdmissionSendsOneEnvironment()
+    {
+        using var server = new Server();
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        var count = 0;
+        while (host.TryReceive(400) is { } m) if (m.Opcode == 0x00B) count++;
+        Assert.AreEqual(1, count);
+    }
+
+    [TestMethod]
+    public void HostMayRenameTheLanSessionOthersAreRefused()
+    {
+        using var server = new Server();
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        using var joiner = RawClient.Admit(server.Port, "Joiner", 2);
+        joiner.Send(0x022, System.Text.Encoding.Unicode.GetBytes("Mine\0"));
+        Assert.AreEqual(0x64u, U32(joiner.WaitFor(0x009).Payload, 0));
+        host.Send(0x022, System.Text.Encoding.Unicode.GetBytes("Renamed\0"));
+        Assert.IsTrue(host.Silent(0x009));
+        Assert.AreEqual("Renamed", server.Host.SessionName);
+    }
 }

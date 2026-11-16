@@ -94,9 +94,30 @@ public sealed partial class GameServerHost
         {
             if (reference == s.Slot || !_world.TryGet(reference, out var entry)) continue;
             if (ObjectMirror.Sector(entry) != sector || entry.Owner is 0 or > MaxSlots || _slots[entry.Owner] is null) continue;
-            if ((entry.KnownBy & bit) != 0) SendMessage(s, 0x169, 0, 0, entry.Payload);
-            else SendObject(s, entry);
+            if (entry.LongPrefix) { if ((entry.KnownBy & bit) != 0) SendMessage(s, 0x169, 0, 0, entry.Payload); else SendObject(s, entry); }
+            else { SendMessage(s, (entry.KnownBy & bit) != 0 ? (ushort)0x169 : (ushort)0x16F, 0, 0, PositionedState(entry)); entry.KnownBy |= bit; }
         }
+    }
+
+    /// <summary>
+    /// A 0x16E state in the 24-byte form <c>FUN_004cda80</c> sends: [ref][type][x][y][0][sector u16][0] followed by the object
+    /// data. The server re-serializes its object, which in run 8 differed from the upload only in the flags word
+    /// (0x00000201 -> 0x00400001): bit 0x200 cleared, bit 0x400000 set; that observed change is applied here.
+    /// </summary>
+    private ReadOnlySpan<byte> PositionedState(ObjectMirror.Entry entry)
+    {
+        var p = entry.Payload;
+        var d = _streamPayload.AsSpan(0, 24 + p.Length - 8);
+        p[..8].CopyTo(d);
+        BinaryPrimitives.WriteUInt32LittleEndian(d[8..], BinaryPrimitives.ReadUInt32LittleEndian(p[ObjectMirror.ShortX..]));
+        BinaryPrimitives.WriteUInt32LittleEndian(d[12..], BinaryPrimitives.ReadUInt32LittleEndian(p[ObjectMirror.ShortY..]));
+        BinaryPrimitives.WriteUInt32LittleEndian(d[16..], 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(d[20..], BinaryPrimitives.ReadUInt16LittleEndian(p[ObjectMirror.ShortSector..]));
+        p[8..].CopyTo(d[24..]);
+        var flagsAt = 24 + ObjectMirror.ShortFlags - 8;
+        var flags = BinaryPrimitives.ReadUInt32LittleEndian(d[flagsAt..]);
+        BinaryPrimitives.WriteUInt32LittleEndian(d[flagsAt..], (flags & ~0x200u) | 0x400000u);
+        return d;
     }
 
     /// <summary>The owner left <paramref name="sector"/>: the first remaining player takes it if it stands in it (0x020).</summary>
