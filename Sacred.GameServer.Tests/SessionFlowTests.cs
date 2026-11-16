@@ -76,8 +76,15 @@ public class SessionFlowTests
             host.Send(0x11E, Word(7));               // includes the sender
             Assert.AreEqual(host.Slot, joiner.WaitFor(0x11E).Origin);
             Assert.AreEqual(host.Slot, host.WaitFor(0x11E).Origin);
-            joiner.Send(0x1C9, Word(1));             // handled by the original without forwarding -> dropped
-            Assert.IsTrue(host.Silent(0x1C9));
+            joiner.Send(0x1C9, Word(1));             // shared forward tail 0x4C81D1 (mode 2)
+            Assert.AreEqual(joiner.Slot, host.WaitFor(0x1C9).Origin);
+            host.Send(0x165, new byte[24]);          // position: world update + mode 8
+            Assert.AreEqual(host.Slot, joiner.WaitFor(0x165).Origin);
+            joiner.Send(0x122, Word(1));             // inventory op, consumed by the server's state
+            Assert.IsTrue(host.Silent(0x122));
+            joiner.Send(0x153, Word(1));             // internal menu command: never accepted from a client
+            Assert.IsTrue(host.Silent(0x153));
+            Assert.IsFalse(joiner.IsClosed());
         }
     }
 

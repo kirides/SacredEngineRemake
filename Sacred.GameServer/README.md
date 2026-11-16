@@ -21,7 +21,7 @@ path here is separate and allocation free.
 | World start 0x017/0x018, world banks 0x1B1..0x1B4 -> 0x1B5 | done as relay: host uploads are stored and served in the original order 0x1B2, 0x1B4, 0x1B3, 0x1B1 |
 | Time probes 0x041/0x043/0x044/0x045, pause 0x134/0x135 | done |
 | Leave / kick (`FUN_004d6ac0`) | done: 0x157 to the victim, 0x150 to others, host hand-over 0x0D to the first in-game player (`FUN_004cdc50`), otherwise unlock and end the session (reason 0x10) |
-| Generic forwarding (`FUN_004d3ea0`) | done for ~80 opcodes, table in `Session/Routing.cs`; see approximations below |
+| Generic forwarding (`FUN_004d3ea0`) | done for ~140 opcodes, table in `Session/Routing.cs`: pure forwards, forwards after a server-world update (not modelled yet) including cases that share a jump tail (e.g. 0x4C81D1, 0x4C9907); ~20 opcodes the original only applies to its own state (inventories, NW_ITEM cheat protection, references) are consumed; the original's internal menu commands (0x109..0x10C, 0x152..0x15B) are never accepted from clients. `tools`-style classification of every case is reproducible from the disassembly |
 | LAN announcement (UDP broadcast, 0xAE payload) | done, format from `GoldLanAnnouncementCodec` |
 | `Gameserver.cfg` keys | `NETWORK_PORT_TCP`, `NETWORK_PORT_LISTEN`, `NETWORK_PASSWORD`, `NETWORK_PRECONFIG_MODE/LEVEL/MAXPLAYERS`, `LADDER_EXPORT` parsed (defaults 2005/2006 are from the exe's default-port functions, mode->flag mapping is best effort) |
 | Lobby registration (Open Internet) | done, see "Lobby" below; verified against `sacred-lobby` (Go) |
@@ -110,8 +110,10 @@ online, lobby kick, Closed Net character, lobby shutdown).
    data tables; later a full simulation (monsters, loot, combat, scripts). John's C++ re-creation of Sacred.exe
    (`sacred-decomp`) is the logic reference.
 3. Exact party / sector / visibility filtering for forwarder modes 3..8 (needs 1).
-4. Remaining custom cases: 0x004 team chat, 0x00F, the 0x12x object cases, 0x01D savegame, 0x029 character savegame,
-   0x104..0x107, 0x141 extras, 0x198.
+4. Remaining custom cases: 0x004 team chat, 0x00F, 0x01D savegame, 0x029 character savegame, 0x104..0x107, 0x118, 0x139,
+   0x13F (NW_ITEM_SETITEM re-sent as 0x16A), 0x148, 0x14C, 0x168 (delete with equipment), 0x17D, 0x17F, 0x180, 0x198.
+   The server-side inventory and NW_ITEM cheat protection of the original (0x122..0x131, 0x13E/0x13F, 0x144) are the
+   starting point of the authoritative mode.
 5. Server-side Lua API for Sacred Gear server mods (events, per-player storage, messages/items; enough for e.g. achievements,
    not full parity with the client API).
 6. Ladder export (`LADDER_EXPORT`).

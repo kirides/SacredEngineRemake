@@ -46,7 +46,36 @@ public static class Routing
         Set(RouteMode.SectorAndObject, 0x113, 0x11F, 0x141, 0x161, 0x163, 0x183);
         Set(RouteMode.SectorAndObject, 0x11E);
         IncludesSender[0x11E] = true; // pushed except = 0x11 (nobody excluded)
+
+        // Cases that first update the server's own world (object values, creature state, quests, ... - not modelled yet) and
+        // then forward the message unchanged. Same extraction; the update call of each case is named in the README.
+        Set(RouteMode.InGame, 0x10D, 0x15D, 0x187, 0x188, 0x1AE, 0x1AF, 0x1B8, 0x1B9, 0x1BC, 0x1BD, 0x1BE, 0x1C0, 0x1C2, 0x1C3,
+            0x1C4, 0x1C5, 0x1C7, 0x1C9, 0x1CB, 0x1CD, 0x1CE, 0x1D0, 0x1D1, 0x1D2, 0x1D3);
+        Set(RouteMode.SectorVisible, 0x12D, 0x15C, 0x1A4, 0x1A5);
+        Set(RouteMode.Party, 0x128);
+        Set(RouteMode.ObjectVisible, 0x114, 0x127, 0x12E, 0x173, 0x175, 0x17A);
+        Set(RouteMode.SectorAndObject, 0x119, 0x11C, 0x11D, 0x120, 0x121, 0x126, 0x12F, 0x13C, 0x140, 0x146, 0x147, 0x162, 0x164,
+            0x165, 0x170, 0x174, 0x178, 0x179, 0x17B, 0x17C);
+        IncludesSender[0x11D] = true;
+
+        // Consumed by the server's own state (inventories and NW_ITEM cheat protection 0x12x/0x13E/0x144, references, free-slot
+        // checks, ...): no network effect in the original either, so they are dropped without the "unhandled" log.
+        foreach (var opcode in (ReadOnlySpan<ushort>)[0x10E, 0x10F, 0x122, 0x123, 0x129, 0x12A, 0x12B, 0x12C, 0x130, 0x131, 0x13E,
+            0x144, 0x14F, 0x155, 0x172, 0x176, 0x18A, 0x197, 0x19C, 0x19D])
+            Consumed[opcode] = true;
+        // Commands the original's own menu/lobby thread posts into its queue (lobby connect/logout 0x10A..0x10C, remove player
+        // 0x109, 0x152..0x15B). A client must not be able to trigger them, so they are dropped.
+        foreach (var opcode in (ReadOnlySpan<ushort>)[0x109, 0x10A, 0x10B, 0x10C, 0x152, 0x153, 0x154, 0x15A, 0x15B])
+            Internal[opcode] = true;
     }
+
+    private static readonly bool[] Consumed = new bool[OpcodeLimit];
+    private static readonly bool[] Internal = new bool[OpcodeLimit];
+
+    /// <summary>Messages the original only applies to its own state.</summary>
+    public static bool IsConsumed(ushort opcode) => opcode < OpcodeLimit && Consumed[opcode];
+    /// <summary>Internal commands of the original server; never accepted from clients.</summary>
+    public static bool IsInternal(ushort opcode) => opcode < OpcodeLimit && Internal[opcode];
 
     private static void Set(RouteMode mode, params ushort[] opcodes)
     {

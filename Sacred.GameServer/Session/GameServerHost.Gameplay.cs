@@ -43,6 +43,8 @@ public sealed partial class GameServerHost
         if (WorldMessage(s, m)) return;
         var mode = Routing.Mode(m.Opcode);
         if (mode != RouteMode.None) { Forward(s, m, mode, Routing.IncludeSender(m.Opcode)); return; }
+        if (Routing.IsConsumed(m.Opcode)) return;
+        if (Routing.IsInternal(m.Opcode)) { Log.Info($"#{s.Slot} sent internal server command 0x{m.Opcode:X3}, ignored"); return; }
         switch (m.Opcode)
         {
             case 0x003: PrivateChat(s, m); return;                  // 0x4CA8AA
