@@ -30,6 +30,8 @@ public sealed class GameServerConfig
     public int TickMilliseconds { get; set; } = 20;
     public int MaxPasswordTries { get; set; } = 3;
     public string? LobbyHost { get; set; }
+    /// <summary>Lobby channel of message 12 (GameServer.exe always sends 5, Open Net).</summary>
+    public int LobbyChannel { get; set; } = 5;
 
     public static GameServerConfig Load(string[] args)
     {
@@ -71,7 +73,8 @@ public sealed class GameServerConfig
             case "LAN_ANNOUNCE": LanAnnounce = Int(value, 1) != 0; break;
             case "TICK_MS": TickMilliseconds = Math.Clamp(Int(value, 20), 5, 100); break;
             case "MAX_PASSWORD_TRIES": MaxPasswordTries = Math.Clamp(Int(value, 3), 1, 100); break;
-            case "LOBBY_HOST": LobbyHost = value.Length == 0 ? null : value; break;
+            case "LOBBY_HOST" or "NETWORK_LOBBY": LobbyHost = value.Length == 0 ? null : value; break;
+            case "LOBBY_CHANNEL": LobbyChannel = Int(value, LobbyChannel); break;
         }
     }
 

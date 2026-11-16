@@ -35,17 +35,29 @@ public sealed class RawClient : IDisposable
         _id = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(4));
     }
 
-    public static RawClient Admit(int port, string name, int identity)
+    public static RawClient Admit(int port, string name, int identity, byte block = 0)
     {
         var client = new RawClient(port);
         var contact = new byte[GoldFirstContactLayout.Size];
         BinaryPrimitives.WriteInt32LittleEndian(contact, identity);
+        contact[6] = block;
         System.Text.Encoding.Unicode.GetBytes(name, contact.AsSpan(GoldFirstContactLayout.NameOffset));
         client.Send(0x10, contact, sender: 0);
         var reply = client.WaitFor(0x11);
         client.AdmissionFlags = reply.Payload[0];
         client.Slot = reply.Payload[1];
         return client;
+    }
+
+    /// <summary>Sends FIRSTCONTACT and returns the 0x3F rejection reason (fails if the client is admitted).</summary>
+    public static uint AdmitExpectingRejection(int port, string name, int identity)
+    {
+        using var client = new RawClient(port);
+        var contact = new byte[GoldFirstContactLayout.Size];
+        BinaryPrimitives.WriteInt32LittleEndian(contact, identity);
+        System.Text.Encoding.Unicode.GetBytes(name, contact.AsSpan(GoldFirstContactLayout.NameOffset));
+        client.Send(0x10, contact, sender: 0);
+        return BinaryPrimitives.ReadUInt32LittleEndian(client.WaitFor(0x3F).Payload);
     }
 
     private void WriteFrame(uint sender, uint type, ReadOnlySpan<byte> payload)

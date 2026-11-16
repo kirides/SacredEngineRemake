@@ -271,7 +271,7 @@ public sealed partial class GameServerHost
         var slot = s.Slot;
         var wasHost = s.IsHost;
         s.IsHost = false;
-        if (slot != 0 && _slots[slot] == s) { _slots[slot] = null; PlayerCount--; }
+        if (slot != 0 && _slots[slot] == s) { _slots[slot] = null; PlayerCount--; LobbyPlayerRemoved(s); }
         s.State = SessionState.Closed;
         Span<byte> departure = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(departure, reason);

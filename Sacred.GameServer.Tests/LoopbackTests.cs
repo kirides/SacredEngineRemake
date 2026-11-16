@@ -70,13 +70,13 @@ public class LoopbackTests
     }
 
     [TestMethod]
-    public async Task DuplicateLobbyIdentityIsRejected()
+    public async Task DuplicateLobbyIdentityIsAllowedWithoutLobby()
     {
+        // FUN_004eb0a0 only checks identities while the lobby is connected (see LobbyTests for the rejection).
         using var server = new Running(Config());
         await using var first = await Connect(server.Host.TcpPort, FirstContact("A", identity: 5));
         await using var second = await Connect(server.Host.TcpPort, FirstContact("B", identity: 5));
-        Assert.AreEqual(GoldAdmissionPhase.Rejected, second.Admission.Phase);
-        Assert.AreEqual(RejectionReason.DuplicateIdentity, second.Admission.RejectionReason);
+        Assert.AreEqual(GoldAdmissionPhase.SlotAssigned, second.Admission.Phase);
     }
 
     [TestMethod]

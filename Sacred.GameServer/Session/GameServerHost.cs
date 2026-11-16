@@ -92,6 +92,7 @@ public sealed partial class GameServerHost : IDisposable
             if (now - s.LastReceiveMs > 30_000) { Log.Info($"{s.Describe()} timed out"); s.Connection.Close(); continue; }
             if (s.State >= SessionState.LoggedIn && now - s.LastKeepAliveMs >= 5_000) { s.LastKeepAliveMs = now; SendControl(s, TinCatWire.StayingAlive, 2); }
         }
+        PumpLobby();
         OnTick?.Invoke(Tick);
         foreach (var s in _sessions) s.Connection.Flush();
         for (var i = _retired.Count - 1; i >= 0; i--)
@@ -185,7 +186,7 @@ public sealed partial class GameServerHost : IDisposable
     {
         if (s.State != SessionState.LoggedIn || m.Sender != 0) { Drop(s, "unexpected FIRSTCONTACT"); return; }
         var reason = _rules.Check(m.Payload, out var mask, out var identity);
-        if (reason == 0 && identity != -1)
+        if (reason == 0 && identity != -1 && LobbyIdentityCheck)
             foreach (var other in _sessions)
                 if (other != s && other.State >= SessionState.SlotAssigned && other.LobbyIdentity == identity) { reason = RejectionReason.DuplicateIdentity; break; }
         byte slot = 0;
@@ -198,6 +199,7 @@ public sealed partial class GameServerHost : IDisposable
 
         s.Slot = slot; _slots[slot] = s; s.State = SessionState.SlotAssigned; PlayerCount++;
         s.LobbyIdentity = identity; s.Name = AdmissionRules.PlayerName(m.Payload) ?? "";
+        s.CharacterBlock = m.Payload.Length > 6 ? m.Payload[6] : (ushort)0;
         s.PasswordAccepted = _config.Password is null;
         s.IsHost = HostSession() is null;
         Span<byte> reply = stackalloc byte[6];
@@ -209,6 +211,7 @@ public sealed partial class GameServerHost : IDisposable
         BinaryPrimitives.WriteUInt32LittleEndian(flags, _gameFlags);
         SendMessage(s, 0x01E, 0, 0, flags);
         Log.Info($"FIRSTCONTACT from {s.Connection.RemoteEndPoint}: '{s.Name}' admitted as #{slot}{(s.IsHost ? " (host)" : "")}");
+        AnnounceToLobby(s);
     }
 
     private void OnPassword(PlayerSession s, in GoldMessageView m)

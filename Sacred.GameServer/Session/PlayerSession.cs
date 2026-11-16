@@ -22,6 +22,9 @@ public sealed class PlayerSession
     public uint LatencyMs;
     public bool ProbePending;
     public long LastReceiveMs, LastKeepAliveMs;
+    public ushort CharacterBlock;    // +0x88, FIRSTCONTACT byte 6 (Closed Net character slot)
+    public bool LobbyAnnounced;      // +0x0B, message 45 sent
+    public bool CharacterReceived;   // +0x8D, Closed Net character delivered
 
     public string Describe() => Slot != 0 ? $"#{Slot} {Name}" : $"{Connection.RemoteEndPoint}";
 }

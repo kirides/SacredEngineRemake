@@ -27,7 +27,10 @@ public sealed class TcpAcceptor : IDisposable
         _accept.Completed += (_, e) => OnAccept(e);
     }
 
-    public void Start() => AcceptLoop();
+    private int _started;
+
+    /// <summary>Starts accepting; further calls do nothing.</summary>
+    public void Start() { if (Interlocked.Exchange(ref _started, 1) == 0) AcceptLoop(); }
 
     private void AcceptLoop()
     {
