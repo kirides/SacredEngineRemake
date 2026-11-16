@@ -1,1 +1,208 @@
-<!doctype html><html><head><meta charset="utf-8"><title>Sacred GameServer</title></head><body>placeholder</body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sacred GameServer</title>
+<style>
+  :root { color-scheme: dark; --bg:#14110e; --panel:#201b16; --line:#3a3128; --text:#e9dfcf; --dim:#9b8f7d; --gold:#d9a441; --red:#c7503f; --green:#6fb06a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:.5rem 1.5rem; align-items:baseline; padding:.8rem 1rem; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { margin:0; font-size:1.15rem; color:var(--gold); }
+  .stat span { color:var(--dim); } .stat b { margin-left:.3rem; }
+  main { display:grid; gap:1rem; padding:1rem; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:.8rem 1rem; min-width:0; }
+  section h2 { margin:0 0 .6rem; font-size:.95rem; color:var(--gold); text-transform:uppercase; letter-spacing:.05em; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:.25rem .4rem; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--dim); font-weight:normal; }
+  td.name { max-width:14rem; overflow:hidden; text-overflow:ellipsis; }
+  button, input, select { font:inherit; color:var(--text); background:#2c251e; border:1px solid var(--line); border-radius:4px; padding:.25rem .6rem; }
+  button { cursor:pointer; } button:hover { border-color:var(--gold); }
+  button.danger { border-color:var(--red); color:#f0b3a8; } button.danger:hover { background:#4a231d; }
+  input { min-width:0; }
+  .row { display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; margin:.35rem 0; }
+  .row > input[type=text], .row > input[type=password] { flex:1 1 10rem; }
+  #chat { height:22rem; overflow-y:auto; background:#17130f; border:1px solid var(--line); border-radius:4px; padding:.4rem .6rem; font-family:ui-monospace, monospace; font-size:13px; }
+  #chat div { white-space:pre-wrap; word-break:break-word; }
+  .t { color:var(--dim); } .k-1 { color:#c9a6e8; } .k-2 { color:var(--gold); } .k-3 { color:#e8a6c9; } .k-4 { color:var(--dim); font-style:italic; }
+  .pill { padding:0 .4rem; border-radius:3px; background:#3a3128; font-size:12px; margin-left:.3rem; } .pill.on { background:#2f4a2c; color:var(--green); }
+  #msg { position:fixed; right:1rem; bottom:1rem; padding:.5rem .9rem; border-radius:4px; background:#2f4a2c; display:none; max-width:30rem; } #msg.err { background:#5a2a22; }
+  .dim { color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="name">Sacred GameServer</h1>
+  <div class="stat"><span>players</span><b id="players">-</b></div>
+  <div class="stat"><span>uptime</span><b id="uptime">-</b></div>
+  <div class="stat"><span>tick</span><b id="tick">-</b></div>
+  <div class="stat"><span>mode</span><b id="mode">-</b></div>
+  <div id="flags"></div>
+</header>
+<main>
+  <section>
+    <h2>Players</h2>
+    <table><thead><tr><th>#</th><th>Name</th><th>Address</th><th>Ping</th><th>State</th><th></th></tr></thead><tbody id="playerRows"></tbody></table>
+    <div id="noPlayers" class="dim">Nobody is connected.</div>
+  </section>
+  <section>
+    <h2>Chat</h2>
+    <div id="chat" aria-live="polite"></div>
+    <form id="chatForm" class="row">
+      <select id="chatTo"><option value="0">Everybody (broadcast)</option></select>
+      <input id="chatText" type="text" maxlength="120" placeholder="Message as the server" autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+  </section>
+  <section>
+    <h2>Session</h2>
+    <div class="row"><button id="lock"></button><button id="pause"></button></div>
+    <div class="row"><label>Max players <input id="maxPlayers" type="number" min="1" max="16" style="width:5rem"></label><button id="setMax">Set</button></div>
+    <div class="row"><label>Name <input id="serverName" type="text" maxlength="60"></label><button id="setName">Set</button></div>
+    <div class="row"><label>Password <input id="password" type="password" maxlength="32" placeholder="empty removes it" autocomplete="new-password"></label><button id="setPassword">Set</button></div>
+    <div class="row">
+      <select id="gameMode"><option value="0">Default</option><option value="1">Free game</option><option value="2">Player killer</option><option value="3">Campaign</option><option value="4">Underworld campaign</option></select>
+      <select id="gameLevel"><option value="0">Any level</option><option value="1">Bronze</option><option value="2">Silver</option><option value="3">Gold</option><option value="4">Platinum</option><option value="5">Niobium</option></select>
+      <button id="setMode">Apply</button><span class="dim">only before the host world exists</span>
+    </div>
+    <div class="row"><button id="endSession" class="danger">End session (kick everybody)</button><button id="shutdown" class="danger">Shut the server down</button></div>
+  </section>
+  <section>
+    <h2>Bans</h2>
+    <table><thead><tr><th>Address</th><th>Reason</th><th>Since</th><th></th></tr></thead><tbody id="banRows"></tbody></table>
+    <form id="banForm" class="row"><input id="banAddress" type="text" placeholder="IP address" required><input id="banReason" type="text" placeholder="Reason" maxlength="100"><button class="danger" type="submit">Ban</button></form>
+  </section>
+</main>
+<div id="msg"></div>
+<script>
+'use strict';
+// Same origin by default (the browser asks for the password once). For a page hosted elsewhere or embedded:
+//   index.html?api=https://host:8080&token=PASSWORD   (the server must list that origin in WebUi:CorsOrigins)
+const params = new URLSearchParams(location.search);
+const base = (params.get('api') || '').replace(/\/$/, '');
+const token = params.get('token') || sessionStorage.getItem('gsToken') || '';
+if (params.get('token')) { sessionStorage.setItem('gsToken', token); history.replaceState(null, '', location.pathname + (base ? '?api=' + encodeURIComponent(base) : '')); }
+const $ = id => document.getElementById(id);
+const modes = ['Default', 'Free game', 'Player killer', 'Campaign', 'Underworld'];
+let overview = null, lastChat = 0, players = [];
+
+async function api(path, body) {
+  const headers = {};
+  if (token) headers.Authorization = 'Bearer ' + token;
+  const options = { headers, cache: 'no-store' };
+  if (body !== undefined) { options.method = 'POST'; headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
+  const response = await fetch(base + path, options);
+  if (!response.ok) {
+    let message = response.statusText;
+    try { message = (await response.json()).error || message; } catch { }
+    throw new Error(message || ('HTTP ' + response.status));
+  }
+  return response.json();
+}
+function toast(text, error) { const m = $('msg'); m.textContent = text; m.className = error ? 'err' : ''; m.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => m.style.display = 'none', 3500); }
+async function send(path, body, confirmText) {
+  if (confirmText && !confirm(confirmText)) return;
+  try { await api('/api/' + path, body); await refresh(); } catch (e) { toast(e.message, true); }
+}
+function el(tag, text, cls) { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; }
+function duration(seconds) { seconds = Math.floor(seconds); const d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600), m = Math.floor(seconds % 3600 / 60); return (d ? d + 'd ' : '') + (h || d ? h + 'h ' : '') + m + 'm'; }
+function pill(text, on) { return el('span', text, 'pill' + (on ? ' on' : '')); }
+
+function drawOverview(o) {
+  overview = o;
+  $('name').textContent = o.name;
+  $('players').textContent = o.players + ' / ' + o.maxPlayers;
+  $('uptime').textContent = duration(o.uptimeSeconds);
+  $('tick').textContent = o.tick;
+  $('mode').textContent = modes[o.mode] || o.mode;
+  const flags = $('flags'); flags.replaceChildren();
+  flags.append(pill(o.locked ? 'locked' : 'open', o.locked), pill(o.paused ? 'paused' : 'running', !o.paused), pill(o.passwordSet ? 'password' : 'no password', o.passwordSet),
+    pill(o.worldAvailable ? 'world up' : 'lobby', o.worldAvailable), pill(o.lobbyConfigured ? (o.lobbyOnline ? 'lobby online' : 'lobby offline') : 'no lobby', o.lobbyOnline));
+  $('lock').textContent = o.locked ? 'Unlock session' : 'Lock session';
+  $('pause').textContent = o.paused ? 'Continue game' : 'Pause game';
+  for (const [id, value] of [['maxPlayers', o.maxPlayers], ['serverName', o.name]]) if (document.activeElement !== $(id)) $(id).value = value;
+}
+function drawPlayers(list) {
+  players = list;
+  const body = $('playerRows'); body.replaceChildren();
+  $('noPlayers').style.display = list.length ? 'none' : 'block';
+  for (const p of list) {
+    const row = el('tr');
+    row.append(el('td', p.slot), el('td', p.name + (p.isHost ? ' (host)' : ''), 'name'), el('td', p.address + ' ' + p.transport), el('td', p.latencyMs + ' ms'),
+      el('td', p.inGame ? 'in game' : p.ready ? 'ready' : 'lobby'));
+    const actions = el('td');
+    const kick = el('button', 'Kick'); kick.onclick = () => send('kick', { slot: p.slot, value: 0 }, 'Kick ' + p.name + '?');
+    const ban = el('button', 'Ban', 'danger'); ban.onclick = () => send('ban', { slot: p.slot, reason: prompt('Reason (optional)') || '' }, 'Ban the address of ' + p.name + '?');
+    actions.append(kick, ' ', ban);
+    row.append(actions); body.append(row);
+  }
+  const select = $('chatTo'), current = select.value;
+  select.replaceChildren(new Option('Everybody (broadcast)', '0'));
+  for (const p of list) select.append(new Option('#' + p.slot + ' ' + p.name, String(p.slot)));
+  select.value = [...select.options].some(o => o.value === current) ? current : '0';
+}
+function drawBans(list) {
+  const body = $('banRows'); body.replaceChildren();
+  for (const b of list) {
+    const row = el('tr'); row.append(el('td', b.address), el('td', b.reason), el('td', new Date(b.createdUnixMs).toLocaleString()));
+    const unban = el('button', 'Lift'); unban.onclick = () => send('unban', { address: b.address });
+    const cell = el('td'); cell.append(unban); row.append(cell); body.append(row);
+  }
+}
+function addChat(entry) {
+  const box = $('chat'), stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  const line = el('div', undefined, 'k-' + entry.kind);
+  const time = new Date(entry.timeUnixMs).toLocaleTimeString();
+  let who;
+  switch (entry.kind) {
+    case 0: who = entry.fromName + ': '; break;
+    case 1: who = entry.fromName + ' (#' + entry.fromSlot + ') to #' + entry.toSlot + ': '; break;
+    case 2: who = 'SERVER: '; break;
+    case 3: who = 'SERVER to #' + entry.toSlot + ': '; break;
+    default: who = '* ' + (entry.fromName ? entry.fromName + ' ' : '');
+  }
+  line.append(el('span', time + ' ', 't'), who + entry.text);
+  box.append(line);
+  while (box.childElementCount > 500) box.firstElementChild.remove();
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+async function refresh() {
+  try {
+    const [o, p, b] = await Promise.all([api('/api/overview'), api('/api/players'), api('/api/bans')]);
+    drawOverview(o); drawPlayers(p); drawBans(b);
+  } catch (e) { toast('Cannot reach the server: ' + e.message, true); }
+}
+async function pollChat() {
+  for (;;) {
+    try {
+      const page = await api('/api/chat?after=' + lastChat + '&wait=20');
+      for (const entry of page.entries) addChat(entry);
+      lastChat = page.last;
+    } catch { await new Promise(r => setTimeout(r, 3000)); }
+  }
+}
+
+$('chatForm').onsubmit = async e => {
+  e.preventDefault();
+  const text = $('chatText').value.trim(), to = Number($('chatTo').value);
+  if (!text) return;
+  await send(to ? 'message' : 'broadcast', { slot: to, text });
+  $('chatText').value = '';
+};
+$('lock').onclick = () => send('lock', { value: overview && overview.locked ? 0 : 1 });
+$('pause').onclick = () => send('pause', { value: overview && overview.paused ? 0 : 1 });
+$('setMax').onclick = () => send('max-players', { value: Number($('maxPlayers').value) });
+$('setName').onclick = () => send('name', { text: $('serverName').value });
+$('setPassword').onclick = async () => { await send('password', { text: $('password').value }, $('password').value ? null : 'Remove the password?'); $('password').value = ''; };
+$('setMode').onclick = () => send('mode', { value: Number($('gameMode').value), slot: Number($('gameLevel').value) });
+$('endSession').onclick = () => send('end-session', {}, 'Kick every player and reset the session?');
+$('shutdown').onclick = () => send('shutdown', {}, 'Shut the whole server down? It will not restart by itself.');
+$('banForm').onsubmit = async e => { e.preventDefault(); await send('ban', { address: $('banAddress').value.trim(), reason: $('banReason').value }); $('banAddress').value = ''; $('banReason').value = ''; };
+
+refresh(); setInterval(refresh, 2000); pollChat();
+</script>
+</body>
+</html>

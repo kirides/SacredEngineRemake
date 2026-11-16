@@ -41,8 +41,26 @@ public sealed class WebUiOptions
         return new ConfigurationBuilder()
             .AddEnvironmentVariables(EnvironmentPrefix)
             .AddJsonFile(Path.GetFullPath(path), optional: !explicitPath, reloadOnChange: false)
-            .AddCommandLine(args.Where(a => !(a.StartsWith('-') && !a.StartsWith("--", StringComparison.Ordinal))).ToArray(), SwitchMappings)
+            .AddCommandLine(NormalizeArguments(args), SwitchMappings)
             .Build();
+    }
+
+    /// <summary>
+    /// Drops single-dash arguments (the command line provider would reject them) and turns a bare switch into <c>--name=true</c>:
+    /// otherwise "--webui-enabled --webui-port=8080" would read the second argument as the value of the first.
+    /// </summary>
+    internal static string[] NormalizeArguments(string[] args)
+    {
+        var result = new List<string>(args.Length);
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (arg.StartsWith('-') && !arg.StartsWith("--", StringComparison.Ordinal)) continue;
+            var bare = arg.StartsWith("--", StringComparison.Ordinal) && !arg.Contains('=');
+            if (bare && i + 1 < args.Length && !args[i + 1].StartsWith('-')) { result.Add(arg); result.Add(args[++i]); }
+            else result.Add(bare ? arg + "=true" : arg);
+        }
+        return result.ToArray();
     }
 
     private static readonly Dictionary<string, string> SwitchMappings = new(StringComparer.OrdinalIgnoreCase)
