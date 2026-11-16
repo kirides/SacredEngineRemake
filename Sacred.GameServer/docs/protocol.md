@@ -1,0 +1,58 @@
+# GameServer protocol notes
+
+Verified facts about the original GameServer.exe (Sacred Gold) as reproduced by `Sacred.GameServer`. Addresses refer to GameServer.exe unless noted. Captures were made with the real client against the original and against this server.
+
+## Admission (LAN, Open Net, Closed Net)
+
+Server to joining client, in this order:
+
+1. `0x011` welcome, 6 bytes. Byte 0 holds flags: `0x01` = host, `0x08` = lobby connected (set at 0x4EB93D when [0xA841FC] is set and FUN_0048d100 is true). Open Net host: `09 01 00 00 00 00`.
+2. `0x01B` roster: 17 records of 834 bytes (session name, then each player's FIRSTCONTACT data).
+3. `0x043` time probe.
+4. `0x153` reference grant: 3000 for the host, 1000 per joiner.
+5. Exactly one `0x00B` world environment. Further `0x00B` follow every 30 s and after in-game sector entries.
+6. `0x151` to the other players.
+
+There is no `0x01E` at admission. `0x153` and `0x154` are also client requests.
+
+FIRSTCONTACT name field (+0x8A) is `<account>.<character>`; the roster copies it unchanged. Byte 6 is the hero block (Closed Net slot), byte 7 the class.
+
+## Session name
+
+Case `0x022` at 0x4CAF67 accepts the rename only if the sender is the host, flags bit 0x08 is clear, it is not in game (+0x75) and the password is accepted (+0x73). The name is stored at +0x3A58. Otherwise the server answers `0x009` with value `0x64`. With a lobby, the host's rename is therefore refused before the `0x023` echo.
+
+## Sectors and objects
+
+- `0x148` sector entry (FUN_004cf0d0, 62 bytes). Word +0 is the sector the player now stands in: if it has no owner, ownership goes to this player (`0x020`). Word +2 is the sector it came from: if the player owned it, it gets `0x01F`, and ownership moves to the first remaining player standing in it (`0x020`), else the sector has no owner.
+- Before answering `0x148`, FUN_004cd4e0 (called at 0x4CF281) streams every object of the entered sector through FUN_004cda80: `0x169` if the player knows the object, else `0x16F`. The player's own hero (ref = slot) is skipped.
+- `0x16E` bodies carry the position inside: `[ref][type][0xFEEDF00D][ref][type][flags u32 @20][sector u16 @24][x u32 @26][y u32 @30]`. Sent back as `0x16F` with a 24-byte prefix `[ref][type][x][y][0][sector][0]`; the flags change from `0x201` to `0x400001` (`(flags & ~0x200) | 0x400000`).
+- The sector owner (the client holding `0x020`) spawns and simulates the sector's creatures. Their level, HP and stats live inside those object bodies, computed from the owner's local balance tables and difficulty. No other message carries sector balance values.
+- `0x14C` (case 0x4C70D7, 12 bytes) goes to the other players whose hero sector (FUN_00495f60/495dc0) equals the sender's.
+- `0x17F` NW_FIGHT_ENEMY_SPOTTED (case 0x4C61C7, FUN_004ce530): pairs of `[creature ref u32][value u32]`. Per pair the server toggles fight flag `0x8000` at object +0x200, sends `0x119 [ref][flags]` to in-game players if it changed (FUN_004d3ea0 mode 2) and hands the creature to the spotter (FUN_004d6950). Consumed here until the server has real object state.
+- `0x14F` (case 0x4C6030): a 9940-byte statistics block, copied into the cStatsManager slot (FUN_00477500/FUN_00477490) and nothing else. Clients send it at upload, at world start and before leaving.
+
+## Lobby (Open and Closed Net)
+
+- The only lobby sender is FUN_0048d380. Its callers send 12 login, 13 update, 14 logout, 45 player joined, 46 player left, 30 chat and 32 private chat (0x166-byte text body, from the console), and 55 MOTD request (after the lobby's public IP arrived, FUN_004ED7E0).
+- The original registers its game in channel 5 only. The lobby connection idles without a time-out.
+- Closed Net: the original never requests or uploads heroes. After the server's 45 `[perm][block]` it expects the lobby to push PublicData (11) `[perm i32][block u16][size i32][offset i32][length i32][data]` with the whole block. It forwards the block unchanged to the client as `0x132` (internal 0x29, case 0x4CB287). This server also asks with 19 `[perm][block][offset 0][length 0x20000]` if no push came within 2 s, and delivers `0x132` once per player and admission.
+- Hero block: 556-byte preview (0xC3 chunk) | u32 zlib size | u32 file size | zlib(hero file).
+- Message 18 upload `[perm][block][size][offset 0][length][data]` exists in `LobbyClient.UploadCharacter` but the original has no save path (not on leave, not periodically, not from the menu). Server-side saving belongs to authoritative mode: save on every disconnect (hard ones too), periodically and after trades and drops, so killing the client cannot restore an older hero (anti-dupe).
+
+## Sacred Bild UDP transport (SBT)
+
+Host side of Sacred Bild's LAN transport, `--udp-port` (default 2105). Little-endian, magic `SBT` + type, datagrams at most 1200 bytes.
+
+| Type | Size | Layout |
+|---|---|---|
+| HELLO `H` | 64 | +4 version 1, +8 client nonce, +12 u16 game TCP port, +16 cookie[16] |
+| CHALLENGE `C` | 32 | +4 version, +8 nonce, +16 cookie |
+| WELCOME `W` | 32 | +4 version, +8 nonce, +12 session id, +16 u64 token |
+| REFUSED `N` | 16 | +12 reason: 1 off, 2 not listening, 3 full, 4 version |
+| DATA `D`, KEEPALIVE `K`, CLOSE `X`, PUNCH `P` | 16 + n | +4 session id, +8 u64 token, then the KCP packet for DATA |
+
+KCP: conv = session id, stream mode, MTU 1184, windows 128/256, nodelay(1, 10, 1, 1), no dead-link limit. Keep-alive every 1 s, every 200 ms while the peer is silent; dead after 45 s; resend at once when the peer is heard again after 300 ms of silence. Roaming: answer to the address of the last valid datagram. At most 64 sessions. The cookie is any keyed MAC (here HMAC-SHA256 over address, port, nonce and a 30 s period). TinCat frames go into KCP unchanged.
+
+## Sending
+
+All sending goes through `Net/IClientLink` (frame in/out, flush, close) and `IClientListener`. Sessions have an identity independent of the socket, so TCP and KCP links are interchangeable.
