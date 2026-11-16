@@ -23,7 +23,7 @@ path here is separate and allocation free.
 | Leave / kick (`FUN_004d6ac0`) | done: 0x157 to the victim, 0x150 to others, host hand-over 0x0D to the first in-game player (`FUN_004cdc50`), otherwise unlock and end the session (reason 0x10) |
 | Generic forwarding (`FUN_004d3ea0`) | done for ~140 opcodes, table in `Session/Routing.cs`: pure forwards, forwards after a server-world update (not modelled yet) including cases that share a jump tail (e.g. 0x4C81D1, 0x4C9907); ~20 opcodes the original only applies to its own state (inventories, NW_ITEM cheat protection, references) are consumed; the original's internal menu commands (0x109..0x10C, 0x152..0x15B) are never accepted from clients. `tools`-style classification of every case is reproducible from the disassembly |
 | LAN announcement (UDP broadcast, 0xAE payload) | done, format from `GoldLanAnnouncementCodec` |
-| `Gameserver.cfg` keys | `NETWORK_PORT_TCP`, `NETWORK_PORT_LISTEN`, `NETWORK_PASSWORD`, `NETWORK_PRECONFIG_MODE/LEVEL/MAXPLAYERS`, `LADDER_EXPORT` parsed (defaults 2005/2006 are from the exe's default-port functions, mode->flag mapping is best effort) |
+| `Gameserver.cfg` keys | `NETWORK_PORT_TCP`, `NETWORK_PORT_LISTEN`, `NETWORK_PASSWORD`, `NETWORK_PRECONFIG_MODE/LEVEL/MAXPLAYERS`, `LADDER_EXPORT` parsed (defaults TCP 2006 / listen 2005 from the exe (0x4F5BAC/0x4F59FC); the file uses KEY:VALUE, and it is also read from --game-dir, mode->flag mapping is best effort) |
 | Lobby registration (Open Internet) | done, see "Lobby" below; verified against `sacred-lobby` (Go) |
 | Closed Net characters | relay as in the original: a block 11 from the lobby is sent to the matching player as 0x132; the server-side hero load (`CHARACTER_SAVEGAME`) needs the world (roadmap) |
 | Object world (`Session/ObjectMirror.cs`, `GameServerHost.World.cs`) | done as a mirror: 0x16E/0x16F are absorbed and streamed once to each in-game player lacking the object (`FUN_004cd040`), the whole world goes to a participant before its 0x017 answer (by reference order), 0x169/0x16C/0x11A/0x11B absorbed + forwarded, 0x16B/0x16D/0x14B absorbed only, 0x166/0x167 from the owner delete and notify holders, from others only clear their bit (case 0x4C4D86). The mirror keeps the latest serialized state; it does not apply later field updates (0x165 position etc.) like the original's real objects do |
@@ -48,7 +48,7 @@ correct but chattier. Mode 1 (connected) and 2 (in game) are exact.
 ## Run
 
 ```
-SacredGameServer --game-dir=/srv/sacred --network-port-tcp=2005 --network-password=secret
+SacredGameServer --game-dir=/srv/sacred --network-port-tcp=2006 --network-password=secret
 SacredGameServer --accept-any-data      # development: skip version/fingerprint checks
 ```
 

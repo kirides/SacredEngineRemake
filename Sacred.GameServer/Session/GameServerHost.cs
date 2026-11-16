@@ -169,6 +169,7 @@ public sealed partial class GameServerHost : IDisposable
 
     private void Dispatch(PlayerSession s, in GoldMessageView m)
     {
+        if (Log.TraceEnabled) Log.Trace("RX", s.Slot, m.Opcode, m.Sender, m.Origin, m.Payload);
         switch (m.Opcode)
         {
             case 0x10: OnFirstContact(s, m); return;
@@ -274,6 +275,11 @@ public sealed partial class GameServerHost : IDisposable
     /// <summary>Send a pre-built batch of messages.</summary>
     public void SendBatch(PlayerSession s, ReadOnlySpan<byte> batch)
     {
+        if (Log.TraceEnabled)
+        {
+            var reader = new GoldBatchReader(batch);
+            while (reader.TryRead(out var traced)) Log.Trace("TX", s.Slot, traced.Opcode, traced.Sender, traced.Origin, traced.Payload);
+        }
         var envelopeLength = GoldWire.EncodeEnvelope(batch, _envelope, _deflater);
         if (envelopeLength < 0) return;
         var frame = s.Connection.BeginFrame(TinCatWire.HeaderBytes + 4 + envelopeLength);

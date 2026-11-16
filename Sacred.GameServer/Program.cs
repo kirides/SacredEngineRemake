@@ -14,9 +14,11 @@ if (args.Contains("--help") || args.Contains("-h"))
 
         Reads Gameserver.cfg (NETWORK_PORT_TCP, NETWORK_PORT_LISTEN, NETWORK_PASSWORD, NETWORK_PRECONFIG_MODE,
         NETWORK_PRECONFIG_LEVEL, NETWORK_PRECONFIG_MAXPLAYERS, LADDER_EXPORT). Options use the same keys:
-          --network-port-tcp=2005 --network-port-listen=2006 --network-password=secret
+          --network-port-tcp=2006 --network-port-listen=2005 --network-password=secret   (Gameserver.cfg in the working or game directory)
           --game-dir=/srv/sacred    directory with Sacred.exe, tincat2.dll and the Pak/Bin data (required unless --accept-any-data)
           --accept-any-data         do not verify client version/data fingerprints (development only)
+          --announce-version=N      client version to announce when no game data is read
+          --trace                   log every received and sent message (opcode, sender, origin, first 32 bytes)
           --network-lobby=lobby.example.org --network-lobbyport=7066   register the game in an Open Internet lobby
           --lobby-channel=5         lobby channel of the game (GameServer.exe uses 5)
           --server-name="My realm"  --public-address=203.0.113.5  --lan-announce=0  --tick-ms=20  --config=path
@@ -26,6 +28,7 @@ if (args.Contains("--help") || args.Contains("-h"))
 
 var config = GameServerConfig.Load(args);
 Log.Open("Gameserver.log");
+Log.TraceEnabled = config.Trace;
 GoldLanCompatibility? compatibility = null;
 if (!config.AcceptAnyData)
 {
@@ -34,9 +37,17 @@ if (!config.AcceptAnyData)
     catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
     { Log.Info($"ERROR: cannot read game data from '{config.GameDirectory}': {e.Message}"); return 2; }
 }
-var rules = new AdmissionRules(compatibility);
+else if (config.GameDirectory is not null && config.AnnounceVersion is null)
+{
+    // Fingerprints are not enforced, but the client still hides games whose version differs from its own (red "!").
+    try { compatibility = GoldLanCompatibility.Read(config.GameDirectory); }
+    catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException) { compatibility = null; }
+}
+var announcedVersion = config.AnnounceVersion ?? compatibility?.Version ?? 0;
+if (announcedVersion == 0) Log.Info("WARNING: no client version known (pass --game-dir or --announce-version); clients will see the game as incompatible.");
+var rules = new AdmissionRules(config.AcceptAnyData ? null : compatibility);
 var advertised = config.PublicAddress is { } text && IPAddress.TryParse(text, out var parsed) ? parsed : IPAddress.Loopback;
-var lan = config.LanAnnounce ? new LanAnnouncer(config, compatibility?.Version ?? 0, advertised) : null;
+var lan = config.LanAnnounce ? new LanAnnouncer(config, announcedVersion, advertised) : null;
 GameServerHost host;
 try { host = new GameServerHost(config, rules, lan); }
 catch (System.Net.Sockets.SocketException e) { Log.Info($"ERROR: The TCP port seems to be already in use! ({e.SocketErrorCode})"); return 3; }
@@ -45,7 +56,7 @@ LobbyClient? lobby = null;
 if (config.LobbyHost is { } lobbyHost)
 {
     var publicIp = advertised.Equals(IPAddress.Loopback) ? 0u : System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(advertised.MapToIPv4().GetAddressBytes());
-    var record = host.LobbyRecord(compatibility?.Version ?? 0, publicIp);
+    var record = host.LobbyRecord(announcedVersion, publicIp);
     lobby = new LobbyClient(lobbyHost, config.LobbyPort > 0 ? config.LobbyPort : 7066, record);
     host.AttachLobby(lobby, record);
     lobby.Start();

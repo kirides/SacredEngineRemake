@@ -11,9 +11,10 @@ public enum PreconfigMode { None = 0, FreeGame = 1, PlayerKiller = 2, Campaign =
 /// </summary>
 public sealed class GameServerConfig
 {
-    public int TcpPort { get; set; } = 2005;
-    /// <summary>UDP port used for LAN announcements (original NETWORK_PORT_LISTEN).</summary>
-    public int ListenPort { get; set; } = 2006;
+    /// <summary>Game TCP port (original NETWORK_PORT_TCP, default 2006 at 0x4F5BAC).</summary>
+    public int TcpPort { get; set; } = 2006;
+    /// <summary>UDP port the clients listen on for LAN announcements (original NETWORK_PORT_LISTEN, default 2005 at 0x4F59FC).</summary>
+    public int ListenPort { get; set; } = 2005;
     public int LobbyPort { get; set; }
     public string? Password { get; set; }
     public PreconfigMode Mode { get; set; }
@@ -29,6 +30,10 @@ public sealed class GameServerConfig
     public bool LanAnnounce { get; set; } = true;
     public int TickMilliseconds { get; set; } = 20;
     public int MaxPasswordTries { get; set; } = 3;
+    /// <summary>Per-message wire trace in the log.</summary>
+    public bool Trace { get; set; }
+    /// <summary>Client data version announced on LAN and to the lobby when no game data is read (--accept-any-data).</summary>
+    public ushort? AnnounceVersion { get; set; }
     public string? LobbyHost { get; set; }
     /// <summary>Lobby channel of message 12 (GameServer.exe always sends 5, Open Net).</summary>
     public int LobbyChannel { get; set; } = 5;
@@ -39,6 +44,9 @@ public sealed class GameServerConfig
         var cfgPath = "Gameserver.cfg";
         foreach (var arg in args)
             if (arg.StartsWith("--config=", StringComparison.OrdinalIgnoreCase)) cfgPath = arg[9..];
+        var explicitCfg = args.Any(a => a.StartsWith("--config=", StringComparison.OrdinalIgnoreCase));
+        if (!explicitCfg && !File.Exists(cfgPath) && GameDirectoryArgument(args) is { } gameDir)
+            cfgPath = Path.Combine(gameDir, "Gameserver.cfg"); // the original reads it next to GameServer.exe
         if (File.Exists(cfgPath))
             foreach (var line in File.ReadLines(cfgPath)) config.ApplyLine(line);
         foreach (var arg in args)
@@ -49,11 +57,21 @@ public sealed class GameServerConfig
         return config;
     }
 
+    private static string? GameDirectoryArgument(string[] args)
+    {
+        foreach (var arg in args)
+            foreach (var key in new[] { "--game-dir=", "--game_dir=", "--game-directory=", "--game_directory=" })
+                if (arg.StartsWith(key, StringComparison.OrdinalIgnoreCase)) return arg[key.Length..];
+        return null;
+    }
+
     public void ApplyLine(string line)
     {
         line = line.Trim();
         if (line.Length == 0 || line[0] is '#' or ';' or '/') return;
-        var split = line.IndexOf('=');
+        // Command line uses KEY=VALUE; Gameserver.cfg lines are KEY:VALUE in the shipped file. Take whichever comes first.
+        var equals = line.IndexOf('='); var colon = line.IndexOf(':');
+        var split = equals < 0 ? colon : colon < 0 ? equals : Math.Min(equals, colon);
         var key = (split < 0 ? line : line[..split]).Trim().Replace('-', '_').ToUpperInvariant();
         var value = split < 0 ? "1" : line[(split + 1)..].Trim();
         switch (key)
@@ -75,6 +93,8 @@ public sealed class GameServerConfig
             case "MAX_PASSWORD_TRIES": MaxPasswordTries = Math.Clamp(Int(value, 3), 1, 100); break;
             case "LOBBY_HOST" or "NETWORK_LOBBY": LobbyHost = value.Length == 0 ? null : value; break;
             case "LOBBY_CHANNEL": LobbyChannel = Int(value, LobbyChannel); break;
+            case "TRACE": Trace = Int(value, 1) != 0; break;
+            case "ANNOUNCE_VERSION" or "VERSION": AnnounceVersion = (ushort)Math.Clamp(Int(value, 0), 0, ushort.MaxValue); break;
         }
     }
 
@@ -84,13 +104,16 @@ public sealed class GameServerConfig
     /// <summary>The session game-flags word advertised in the LAN announcement and opcode 0x1E.</summary>
     public uint GameFlags()
     {
+        // FUN_004eda60 starts every session as 0x20 (free game; | 1 while the server window is shown, which a headless
+        // server is not: "quiet"). The preconfig setters 0x4EDA80/0x4EDAD0/0x4EDB00 replace the mode bits.
         uint flags = Mode switch
         {
             PreconfigMode.PlayerKiller => 0x40,
             PreconfigMode.Campaign => 0x10,
             PreconfigMode.CampaignUnderworld => 0x40000,
-            _ => 0,
+            _ => 0x20,
         };
+        if (Password is not null) flags |= 0x2; // server init (0x4E8C9C): password protected
         flags |= Level switch { 1 => 0x100u, 2 => 0x200u, 3 => 0x400u, 4 => 0x800u, _ => 0u };
         return flags;
     }

@@ -27,7 +27,7 @@ public sealed class LanAnnouncer : IDisposable
         BinaryPrimitives.WriteUInt16LittleEndian(_plain.AsSpan(2), (ushort)config.TcpPort);
         var ip = advertised.GetAddressBytes();
         BinaryPrimitives.WriteUInt32LittleEndian(_plain.AsSpan(4), (uint)(ip[0] << 24 | ip[1] << 16 | ip[2] << 8 | ip[3]));
-        var flags = config.GameFlags() | (config.Password is null ? 0u : 0u);
+        var flags = config.GameFlags();
         BinaryPrimitives.WriteUInt32LittleEndian(_plain.AsSpan(8), flags);
         _plain[13] = (byte)config.MaxPlayers;
         var name = config.ServerName.Length > 79 ? config.ServerName[..79] : config.ServerName;
