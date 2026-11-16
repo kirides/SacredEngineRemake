@@ -61,5 +61,5 @@ data mismatch, password, chat relay, allocation).
 2. Message routing table (which opcodes are relayed to all, to the host, to one player, or consumed). The original keeps a
    per-opcode table; the receive handler is `FUN_004eb0a0`, the opcode -> message object factory is `FUN_0042b500`.
 3. Authoritative world: objects, creatures, sectors, loot (`Sacred.GameplayHost` already has the loader/script pieces).
-4. Lobby registration (type 12 login with public IP, announce/reannounce/remove) against `sacred-lobby`.
+4. Lobby registration (type 12 login with public IP, announce/reannounce/remove) against `sacred-lobby`. Closed Net: the lobby owns the characters. The server reports a joining player (msg 45), fetches the full slot (msg 19: 556-byte preview plus zlib save) and uploads it on save/leave (msg 18). Open Net uses channel 5, not 6.
 5. Save/load of heroes (`ItemDataMgr::saveHero`), ladder export (`LADDER_EXPORT`).
