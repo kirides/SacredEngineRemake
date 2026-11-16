@@ -96,6 +96,10 @@ public sealed class ObjectMirror
         _objects.Clear();
     }
 
+    /// <summary>Sector word of a stored state (24-byte prefix: [ref][type][x][y][surface][sector]); 0 when unknown.</summary>
+    public static ushort Sector(Entry entry) =>
+        entry.LongPrefix && entry.Length >= 24 ? BinaryPrimitives.ReadUInt16LittleEndian(entry.Payload[20..]) : (ushort)0;
+
     /// <summary>The opcode the original streamer uses: 0x16F with a position, 0x16E (8-byte prefix) without one.</summary>
     public static ushort StreamOpcode(Entry entry, out int prefix, out bool hasPosition)
     {

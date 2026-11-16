@@ -41,6 +41,7 @@ public sealed partial class GameServerHost
         var current = BinaryPrimitives.ReadUInt16LittleEndian(e);
         var previous = BinaryPrimitives.ReadUInt16LittleEndian(e[2..]);
         BinaryPrimitives.WriteUInt32LittleEndian(e, 0);
+        var order = SortedWorldReferences();
         for (var i = 0; i < 9; i++)
         {
             e[40 + i] = 0; e[49 + i] = 0;
@@ -60,6 +61,7 @@ public sealed partial class GameServerHost
                     Log.Info($"Player {s.Slot}: ENTERSECTOR {entered} with scripts");
                 }
                 else Log.Info($"Player {s.Slot}: enters sector {entered} without scripts (Bitmask={before})");
+                StreamSectorTo(s, entered, order);                    // 0x4CF281 -> FUN_004cd4e0, before the answer
             }
             var left = BinaryPrimitives.ReadUInt16LittleEndian(e[(22 + i * 2)..]);
             if (left != 0)
@@ -79,6 +81,24 @@ public sealed partial class GameServerHost
         if (s.InGame) SendEnvironment(s);
     }
 
+    /// <summary>
+    /// FUN_004cd4e0(sector, slot): every object standing in an entered sector goes to the player, in reference order, through
+    /// <c>FUN_004cda80</c>: as 0x169 when the player already has it, else as 0x16F (0x16E without a position). The player's
+    /// own hero (reference = slot) and objects whose owner is not connected are skipped. Items carried by creatures (+0x1A4)
+    /// are not modelled: the mirror has no carrier relation.
+    /// </summary>
+    private void StreamSectorTo(PlayerSession s, ushort sector, ReadOnlySpan<uint> order)
+    {
+        var bit = Bit(s.Slot);
+        foreach (var reference in order)
+        {
+            if (reference == s.Slot || !_world.TryGet(reference, out var entry)) continue;
+            if (ObjectMirror.Sector(entry) != sector || entry.Owner is 0 or > MaxSlots || _slots[entry.Owner] is null) continue;
+            if ((entry.KnownBy & bit) != 0) SendMessage(s, 0x169, 0, 0, entry.Payload);
+            else SendObject(s, entry);
+        }
+    }
+
     /// <summary>The owner left <paramref name="sector"/>: the first remaining player takes it if it stands in it (0x020).</summary>
     private void HandOverSector(ushort sector, ushort leaverBit)
     {
@@ -91,6 +111,17 @@ public sealed partial class GameServerHost
             _sectorOwner[sector] = (byte)slot;
             SendMessage(next, 0x020, 0, 0, default);
         }
+    }
+
+    /// <summary>Client 0x14C (case 0x4C70D7, 12 bytes): forwarded unchanged to every other player whose hero stands in the
+    /// sender's sector (<c>FUN_00495f60</c> compares the heroes' sector words). The original also hands the referenced object
+    /// to its world first (not modelled).</summary>
+    private void OnSectorMessage(PlayerSession s, in GoldMessageView m)
+    {
+        if (s.CurrentSector == 0) return;
+        for (var slot = 1; slot <= MaxSlots; slot++)
+            if (_slots[slot] is { } other && other != s && other.CurrentSector == s.CurrentSector)
+                SendMessage(other, m.Opcode, m.Origin == 0 ? s.Slot : m.Origin, 0, m.Payload);
     }
 
     /// <summary>A removed player leaves all sectors; sectors it owned are handed over as on a sector change.</summary>

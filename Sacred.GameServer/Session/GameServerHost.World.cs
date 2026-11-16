@@ -79,14 +79,20 @@ public sealed partial class GameServerHost
             if (_slots[slot] is { InGame: true } target && (entry.KnownBy & Bit(slot)) == 0) SendObject(target, entry);
     }
 
+    /// <summary>All mirrored references, sorted (the original walks its object table in reference order). Reuses one buffer.</summary>
+    private ReadOnlySpan<uint> SortedWorldReferences()
+    {
+        if (_world.Count == 0) return default;
+        if (_streamOrder.Length < _world.Count) _streamOrder = new uint[_world.Count * 2];
+        var order = _streamOrder.AsSpan(0, _world.CopyReferences(_streamOrder));
+        order.Sort();
+        return order;
+    }
+
     /// <summary>Before a participant's 0x017 answer the original streams every object the participant lacks, by reference.</summary>
     private void StreamWorldTo(PlayerSession s)
     {
-        if (_world.Count == 0) return;
-        if (_streamOrder.Length < _world.Count) _streamOrder = new uint[_world.Count * 2];
-        var n = _world.CopyReferences(_streamOrder);
-        var order = _streamOrder.AsSpan(0, n);
-        order.Sort();
+        var order = SortedWorldReferences();
         var bit = Bit(s.Slot);
         foreach (var reference in order)
             if (_world.TryGet(reference, out var entry) && (entry.KnownBy & bit) == 0) SendObject(s, entry);

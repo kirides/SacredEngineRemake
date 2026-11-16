@@ -62,6 +62,7 @@ public sealed partial class GameServerHost
             case 0x148: OnSectorEntry(s, m); return;                // 0x4C7202 -> FUN_004cf0d0
             case 0x153: OnReferenceRequest(s, m); return;           // 0x4C48B5 -> FUN_004d6110
             case 0x154: OnTriggerRequest(s, m); return;             // 0x4C4B10
+            case 0x14C: OnSectorMessage(s, m); return;              // 0x4C70D7
             case 0x015: case 0x016: return;                         // upload begin (0x4C9ABD): state only, data follows
             case 0x017: case 0x018: WorldStart(s, m); return;       // 0x4C9F72
             case 0x019: case 0x01A: SetLock(s, m); return;          // 0x4CA469 / 0x4CA3D9

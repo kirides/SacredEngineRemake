@@ -92,4 +92,46 @@ public class WorldControlTests
         var second = joiner.WaitFor(0x148).Payload;
         for (var i = 0; i < 9; i++) { Assert.AreEqual(0, second[40 + i]); Assert.AreEqual(0, second[49 + i]); }
     }
+
+    private static byte[] ObjectState(uint reference, ushort sector, int dataBytes)
+    {
+        var p = new byte[24 + dataBytes];
+        BinaryPrimitives.WriteUInt32LittleEndian(p, reference);
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), 7);             // type
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), 100);           // x
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), 200);          // y
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(20), sector);
+        for (var i = 24; i < p.Length; i++) p[i] = (byte)i;
+        return p;
+    }
+
+    [TestMethod]
+    public void SectorEntryStreamsTheSectorsObjectsFirst()
+    {
+        using var server = new Server();
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        host.WaitFor(0x153);
+        var inside = ObjectState(0x20, 0x0B5D, 40);
+        host.Send(0x16F, inside);                                          // uploaded by the host: it has it
+        host.Send(0x16F, ObjectState(0x21, 0x0001, 40));                   // elsewhere: not streamed
+        var entry = Convert.FromHexString("5d0b00001f0b200b210b5e0b9d0b9c0b9b0b5c0b5d0b" + new string('0', 36 * 2) + "7c080000");
+        host.Send(0x148, entry);
+        var back = host.WaitFor(0x169);                                     // run 8: 0x169 x19 before the 0x148 answer
+        CollectionAssert.AreEqual(inside, back.Payload);
+        host.WaitFor(0x148);
+    }
+
+    [TestMethod]
+    public void SectorMessageGoesToPlayersInTheSameSector()
+    {
+        using var server = new Server();
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        using var joiner = RawClient.Admit(server.Port, "Joiner", 2);
+        var entry = Convert.FromHexString("5d0b00001f0b200b210b5e0b9d0b9c0b9b0b5c0b5d0b" + new string('0', 36 * 2) + "7c080000");
+        host.Send(0x148, entry); host.WaitFor(0x148);
+        joiner.Send(0x148, entry); joiner.WaitFor(0x148);
+        var message = new byte[12]; message[0] = 0x20;
+        host.Send(0x14C, message);
+        CollectionAssert.AreEqual(message, joiner.WaitFor(0x14C).Payload);
+    }
 }
