@@ -253,7 +253,9 @@ dialog h3{margin:0 0 .3rem}dialog p{margin:.2rem 0 .9rem}dialog input{width:100%
 #toast{position:fixed;left:50%;bottom:1.2rem;transform:translateX(-50%);padding:.6rem 1.1rem;border-radius:99px;background:var(--card2);border:1px solid var(--ok);box-shadow:var(--shadow);animation:fade 3.6s forwards}
 @keyframes fade{0%,85%{opacity:1}100%{opacity:0;visibility:hidden}}
 @media (max-width:960px){.grid{grid-template-columns:1fr}.chat{position:static;height:30rem}.pills{margin-left:0}}
-@media (max-width:520px){.toggles{grid-template-columns:1fr}.player{flex-wrap:wrap}.ping{order:3}.composer{flex-wrap:wrap}.composer select{max-width:none;flex:1 1 100%}}
+@media (max-width:520px){.toggles{grid-template-columns:1fr}.composer{flex-wrap:wrap}}
+@media (pointer:coarse){button,input,select{min-height:2.75rem}button.icon{width:2.75rem;height:2.75rem}input,select,textarea{font-size:16px}.acts{gap:.45rem}.ctl{flex-wrap:wrap}.app{padding:.6rem .6rem calc(.6rem + env(safe-area-inset-bottom))}details.danger summary{padding:.5rem 0}}
+@media (max-width:520px){.player{display:grid;grid-template-columns:auto 1fr auto;row-gap:.5rem}.player .acts{grid-column:1/-1;justify-content:flex-end}.top{padding:.8rem}.chat{height:min(34rem,calc(100dvh - 1.5rem))}.msg{flex-wrap:wrap;gap:.1rem .5rem}.msg .text{flex-basis:100%}.msg.k4 .text{flex-basis:auto}.composer select{flex:1 1 100%;max-width:none}.composer input{flex:1 1 60%}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:0s!important;scroll-behavior:auto!important}}
 """;
 
