@@ -21,7 +21,8 @@ namespace Sacred.GameServer.Auth.Hero;
 /// (companions, horse) and items attached to the hero model unchanged.</item>
 /// <item>C3 profile: the level word. CE: the statistics extension from 0x14F.</item>
 /// </list>
-/// Quest/script state (CD) and the start info (C4) are not visible to the server and stay as delivered.
+/// The quest pairs are part of the inventory streams (kept current from 0x145, <see cref="QuestRecords"/>). Chunk CD is the
+/// explored map (<see cref="ExploredMap"/>), client-only like the start info (C4): both stay as delivered.
 /// When nothing changed, the decoded chunks are identical to the baseline. Runs on the game loop thread; buffers are
 /// allocated once per writer.
 /// </summary>

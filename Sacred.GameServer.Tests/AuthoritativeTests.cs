@@ -7,7 +7,7 @@ using Sacred.GameServer.Session;
 namespace Sacred.GameServer.Tests;
 
 [TestClass]
-public class AuthoritativeTests
+public partial class AuthoritativeTests
 {
     private sealed class Server : IDisposable
     {

@@ -146,10 +146,12 @@ The block the lobby delivered (0x132) is the base; `HeroWriter` replaces what th
 | CA/CB inventories | latest 0x122 per inventory (id = slot, 17 = shared), then 0x13E pick / 0x13F place `[item ref][cell][inventory id]`. Cells hold only the item's anchor (word +4 = `01 \| w<<8 \| h<<16`); an item never seen in an inventory gets its footprint from the game's item tables (`--game-dir`: Weapon.pak row +0x1C/+0x1D via the Items.pak descriptor, see docs/protocol.md; matches every anchor cell of the test saves), 1x1 without them |
 | C3 / preview | level word; the block preview is this chunk |
 | CE | statistics extension: the 100 bytes after the 0x2670-byte primary block of 0x14F |
-| C4, CD (quests/scripts) | unchanged: the server does not see them |
+| Quest pairs (in CA) | the inventory stream's 8-byte `[key][word04]` records come with 0x122 and are kept current from 0x145 `[key][word04]` (`Auth/Hero/QuestRecords.cs`, `Session/GameServerHost.Quests.cs`): applied to the sender's and to every recipient's stream by the client's own rule (Sacred.exe 0x5D8280: refused when a pair has the same key or any pair has word04 0, else appended). These pairs are the only quest state in a hero file; quest journal, script variables and actual quests (0x1B8..0x1BE, 0x1C6/0x1C7, 0x1C9/0x1CA, 0x1D3..0x1D5) are world state and are not part of it |
+| C4, CD | unchanged. CD (decoded CC) is not scripts but the **explored map**: `[0xB00BB00B][area count][0][0]`, per area `[i][0]` + 128-byte 32x32 reveal mask or `[i][0xDEADB00B]` (6051 areas in Gold). The client sets the mask bits from its own hero's tile steps (0x5997C0 -> 0x638E00 -> 0x622B10) and no message carries them, so the server cannot know them (`Auth/Hero/ExploredMap.cs`). C4 (start info) is client-only too |
 
 `HeroWriterTests` round-trip the real saves under `SACRED_HERO_SAVES` (decoded chunks identical when nothing changed) and check
-sockets, gold and combos; `AuthoritativeTests.ClosedNetHeroIsSavedFromTheServersOwnView` runs the whole flow against a fake
-lobby. Saves allocate a few buffers per save (rare event), not per packet.
+sockets, gold and combos; `QuestStateTests` check the CD layout, an identical decoded CD after a round trip and that a quest
+pair changes exactly the expected inventory bytes; `AuthoritativeTests.ClosedNetHeroIsSavedFromTheServersOwnView` and
+`QuestPairFromThePlayerIsSaved` run the whole flow against a fake lobby. Saves allocate a few buffers per save (rare event), not per packet.
 
-Open: server-owned creature values (they live in the sector owner's 0x16E/0x16F object bodies, see docs/protocol.md), item/stat/gold plausibility checks, kill validation, quest state in saves, Lua API.
+Open: server-owned creature values (they live in the sector owner's 0x16E/0x16F object bodies, see docs/protocol.md), item/stat/gold plausibility checks, kill validation, Lua API.
