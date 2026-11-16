@@ -57,6 +57,11 @@ var lan = config.LanAnnounce ? new LanAnnouncer(config, announcedVersion, advert
 GameServerHost host;
 try { host = new GameServerHost(config, rules, lan); }
 catch (System.Net.Sockets.SocketException e) { Log.Info($"ERROR: The TCP port seems to be already in use! ({e.SocketErrorCode})"); return 3; }
+if (config.Auth.Enabled && config.GameDirectory is { } itemDir)
+{
+    host.ItemFootprints = Sacred.GameServer.Auth.Hero.ItemFootprints.Load(itemDir, out var itemError);
+    if (itemError is not null) Log.Info($"WARNING: item tables not read from '{itemDir}' ({itemError}); unseen items are saved as 1x1.");
+}
 
 if (config.UdpPort > 0)
 {

@@ -143,7 +143,7 @@ The block the lobby delivered (0x132) is the base; `HeroWriter` replaces what th
 | --- | --- |
 | C7 hero | equipment from the hero's object states and 0x11E/0x11D; values: hit-point block, +0x08 block (0x16B full, or the compact fields of 0x169/0x16E/0x16F laid over it: experience, gold, level, skill points, attributes), combat arts (22-byte records), **combos (38-byte records, verbatim and in order)**, 9-byte records. Status modifiers, the 68-byte list and the hero attachment are file-only and stay as saved |
 | C8 objects | one record per item named by the inventories, item bars or equipment, built from the server's item state: **all value records = item + one per socketed rune/gem, in socket order** (u16 count on the wire, u8 in the file: more than 255 is refused, never truncated), item data, weapon extension. File-only fields come from the saved record of the same item. Only items the object world says the player owns are saved. Saved creatures and items attached to the hero model stay unchanged |
-| CA/CB inventories | latest 0x122 per inventory (id = slot, 17 = shared), then 0x13E pick / 0x13F place `[item ref][cell][inventory id]`. Cells hold only the item's anchor (word +4 = `01 \| w<<8 \| h<<16`); an item never seen in an inventory gets a 1x1 footprint (no item tables on the server) |
+| CA/CB inventories | latest 0x122 per inventory (id = slot, 17 = shared), then 0x13E pick / 0x13F place `[item ref][cell][inventory id]`. Cells hold only the item's anchor (word +4 = `01 \| w<<8 \| h<<16`); an item never seen in an inventory gets its footprint from the game's item tables (`--game-dir`: Weapon.pak row +0x1C/+0x1D via the Items.pak descriptor, see docs/protocol.md; matches every anchor cell of the test saves), 1x1 without them |
 | C3 / preview | level word; the block preview is this chunk |
 | CE | statistics extension: the 100 bytes after the 0x2670-byte primary block of 0x14F |
 | C4, CD (quests/scripts) | unchanged: the server does not see them |
@@ -152,4 +152,4 @@ The block the lobby delivered (0x132) is the base; `HeroWriter` replaces what th
 sockets, gold and combos; `AuthoritativeTests.ClosedNetHeroIsSavedFromTheServersOwnView` runs the whole flow against a fake
 lobby. Saves allocate a few buffers per save (rare event), not per packet.
 
-Open: server-owned creature values (they live in the sector owner's 0x16E/0x16F object bodies, see docs/protocol.md), item/stat/gold plausibility checks, kill validation, item footprints from the game's item tables, quest state in saves, Lua API.
+Open: server-owned creature values (they live in the sector owner's 0x16E/0x16F object bodies, see docs/protocol.md), item/stat/gold plausibility checks, kill validation, quest state in saves, Lua API.

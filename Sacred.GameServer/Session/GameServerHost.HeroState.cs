@@ -13,8 +13,9 @@ namespace Sacred.GameServer.Session;
 /// <item>0x122 inventories [u32 inventory id][stream] for the hero (id = slot) and the shared stash (id 17), as GameServer.exe
 /// case 0x4C5D3E accepts them; 0x13E pick / 0x13F place [item ref][cell][inventory id] (FUN_004d3740 / FUN_004d37f0) are
 /// applied to the latest stream. A cell holds only the item's anchor: word +4 is 01 | width &lt;&lt; 8 | height &lt;&lt; 16,
-/// word +8 the cached item type. The footprint of an item the server never saw in an inventory is not known without the
-/// game's item tables; it is then written as 1x1 and the client's loader re-reads the item.</item>
+/// word +8 the cached item type. The footprint of an item the server never saw in an inventory comes from the game's item
+/// tables (<see cref="ItemFootprints"/>, loaded from --game-dir); without them it is written as 1x1 and the client's loader
+/// re-reads the item.</item>
 /// <item>0x14F statistics: the 100 bytes after the 0x2670-byte primary block are chunk CE.</item>
 /// <item>Items come from the server's object world and must be owned by the player; anything else in the player's inventory
 /// is not saved.</item>
@@ -27,6 +28,9 @@ public sealed partial class GameServerHost
     private readonly byte[]?[] _heroBaseline = new byte[]?[MaxSlots + 1];
     private readonly Dictionary<uint, (uint Word04, uint Word08)>?[] _footprints = new Dictionary<uint, (uint, uint)>?[MaxSlots + 1];
     private HeroWriter? _heroWriter;
+
+    /// <summary>Item footprints from the game's tables (set once at startup); null writes unseen items as 1x1.</summary>
+    public ItemFootprints? ItemFootprints { get; set; }
 
     /// <summary>Cells written with a guessed 1x1 footprint (diagnostics).</summary>
     public int GuessedFootprints { get; private set; }
@@ -149,8 +153,8 @@ public sealed partial class GameServerHost
         if (!Footprints(s).TryGetValue(reference, out var footprint))
         {
             var type = _world.TryGet(reference, out var entry) && entry.Payload.Length >= 8 ? BinaryPrimitives.ReadUInt32LittleEndian(entry.Payload[4..]) : 0;
-            footprint = (0x00010101u, type & 0xFFFF);
-            GuessedFootprints++;
+            footprint = (ItemFootprints?.AnchorWord(type) ?? 0x00010101u, type & 0xFFFF);
+            if (ItemFootprints is null) GuessedFootprints++;
         }
         BinaryPrimitives.WriteUInt32LittleEndian(at, reference);
         BinaryPrimitives.WriteUInt32LittleEndian(at[4..], footprint.Item1);
