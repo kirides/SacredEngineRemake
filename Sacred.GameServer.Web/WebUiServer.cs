@@ -211,7 +211,7 @@ public sealed class WebUiServer : IAsyncDisposable
             if (read > ModStoreBodyLimit) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
             text = new string(buffer, 0, read);
         }
-        catch (Microsoft.AspNetCore.Server.Kestrel.Core.BadHttpRequestException) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
+        catch (Microsoft.AspNetCore.Http.BadHttpRequestException) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
         string mod;
         try { using var doc = JsonDocument.Parse(text, new JsonDocumentOptions { MaxDepth = 32 }); mod = doc.RootElement.TryGetProperty("mod", out var m) ? m.GetString() ?? "" : ""; }
         catch (JsonException) { await Fail(context.Response, 400, "invalid JSON").ConfigureAwait(false); return; }

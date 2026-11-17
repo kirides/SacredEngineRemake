@@ -160,8 +160,12 @@ public sealed class ObjectMirror
     public void Remove(ReadOnlySpan<byte> payload)
     {
         if (payload.Length < 4) return;
-        var reference = BinaryPrimitives.ReadUInt32LittleEndian(payload) & ReferenceMask;
-        if (_objects.Remove(reference, out var entry)) _free.Push(entry);
+        Remove(BinaryPrimitives.ReadUInt32LittleEndian(payload));
+    }
+
+    public void Remove(uint reference)
+    {
+        if (_objects.Remove(reference & ReferenceMask, out var entry)) _free.Push(entry);
     }
 
     /// <summary>A player left: nobody streams to that slot until it is taken again.</summary>

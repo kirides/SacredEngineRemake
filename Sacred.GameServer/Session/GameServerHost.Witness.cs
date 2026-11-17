@@ -56,12 +56,7 @@ public sealed partial class GameServerHost
                 StrictItemsRefused++;
                 Log.Info($"AUTH: strict items: {s.Describe()}: purchase 0x{_unpaid[i]:X} was not paid for by the hero gold in time (last messages: {Trail(s)})"
                     + (_config.Auth.StrictItems == StrictItemsMode.On ? ", removed." : " (log mode, kept)."));
-                if (_config.Auth.StrictItems == StrictItemsMode.On)
-                {
-                    Span<byte> reference = stackalloc byte[4];
-                    BinaryPrimitives.WriteUInt32LittleEndian(reference, _unpaid[i]);
-                    _world.Remove(reference);
-                }
+                if (_config.Auth.StrictItems == StrictItemsMode.On) _world.Remove(_unpaid[i]);
             }
         }
     }
