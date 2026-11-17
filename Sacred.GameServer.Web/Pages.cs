@@ -43,11 +43,11 @@ internal static class Pages
         var players = admin.Players();
         var sb = new StringBuilder(24 * 1024);
         sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
-          .Append("<meta name=\"color-scheme\" content=\"dark light\"><title>").Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style)
+          .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>").Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style)
           .Append("</style></head><body><div class=\"app\">");
         sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>management</small></div></div>");
         Head(sb, o);
-        sb.Append("</header><main class=\"grid\"><div class=\"col\">");
+        sb.Append("<button id=\"theme\" type=\"button\" class=\"themebtn ghost\" aria-label=\"Change theme\"></button></header><main class=\"grid\"><div class=\"col\">");
         Players(sb, players);
         Session(sb, o);
         Flood(sb, admin.Flood());
@@ -226,7 +226,9 @@ internal static class Pages
 
     private const string Style = """
 :root{--bg:#15110d;--bg2:#1c1712;--card:#241d16;--card2:#2c241b;--line:#3b3025;--text:#efe6d6;--dim:#a39683;--gold:#e0a944;--gold2:#f2c36b;--ok:#79b873;--warn:#e3a53f;--bad:#d4604d;--info:#6fa3d6;--shadow:0 6px 24px rgba(0,0,0,.35);--r:10px}
-@media (prefers-color-scheme:light){:root{--bg:#f4efe6;--bg2:#ebe4d6;--card:#fffdf8;--card2:#f6f0e4;--line:#ddd2bf;--text:#2b2318;--dim:#7a6d5a;--gold:#a66d0c;--gold2:#c4891f;--ok:#2f7d32;--warn:#a96a00;--bad:#b3392a;--info:#2a6aa6;--shadow:0 4px 16px rgba(60,40,10,.12)}}
+:root{color-scheme:dark}
+@media (prefers-color-scheme:light){:root:not([data-theme=dark]){color-scheme:light;--bg:#f4efe6;--bg2:#ebe4d6;--card:#fffdf8;--card2:#f6f0e4;--line:#ddd2bf;--text:#2b2318;--dim:#7a6d5a;--gold:#a66d0c;--gold2:#c4891f;--ok:#2f7d32;--warn:#a96a00;--bad:#b3392a;--info:#2a6aa6;--shadow:0 4px 16px rgba(60,40,10,.12)}}
+:root[data-theme=light]{color-scheme:light;--bg:#f4efe6;--bg2:#ebe4d6;--card:#fffdf8;--card2:#f6f0e4;--line:#ddd2bf;--text:#2b2318;--dim:#7a6d5a;--gold:#a66d0c;--gold2:#c4891f;--ok:#2f7d32;--warn:#a96a00;--bad:#b3392a;--info:#2a6aa6;--shadow:0 4px 16px rgba(60,40,10,.12)}
 [hidden]{display:none!important}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
 body{margin:0;background:radial-gradient(1200px 600px at 10% -10%,var(--bg2),var(--bg));background-attachment:fixed;color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
@@ -271,7 +273,9 @@ details.danger{margin-top:1rem;border:1px dashed color-mix(in srgb,var(--bad) 50
 .live{margin-left:auto;font-size:.72rem;text-transform:none;letter-spacing:0;color:var(--dim);padding:0 .5rem;border-radius:99px;border:1px solid var(--line)}.live.on{color:var(--ok)}.live.on:before{content:"";display:inline-block;width:.45rem;height:.45rem;border-radius:50%;background:var(--ok);margin-right:.35rem}
 #chat{flex:1;overflow-y:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:.5rem .7rem;scroll-behavior:smooth}
 .msg{display:flex;gap:.55rem;align-items:baseline;padding:.15rem 0;word-break:break-word}.msg time{color:var(--dim);font-size:.72rem;font-variant-numeric:tabular-nums;flex:none}.msg b{color:hsl(var(--h) 60% 62%);flex:none}.msg em{color:var(--dim);font-style:normal;font-size:.8rem;flex:none}.msg .text{min-width:0}
-@media (prefers-color-scheme:light){.msg b{color:hsl(var(--h) 55% 34%)}}
+@media (prefers-color-scheme:light){:root:not([data-theme=dark]) .msg b{color:hsl(var(--h) 55% 34%)}}
+:root[data-theme=light] .msg b{color:hsl(var(--h) 55% 34%)}
+.themebtn{gap:.45rem}.themebtn span{font-size:.85rem}
 .msg.k4{color:var(--dim);font-size:.85rem}.msg.k4 b{color:var(--dim)}.msg.k2 b,.msg.k3 b{color:var(--gold2)}.msg.k2 .text,.msg.k3 .text{color:var(--gold2)}.msg.k1 .text{font-style:italic}
 #latest{position:absolute;align-self:center;bottom:5.2rem;box-shadow:var(--shadow);background:var(--card2)}
 .composer{display:flex;gap:.5rem;margin-top:.7rem}.composer input{flex:1}.composer select{max-width:11rem}
@@ -305,6 +309,16 @@ var r=$('askReason');r.hidden=!('askReason' in f.dataset);r.value='';ask.showMod
 ask.addEventListener('close',function(){var f=pending;pending=null;if(!f||ask.returnValue!=='ok')return;
 var r=f.querySelector('input[name=reason]');if(r&&'askReason' in f.dataset)r.value=$('askReason').value;f.dataset.ok='1';f.requestSubmit();});
 $('askReason').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();$('askOk').click();}});
+
+// theme: auto (follows the system) -> light -> dark, remembered in this browser
+var themeBtn=$('theme');
+var themeIcons={auto:'<svg class="i" viewBox="0 0 24 24"><path d="M2 4h20v13H2zM8 21h8M12 17v4"/></svg>',light:'<svg class="i" viewBox="0 0 24 24"><path d="M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>',dark:'<svg class="i" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>'};
+var themeNames={auto:'Auto',light:'Light',dark:'Dark'};
+var theme=(function(){try{var m=localStorage.getItem('gsTheme');return m==='light'||m==='dark'?m:'auto';}catch(e){return 'auto';}})();
+function applyTheme(){if(theme==='auto')delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=theme;
+try{if(theme==='auto')localStorage.removeItem('gsTheme');else localStorage.setItem('gsTheme',theme);}catch(e){}
+themeBtn.innerHTML=themeIcons[theme]+'<span>'+themeNames[theme]+'</span>';themeBtn.title='Theme: '+themeNames[theme]+' (click to change)';}
+themeBtn.addEventListener('click',function(){theme=theme==='auto'?'light':theme==='light'?'dark':'auto';applyTheme();});applyTheme();
 
 // "message" button next to a player
 document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-msg]');if(!b)return;$('chatTo').value=b.dataset.msg;$('chatText').focus();});
