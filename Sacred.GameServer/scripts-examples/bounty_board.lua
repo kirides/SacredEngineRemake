@@ -12,7 +12,8 @@
 -- server pushes the heroes' own progress to them (see "Protocol" at the end of this comment).
 --
 -- Everything lives in this mod's own storage (script-data/bounty_board.json): the board, each hero's progress, the last
--- completions. A bounty is a snapshot of its pool entry, so editing the pool does not change bounties already posted.
+-- completions and the configuration (key "config": slots, duration, announce, history, max_hunters and the POOL of bounties;
+-- the tables below seed it on the first run, then edit it live, see "configuration as data" and /mods/bounty_board/config). A bounty is a snapshot of its pool entry, so editing the pool does not change bounties already posted.
 -- `names` needs --game-dir (without it a creature has no name; use `types`). `sectors` needs player.sector.
 -- Rewards: gold is dropped as a pile next to the hero, items with server.drop_item (needs --game-dir).
 --
@@ -22,27 +23,187 @@
 -- `n` is the hero's own progress, `left` the seconds until the bounty expires (relative, so clocks need not agree).
 server.describe("A rotating bounty board: kill N creatures (optionally in some sectors) for gold or items, a public dashboard and a panel for Sacred Gear clients.")
 
+-- ---- configuration as data: storage key "config", live edits, overview -----------------------------------------------------------
+-- The tunables below are DEFAULTS only: the first run copies them into this mod's storage (key "config", script-data/bounty_board.json), and from then on
+-- the storage is the truth. Edit it while the server runs (admin): POST /api/mod-store {"mod":"bounty_board","set":{"config":{...}}} (the whole
+-- table; a field you leave out falls back to its default). The write bumps config_rev, the mod notices within 2 s and applies it, no
+-- reload. A field that does not validate is ignored with a log line and its default stays. A reload (file watcher, Mods tab,
+-- POST /api/reload-mods) keeps everything: the unload handler saves the state. The admin page /mods/bounty_board/config shows the active
+-- values, where each came from, when the mod was loaded, why, and the errors.
+local CONFIG, CFG = {}, { loaded = server.time(), reason = "start", rev = 0, errors = {}, source = {} }
+local CFG_DEFAULTS, CFG_RULES
+
+local function cfg_copy(v)
+  if type(v) ~= "table" then return v end
+  local out = {}
+  for k, x in pairs(v) do out[k] = cfg_copy(x) end
+  return out
+end
+
+local function cfg_log(text)
+  if #CFG.errors < 20 then CFG.errors[#CFG.errors + 1] = text end
+  server.log("config: " .. text)
+end
+
+-- Rules: a function that returns the cleaned value or raises error(text, 0).
+local function r_num(lo, hi, whole)
+  return function(v)
+    if type(v) ~= "number" or v ~= v or v < lo or v > hi then error("needs a number from " .. lo .. " to " .. hi, 0) end
+    return whole and math.floor(v) or v
+  end
+end
+local function r_bool(v) if type(v) ~= "boolean" then error("needs true or false", 0) end return v end
+local function r_text(v) if type(v) ~= "string" or v == "" or #v > 200 then error("needs a short text", 0) end return v end
+-- A list whose items are cleaned by `item` (it returns the item or raises); refused items are logged, the others stay; fewer than
+-- `min` valid items refuse the whole field.
+local function r_list(item, min)
+  return function(v)
+    if type(v) ~= "table" then error("needs a list", 0) end
+    local out = {}
+    for i, x in ipairs(v) do
+      local ok, clean = pcall(item, x)
+      if ok and clean ~= nil then out[#out + 1] = clean else cfg_log("item #" .. i .. " refused: " .. tostring(ok and "invalid" or clean)) end
+    end
+    if #out < (min or 0) then error("needs at least " .. (min or 0) .. " valid item(s)", 0) end
+    return out
+  end
+end
+
+local function cfg_rev() local ok, v = pcall(server.load, "config_rev", 0); return ok and tonumber(v) or 0 end
+
+-- Reads the storage over the defaults into CONFIG, field by field.
+local function config_read()
+  CFG.errors, CFG.source = {}, {}
+  local ok, stored = pcall(server.load, "config", nil)
+  if not ok or type(stored) ~= "table" then
+    if ok and stored ~= nil then cfg_log("the storage key config is not a table: defaults used") end
+    stored = {}
+  end
+  for key, rule in pairs(CFG_RULES) do
+    local value
+    if stored[key] ~= nil then
+      local good, result = pcall(rule, stored[key])
+      if good and result ~= nil then value, CFG.source[key] = result, "storage"
+      else cfg_log(key .. ": " .. tostring(good and "invalid" or result) .. " - default kept") end
+    end
+    if value == nil then value, CFG.source[key] = cfg_copy(CFG_DEFAULTS[key]), "default" end
+    CONFIG[key] = value
+  end
+  for key in pairs(stored) do if CFG_RULES[key] == nil then cfg_log("unknown field " .. tostring(key) .. " ignored") end end
+  CFG.rev = cfg_rev()
+end
+
+-- First run only: the defaults become data in the storage (the admin edits them there; deleting a field restores its default).
+local function config_seed()
+  local ok, seeded = pcall(server.load, "config_seeded", false)
+  if ok and seeded == true then return end
+  local has, stored = pcall(server.load, "config", nil)
+  if has and stored == nil then pcall(server.save, "config", cfg_copy(CFG_DEFAULTS)) end
+  pcall(server.save, "config_seeded", true)
+end
+
+-- defaults, rules = { field = rule }, apply = called after every (re)read to rebuild what depends on CONFIG.
+local function config_start(defaults, rules, apply)
+  CFG_DEFAULTS, CFG_RULES = defaults, rules
+  local ok, life = pcall(server.load, "_lifecycle", nil)
+  if ok and type(life) == "table" then CFG.reason = life.reason == "reload" and "reload" or "restart" end
+  pcall(server.delete, "_lifecycle")     -- a crash must not look like a reload next time
+  config_seed()
+  config_read()
+  apply()
+  server.every(2, function()
+    if cfg_rev() == CFG.rev then return end
+    config_read()
+    CFG.applied = server.time()
+    local good, err = pcall(apply)
+    if not good then cfg_log("applying the new config failed: " .. tostring(err)) end
+    server.log("config changed by an edit and applied")
+  end)
+end
+
+-- Call from the mod's unload handler (after saving its state).
+local function config_unload(reason)
+  pcall(server.save, "_lifecycle", { reason = reason, at = server.time() })
+  pcall(server.flush)
+end
+
+local function cfg_stamp(t)   -- "2026-11-17 09:30:12 UTC"
+  t = math.floor(t)
+  local z = math.floor(t / 86400) + 719468
+  local era = math.floor(z / 146097)
+  local doe = z - era * 146097
+  local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
+  local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+  local mp = math.floor((5 * doy + 2) / 153)
+  local day = doy - math.floor((153 * mp + 2) / 5) + 1
+  local month = mp < 10 and mp + 3 or mp - 9
+  local secs = t % 86400
+  return string.format("%04d-%02d-%02d %02d:%02d:%02d UTC", yoe + era * 400 + (month <= 2 and 1 or 0), month, day,
+    math.floor(secs / 3600), math.floor(secs / 60) % 60, secs % 60)
+end
+
+local function cfg_from_storage()
+  local n = 0
+  for _, s in pairs(CFG.source) do if s == "storage" then n = n + 1 end end
+  return n
+end
+
+-- A line for the foot of the mod's own pages.
+local function config_footer()
+  local n = cfg_from_storage()
+  return "<p style='padding:0 1.2rem'><small>Configuration: " .. (n > 0 and "storage" or "default") .. " (" .. n .. " field(s) from the storage), loaded "
+    .. server.html(cfg_stamp(CFG.loaded)) .. " (" .. server.html(CFG.reason) .. ")" .. (#CFG.errors > 0 and (", " .. #CFG.errors .. " config error(s)") or "") .. "</small></p>"
+end
+
+server.page("config", function()
+  local h, rows, names = server.html, {}, {}
+  for key in pairs(CFG_RULES) do names[#names + 1] = key end
+  table.sort(names)
+  for _, key in ipairs(names) do
+    local value = CONFIG[key]
+    local text = tostring(value)
+    if type(value) == "table" then
+      local ok, json = pcall(server.json, value)
+      text = ok and json or "(table)"
+    end
+    if #text > 3000 then text = text:sub(1, 3000) .. " ..." end
+    rows[#rows + 1] = "<tr><td>" .. h(key) .. "</td><td>" .. h(CFG.source[key] or "default") .. "</td><td><code>" .. h(text) .. "</code></td></tr>"
+  end
+  local errors = {}
+  for _, e in ipairs(CFG.errors) do errors[#errors + 1] = "<li>" .. h(e) .. "</li>" end
+  return table.concat({
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>bounty_board configuration</title>',
+    "<style>body{margin:0;font:14px/1.4 system-ui,sans-serif;background:#15110d;color:#efe6d6;padding:1rem 1.2rem}h1{font-size:1.2rem;color:#e0a944}",
+    "table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #3b3025;padding:.3rem .5rem;text-align:left;vertical-align:top}",
+    "code{white-space:pre-wrap;word-break:break-all}small{color:#a39683}.err{color:#ff9a8a}</style></head><body><h1>bounty_board: configuration</h1>",
+    "<p>Source: <b>", cfg_from_storage() > 0 and "storage" or "default", "</b> (storage key <code>config</code>, revision ", tostring(CFG.rev), "). Loaded ", h(cfg_stamp(CFG.loaded)),
+    ", last reload reason: <b>", h(CFG.reason), "</b>", CFG.applied and (", last live edit applied " .. h(cfg_stamp(CFG.applied))) or "", ".</p>",
+    #errors > 0 and ("<p class='err'>Config errors (those fields use their defaults):</p><ul>" .. table.concat(errors) .. "</ul>") or "<p><small>No config errors.</small></p>",
+    "<table><tr><th>field</th><th>from</th><th>active value</th></tr>", table.concat(rows), "</table>",
+    "<p><small>Edit: POST /api/mod-store {\"mod\":\"bounty_board\",\"set\":{\"config\":{...}}} (admin); applied within 2 seconds, no reload needed. ",
+    "Delete a field inside config to get its default back.</small></p></body></html>",
+  })
+end, { title = "bounty_board configuration" })
+
 -- ---- configuration -----------------------------------------------------------------------------------------------------------
 
-local CONFIG = {
+local DEFAULTS = {
   slots = 3,                -- bounties on the board at the same time
   duration = 3 * 3600,      -- default lifetime of a bounty, seconds (a pool entry can set its own `duration`)
   announce = true,          -- broadcast new bounties and completions
   history = 10,             -- completions and expiries kept for the dashboard
   max_hunters = 5000,       -- heroes remembered per bounty (more can still play, their progress is just not kept)
-}
-
--- The pool the board draws from (never the same entry twice at once).
+  -- `pool` is what the board draws from (never the same entry twice at once).
 --   id, title      short key and the name shown to players
 --   names          only creatures whose name contains one of these words count (needs --game-dir; any case)
 --   types          or creature types (numbers), when the server has no game data
 --   sectors        only kills in these sectors count (find the numbers with !where); region = the name shown for them
 --   target         how many: a number, or { min, max } (drawn when the bounty is posted)
 --   min_level      heroes below this level do not count (default 1)
---   duration       lifetime in seconds (default CONFIG.duration)
+--   duration       lifetime in seconds (default: the `duration` field)
 --   reward         gold = coins for each hero who finishes, item = { quality = .., category = .. } (as server.drop_item)
-local POOL = {
-  { id = "orcs", title = "Orc slayer", names = { "orc" }, target = { 20, 40 }, reward = { gold = 1500 } },
+  pool = {
+    { id = "orcs", title = "Orc slayer", names = { "orc" }, target = { 20, 40 }, reward = { gold = 1500 } },
   { id = "undead", title = "Grave watch", names = { "skeleton", "zombie", "ghoul" }, target = { 25, 50 }, reward = { gold = 2500 } },
   { id = "spiders", title = "Web cleaner", names = { "spider" }, target = { 15, 30 }, reward = { gold = 1000, item = { quality = 3 } } },
   { id = "brigands", title = "Road safety", names = { "brigand", "thief", "bandit" }, target = { 20, 35 }, reward = { gold = 2000 } },
@@ -50,7 +211,25 @@ local POOL = {
   -- A bounty for one region only (sector numbers of your server; !where tells them):
   -- { id = "plains-wolves", title = "Wolves of the plains", names = { "wolf" }, target = { 15, 25 },
   --   sectors = { 1801, 1802 }, region = "Plains of Ancaria", reward = { gold = 1200 } },
+  },
 }
+
+-- A pool entry needs an id, names or types and a target (a number or { min, max }); the rest is read when a bounty is posted.
+local function pool_entry(def)
+  if type(def) ~= "table" or def.id == nil or not (def.names or def.types) or def.target == nil then
+    error("needs an id, names or types and a target", 0)
+  end
+  if type(def.target) ~= "number" and not (type(def.target) == "table" and tonumber(def.target[1])) then error("target is a number or { min, max }", 0) end
+  return def
+end
+
+local RULES = {
+  slots = r_num(1, 20, true), duration = r_num(60, 30 * 86400), announce = r_bool, history = r_num(0, 200, true),
+  max_hunters = r_num(1, 100000, true), pool = r_list(pool_entry, 1),
+}
+
+local pool = {}
+config_start(DEFAULTS, RULES, function() pool = CONFIG.pool end)
 
 -- ---- helpers -----------------------------------------------------------------------------------------------------------------
 
@@ -82,12 +261,6 @@ local function lower_of(v) return type(v) == "string" and v ~= "" and v:lower() 
 local function in_set(list, value)
   for _, v in ipairs(list) do if v == value then return true end end
   return false
-end
-
-local pool = {}
-for i, def in ipairs(POOL) do
-  if type(def) == "table" and def.id and (def.names or def.types) and def.target then pool[#pool + 1] = def
-  else server.log("pool entry #" .. i .. " needs an id, names or types and a target: ignored") end
 end
 
 local function draw_target(spec)
@@ -263,6 +436,12 @@ local function tick()
   if changed then save_state(); push_all() elseif dirty then save_state() end
 end
 
+-- Hot reload and shutdown: progress that was only counted in memory is saved, the next version carries on from the storage.
+server.on("unload", function(reason)
+  pcall(save_state)
+  config_unload(reason)
+end)
+
 server.every(5, function() local ok, err = pcall(tick); if not ok then server.log("tick: " .. tostring(err)) end end)
 server.on("start", function() local ok, err = pcall(tick); if not ok then server.log("start: " .. tostring(err)) end end)
 
@@ -414,7 +593,7 @@ server.page("", function()
     end
     parts[#parts + 1] = "</ul>"
   end
-  parts[#parts + 1] = "</section></main></body></html>"
+  parts[#parts + 1] = "</section></main>" .. config_footer() .. "</body></html>"
   return table.concat(parts)
 end, { public = true, title = "Bounty board" })
 

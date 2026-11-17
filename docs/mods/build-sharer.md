@@ -41,17 +41,23 @@ item names need `--game-dir`.
 | `!unsharebuild` | Removes your build |
 | `!builds` | Says how many builds are shared |
 
-## Settings (top of the file)
+## Settings (the `config` data of the mod)
 
-| Name | Default | Meaning |
+Defaults at the top of the script seed the storage key `config` on the first run; edit it with `POST /api/mod-store`, see it on
+`/mods/build_sharer/config` ([README](README.md#configuration-live-edits-and-hot-reload)). Builds are stored as they are published;
+a reload also keeps the publish cooldowns and the request budgets (rate limits), so reloading is no way round them. Caps cut what
+a client sends from then on; builds already stored are cut to the caps when the mod loads.
+
+| Field | Default | Meaning |
 |---|---|---|
-| `MAX_BUILDS` | 200 | Builds kept, one per hero; more are refused until somebody removes theirs |
-| `MAX_TITLE`, `MAX_NOTE`, `MAX_TAG`, `MAX_TAGS`, `MAX_CARRIED`, `MAX_ITEM` | 40, 240, 16, 5, 12, 48 | Length and count limits of what a client sends |
-| `MAX_SKILLS`, `MAX_ARTS`, `MAX_EQUIPMENT` | 8, 40, 19 | List sizes stored |
-| `MAX_QUERY`, `MAX_PAGE_SIZE`, `DEFAULT_PAGE_SIZE` | 40, 25, 12 | Search text and page limits |
-| `PUBLISH_COOLDOWN` | 15 s | Between two publishes of one hero; the storage key `publish_cooldown` changes it |
-| `BUCKET_CAPACITY`, `BUCKET_REFILL` | 8, 0.5/s | Request budget of a client: a burst of 8, then one every 2 s |
-| `CLASS_NAMES` | Seraphim 1, Gladiator 2, Battle Mage 3, Dark Elf 4, Wood Elf 5, Vampiress 6, Dwarf 8, Daemon 9 | Hero type numbers of Sacred Gear; the class byte of the server is passed as is (unverified against a real client) |
+| `max_builds` | 200 | Builds kept, one per hero; more are refused until somebody removes theirs |
+| `max_title`, `max_note`, `max_tag`, `max_tags`, `max_carried`, `max_item` | 40, 240, 16, 5, 12, 48 | Length and count limits of what a client sends |
+| `max_skills`, `max_arts`, `max_equipment` | 8, 40, 19 | List sizes stored |
+| `max_query`, `max_page_size`, `default_page_size` | 40, 25, 12 | Search text and page limits |
+| `publish_cooldown` | 15 s | Between two publishes of one hero (the earlier storage key `publish_cooldown` is the default) |
+| `bucket_capacity`, `bucket_refill` | 8, 0.5/s | Request budget of a client: a burst of 8, then one every 2 s |
+
+| `CLASS_NAMES` (script, not data) | Seraphim 1, Gladiator 2, Battle Mage 3, Dark Elf 4, Wood Elf 5, Vampiress 6, Dwarf 8, Daemon 9 | Hero type numbers of Sacred Gear; the class byte of the server is passed as is (unverified against a real client) |
 
 ## Web page and endpoints
 

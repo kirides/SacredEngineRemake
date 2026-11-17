@@ -240,7 +240,7 @@ public class ModScriptTests
         Assert.AreEqual("published", LastReply(server, 1).GetProperty("op").GetString());
         Say(host, alice, "buildsharer", """{"op":"publish","title":"two"}""");
         StringAssert.Contains(LastReply(server, 1).GetProperty("error").GetString(), "wait");
-        host.StoreOf("build_sharer").Set("publish_cooldown", 0.0); host.Load();           // reload: the build comes back from storage
+        host.StoreOf("build_sharer").Set("config", new Dictionary<string, object?> { ["publish_cooldown"] = 0.0 }); host.Load();           // reload: the build comes back from storage
         Say(host, alice, "buildsharer", """{"op":"mine"}""");
         Assert.AreEqual("one", LastReply(server, 1).GetProperty("build").GetProperty("title").GetString());
         Assert.IsTrue(LastReply(server, 1).GetProperty("hero_data").GetBoolean());
@@ -444,5 +444,71 @@ public class ModScriptTests
             Console.WriteLine($"quest pairs in this hero: {pairs}; build: {json.Length} bytes");
         }
         finally { host.Stop(); thread.Join(); host.Dispose(); }
+    }
+
+    // ---- hot reload and configuration of build_sharer and quest_helper ------------------------------------------------------------
+
+    [TestMethod]
+    public void BuildSharerKeepsItsRateLimitOverAReloadAndTakesItsCapsFromTheConfig()
+    {
+        var (host, server, folder) = Start("", "build_sharer", h => h.StoreOf("build_sharer").Set("config", new Dictionary<string, object?>
+            { ["max_title"] = 5.0, ["publish_cooldown"] = 60.0, ["max_builds"] = "many" }));
+        using var keep = folder;
+        var alice = Player(1, "Alice"); server.All.Add(alice);
+        server.Heroes[1] = Quests(HeroOf(1, "Alice"));
+        Say(host, alice, "buildsharer", """{"op":"publish","title":"abcdefghij"}""");
+        Assert.AreEqual("abcde", LastReply(server, 1).GetProperty("build").GetProperty("title").GetString(), "max_title from the config");
+        Assert.IsTrue(host.Reload("build_sharer"));
+        Say(host, alice, "buildsharer", """{"op":"publish","title":"again"}""");
+        StringAssert.Contains(LastReply(server, 1).GetProperty("error").GetString(), "wait", "the cooldown is not reset by a reload");
+        Say(host, alice, "buildsharer", """{"op":"list"}""");
+        Assert.AreEqual(1, LastReply(server, 1).GetProperty("total").GetInt32());
+        var page = host.HandleRequest("build_sharer", "config", [], false).Body;
+        StringAssert.Contains(page, "max_builds: needs a number");
+        StringAssert.Contains(page, "<td>max_title</td><td>storage</td><td><code>5</code></td>");
+        // After a restart (shutdown) the cooldown starts clean, the build is still there.
+        host.Shutdown(); host.FlushStores(wait: true); host.Dispose();
+        var (again, server2, _) = Start("", "build_sharer", null, folder);
+        server2.All.Add(alice); server2.Heroes[1] = Quests(HeroOf(1, "Alice"));
+        Say(again, alice, "buildsharer", """{"op":"mine"}""");
+        Assert.AreEqual("abcde", LastReply(server2, 1).GetProperty("build").GetProperty("title").GetString());
+        Say(again, alice, "buildsharer", """{"op":"publish","title":"restart"}""");
+        Assert.AreEqual("published", LastReply(server2, 1).GetProperty("op").GetString());
+        Assert.AreEqual(0, again.Errors);
+    }
+
+    [TestMethod]
+    public void QuestHelperKeepsItsBaselineOverAReloadAndTheCatalogIsConfigData()
+    {
+        var (host, server, folder) = Start("", "quest_helper", h => h.StoreOf("quest_helper").Set("config", new Dictionary<string, object?>
+        {
+            ["catalog"] = new Dictionary<string, object?>
+            {
+                ["100"] = new Dictionary<string, object?> { ["name"] = "The sword", ["hint"] = "Ask the smith.", ["states"] = new Dictionary<string, object?> { ["2"] = "done" } },
+                ["abc"] = new Dictionary<string, object?> { ["name"] = "not a key" },
+            },
+            ["max_pairs"] = -3.0,
+        }));
+        using var keep = folder;
+        var alice = Player(1, "Alice"); server.All.Add(alice);
+        server.Heroes[1] = Quests(HeroOf(1, "Alice"), (100, 1));
+        host.FirePlayer("enter", alice);
+        host.Pump(server.Now += 3100); host.Pump(server.Now += 100);
+        Say(host, alice, "questhelper", """{"op":"state","watch":true}""");
+        Assert.AreEqual("The sword", LastReply(server, 1).GetProperty("records")[0].GetProperty("name").GetString());
+        var page = host.HandleRequest("quest_helper", "config", [], false).Body;
+        StringAssert.Contains(page, "catalog entry abc refused");
+        StringAssert.Contains(page, "max_pairs: needs a number");
+
+        Assert.IsTrue(host.Reload("quest_helper"));
+        server.Told.Clear();
+        var sent = server.Sent.Count;
+        server.Heroes[1] = Quests(HeroOf(1, "Alice"), (100, 2));                // the record moves on right after the reload
+        host.Pump(server.Now += 5100);
+        Assert.IsTrue(server.Told.Any(t => t.Slot == 1 && t.Text.Contains("Quest record: The sword") && t.Text.Contains("Ask the smith.")),
+            "the baseline survived (a changed record is announced, not silently taken as the first read): " + string.Join(";", server.Told));
+        Assert.IsTrue(server.Sent.Count > sent, "the panel that was watching still gets its updates");
+        Assert.AreEqual("done", LastReply(server, 1).GetProperty("records")[0].GetProperty("label").GetString());
+        Assert.AreEqual(0, host.Errors);
     }
 }
