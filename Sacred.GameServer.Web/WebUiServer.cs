@@ -110,6 +110,7 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/api/heroes/{slot:int}", (RequestDelegate)(c => HeroEndpoint(c, publicView: false)));
         app.MapGet("/mods", (RequestDelegate)(c => Html(c.Response, Pages.ModsPage(_admin, _options.PublicApi))));
         app.MapGet("/api/mods", (RequestDelegate)(c => Json(c.Response, _admin.ModEndpoints().ToArray(), WebUiJson.Default.ModEndpointInfoArray)));
+        app.MapGet("/api/mods/installed", (RequestDelegate)(c => Json(c.Response, _admin.Mods().ToArray(), WebUiJson.Default.ModInfoArray)));
         app.MapGet("/mods/{mod}/{**path}", (RequestDelegate)(c => ModEndpoint(c, publicOnly: false)));
         if (_options.PublicApi)
         {

@@ -171,6 +171,13 @@ public sealed partial class GameServerHost
 
     private sealed record ModWork(string Mod, string Path, IReadOnlyList<KeyValuePair<string, string>> Query, bool PublicOnly, TaskCompletionSource<ModResponse> Done);
 
+    public IReadOnlyList<ModInfo> Mods()
+    {
+        if (_scripts is null) return [];
+        var items = ModEndpoints();
+        return _scripts.Mods.Select(m => new ModInfo(m.Mod, m.Description, m.Error, items.Where(i => i.Mod == m.Mod).ToArray())).ToArray();
+    }
+
     public IReadOnlyList<ModEndpointInfo> ModEndpoints() =>
         _scripts?.Endpoints.Select(e => new ModEndpointInfo(e.Mod, e.Path, e.Public, e.Description, e.Page)).OrderBy(e => e.Mod).ThenBy(e => e.Path).ToArray() ?? [];
 

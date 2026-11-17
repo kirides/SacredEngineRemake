@@ -18,6 +18,8 @@ public interface IServerAdmin
     IReadOnlyList<HeroInfo> Heroes();
     /// <summary>HTTP endpoints registered by server scripts (<c>server.endpoint</c>).</summary>
     IReadOnlyList<ModEndpointInfo> ModEndpoints();
+    /// <summary>Every installed mod (script file), with its description, load error, pages and endpoints.</summary>
+    IReadOnlyList<ModInfo> Mods() => ModEndpoints().GroupBy(e => e.Mod).Select(g => new ModInfo(g.Key, null, null, g.ToArray())).ToArray();
     /// <summary>Runs a script endpoint on the game loop. <paramref name="publicOnly"/>: only endpoints the script marked public.</summary>
     Task<ModResponse> ModRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly, CancellationToken cancellationToken);
     /// <summary>Queues a command for the game loop. False when the queue is full.</summary>
@@ -98,6 +100,9 @@ public sealed record StoredItem(int Cell, int Width, int Height, ItemInfo Item);
 
 /// <summary>A script endpoint: <c>/mods/{Mod}/{Path}</c> (and <c>/public/mods/...</c> when <see cref="Public"/>).</summary>
 public sealed record ModEndpointInfo(string Mod, string Path, bool Public, string? Description, bool Page = false);
+/// <summary>An installed mod: its name (script file without .lua), short description, load error and its pages and endpoints.</summary>
+public sealed record ModInfo(string Mod, string? Description, string? Error, ModEndpointInfo[] Items);
+
 /// <summary>A script endpoint's answer.</summary>
 public sealed record ModResponse(int Status, string ContentType, string Body, bool Page = false);
 

@@ -2,6 +2,7 @@
 -- "!kills" in chat with the player's own count. Copy into the server's scripts folder (default ./scripts) to use it.
 --
 -- Counts are kept per hero across sessions (server.add stores them in script-data.json).
+server.describe("Announces kill milestones (50, 100, 200, ...) per creature and answers !kills in chat.")
 
 local milestones = { [50] = true, [100] = true, [200] = true, [500] = true, [1000] = true, [2000] = true, [5000] = true }
 

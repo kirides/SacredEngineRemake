@@ -200,6 +200,8 @@ public class WebAdminTests
         public IReadOnlyList<BanEntry> Bans() => [];
         public IReadOnlyList<HeroInfo> Heroes() => [new HeroInfo(1, "Alice", "acct.Alice", 2, 12, 3400, 990, 1, [new SkillInfo(14, 3, 0)], [1, 0, 2, 0, 0, 0], null,
             [new ArtInfo(2, 1097, 6)], 4, [new EquippedItem(12, new ItemInfo(40, 7452, 11, 2, 1, 500))], [new StoredItem(0, 1, 1, new ItemInfo(41, 5000, 3, 0, 0, 20))], [], true, 75)];
+        public IReadOnlyList<ModInfo> Mods() => [new ModInfo("ladders", "Ladders <and> boards", null, ModEndpoints().ToArray()), new ModInfo("quiet", "Does things in the background", null, []),
+            new ModInfo("broken", null, "line 1: unexpected symbol", [])];
         public IReadOnlyList<ModEndpointInfo> ModEndpoints() => [new ModEndpointInfo("ladders", "by-creature", true, "csv"), new ModEndpointInfo("ladders", "admin", false, null), new ModEndpointInfo("ladders", "page", true, "dashboard", Page: true)];
         public Task<ModResponse> ModRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly, CancellationToken cancellationToken) =>
             Task.FromResult(mod == "ladders" && path == "by-creature" ? new ModResponse(200, "text/csv; charset=utf-8", "creature,kills\r\n551," + (query.FirstOrDefault(q => q.Key == "n").Value ?? "0"))
@@ -356,8 +358,13 @@ public class WebAdminTests
             // The Mods tab: one card per mod, pages and endpoints apart; the server page no longer lists them.
             var mods = await client.GetStringAsync("/mods");
             StringAssert.Contains(mods, "ladders.lua");
-            var pagesAt = mods.IndexOf("Pages", StringComparison.Ordinal);
-            var endpointsAt = mods.IndexOf("Endpoints", StringComparison.Ordinal);
+            StringAssert.Contains(mods, "quiet.lua", "mods without pages or endpoints are listed too");
+            StringAssert.Contains(mods, "class=\"help\"");
+            StringAssert.Contains(mods, "Ladders &lt;and&gt; boards", "descriptions are escaped");
+            StringAssert.Contains(mods, "Failed to load: line 1: unexpected symbol");
+            var card = mods.IndexOf("ladders.lua", StringComparison.Ordinal);
+            var pagesAt = mods.IndexOf("Pages", card, StringComparison.Ordinal);
+            var endpointsAt = mods.IndexOf("Endpoints", card, StringComparison.Ordinal);
             Assert.IsTrue(pagesAt > 0 && endpointsAt > pagesAt);
             Assert.IsTrue(mods.IndexOf("by-creature", StringComparison.Ordinal) > endpointsAt, "the endpoint is listed under Endpoints");
             var page = mods.IndexOf("/page", StringComparison.Ordinal);

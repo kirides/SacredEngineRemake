@@ -61,6 +61,7 @@ public interface IScriptServer
 /// server.creature_name(type) / server.item_name(type)  -- the game's names for a type number, or nil
 /// server.endpoint(path, fn [, { public = true, description = "..." }])  -- GET /mods/{script}/{path} (ScriptEndpoints.cs)
 /// server.page(path, html or fn [, { public = true, title = "..." }])  -- a sandboxed single-file HTML page at the same address
+/// server.describe(text)  -- the mod's short description for the web UI (default: the first sentence of the file's leading comment)
 /// server.file(name) / server.html(text) / server.render(template, values) / server.csv(rows [, columns]) / server.json(table)
 /// Every mod (script file) has its own storage, <c>{data folder}/{mod}.json</c> (<see cref="ModStore"/>); the game server
 /// keeps no state for mods.
@@ -151,13 +152,42 @@ public sealed class ScriptHost
     /// <summary>Loaded files and their load errors (diagnostics, web UI).</summary>
     public IReadOnlyList<(string File, string? Error)> Files => _files;
     private readonly List<(string File, string? Error)> _files = new();
+    private readonly Dictionary<string, string> _descriptions = new(StringComparer.Ordinal);
+
+    /// <summary>One installed mod: name (file without .lua), description, load error.</summary>
+    public sealed record ModEntry(string Mod, string? Description, string? Error);
+    private ModEntry[] _mods = [];
+
+    /// <summary>Every script file of the last load (any thread: an immutable array replaced on every load).</summary>
+    public IReadOnlyList<ModEntry> Mods => Volatile.Read(ref _mods);
+
+    /// <summary>The first sentence of the comment block a script starts with (lines beginning with "--"), at most 200 characters.</summary>
+    public static string? LeadingComment(string source)
+    {
+        var text = new System.Text.StringBuilder();
+        foreach (var raw in source.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 && text.Length == 0) continue;
+            if (!line.StartsWith("--", StringComparison.Ordinal) || line.StartsWith("--[[", StringComparison.Ordinal)) break;
+            var content = line.TrimStart('-').Trim();
+            if (content.Length == 0) { if (text.Length > 0) break; continue; }
+            if (text.Length > 0) text.Append(' ');
+            text.Append(content);
+        }
+        if (text.Length == 0) return null;
+        var all = text.ToString();
+        var end = all.IndexOf(". ", StringComparison.Ordinal);
+        var sentence = end > 0 ? all[..(end + 1)] : all;
+        return sentence.Length > 200 ? sentence[..197] + "..." : sentence;
+    }
     public long Errors { get; private set; }
     public int HandlerCount => _handlers.Values.Sum(h => h.Count);
 
     /// <summary>(Re)creates the Lua state and runs every script file, then fires "start".</summary>
     public void Load()
     {
-        _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear(); _endpoints.Clear();
+        _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear(); _endpoints.Clear(); _descriptions.Clear();
         _state = CreateState();
         var files = Directory.Exists(_options.Directory)
             ? Directory.GetFiles(_options.Directory, "*.lua").OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray() : [];
@@ -168,6 +198,7 @@ public sealed class ScriptHost
             try
             {
                 var source = File.ReadAllText(path);
+                if (LeadingComment(source) is { } comment) _descriptions[ScriptEndpoints.ModName(name)] = comment;
                 _currentFile = name;
                 Run(() => _state.DoStringAsync(source, name));
             }
@@ -177,6 +208,7 @@ public sealed class ScriptHost
         }
         _currentFile = "";
         Volatile.Write(ref _endpointList, _endpoints.Values.ToArray());
+        Volatile.Write(ref _mods, _files.Select(f => new ModEntry(ScriptEndpoints.ModName(f.File), _descriptions.GetValueOrDefault(ScriptEndpoints.ModName(f.File)), f.Error)).ToArray());
         Fire("start");
         Log.Info($"SCRIPT: {files.Length} file(s), {HandlerCount} handler(s), {_timers.Count + _newTimers.Count} timer(s).");
     }
@@ -253,7 +285,7 @@ public sealed class ScriptHost
         if (!Has("death")) return false;
         var by = new LuaTable(0, 4);
         if (killer is not null) by["player"] = PlayerTable(killer);
-        if (monster is { } m) { by["ref"] = m.Reference; by["type"] = m.Type; by["level"] = m.Level; }
+        if (monster is { } m) { by["ref"] = m.Reference; by["type"] = m.Type; by["level"] = m.Level; if (m.Name is { } name) by["name"] = name; }
         return Fire("death", PlayerTable(player), by, 2);
     }
 
@@ -483,6 +515,12 @@ public sealed class ScriptHost
         });
         server["endpoint"] = Fn("endpoint", c => Register(c, page: false));
         server["page"] = Fn("page", c => Register(c, page: true));
+        server["describe"] = Fn("describe", c =>
+        {
+            var text = c.GetArgument(0).ToString().Trim();
+            if (_currentFile.Length > 0) _descriptions[ScriptEndpoints.ModName(_currentFile)] = text.Length > 200 ? text[..197] + "..." : text;
+            return c.Return();
+        });
         server["file"] = Fn("file", c => c.Return(ReadScriptFile(c.GetArgument(0).ToString())));
         server["html"] = Fn("html", c => c.Return(System.Net.WebUtility.HtmlEncode(c.HasArgument(0) ? c.GetArgument(0).ToString() : "")));
         server["render"] = Fn("render", c => c.Return(ScriptEndpoints.Render(c.GetArgument(0).ToString(),

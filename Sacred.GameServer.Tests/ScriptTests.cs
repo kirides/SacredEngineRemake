@@ -141,6 +141,29 @@ public class ScriptTests
     }
 
     [TestMethod]
+    public void EveryInstalledModIsListedWithItsDescription()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", "-- Greets players. More text here.\n-- second line\nserver.on('join', function() end)");
+        folder.Write("b.lua", "server.describe('Own words.')\nserver.endpoint('x', function() return 'x' end)");
+        folder.Write("c.lua", "this is not lua");
+        folder.Write("d.lua", "local x = 1");
+        var (host, _, _) = Host(folder);
+        var mods = host.Mods.ToDictionary(m => m.Mod);
+        CollectionAssert.AreEquivalent(new[] { "a", "b", "c", "d" }, mods.Keys.ToArray(), "mods without pages or endpoints are listed too");
+        Assert.AreEqual("Greets players.", mods["a"].Description);
+        Assert.AreEqual("Own words.", mods["b"].Description);
+        Assert.IsNotNull(mods["c"].Error);
+        Assert.IsNull(mods["d"].Description);
+        foreach (var example in new[] { "ladders.lua", "kill_milestones.lua", "loot_rewards.lua" })
+        {
+            folder.Write(example, Example(example));
+        }
+        host.Load();
+        Assert.IsTrue(host.Mods.Where(m => m.Mod is "ladders" or "kill_milestones" or "loot_rewards").All(m => m.Description is { Length: > 10 } && m.Error is null));
+    }
+
+    [TestMethod]
     public void LoadErrorsAreReportedPerFile()
     {
         using var folder = new Folder();
@@ -250,6 +273,14 @@ public class ScriptTests
         StringAssert.Contains(page.Body, "creature type 551: <b>Alice</b> (50)");
         StringAssert.Contains(page.Body, "<b>Alice</b> <small>level 10, by creature type 38</small>");
         Assert.IsFalse(page.Body.Contains("acct"), "no account names on the page");
+        // A real game: the creature names come from the game (several types share one name), and a death names its killer.
+        host.FireKill(alice, new ScriptMonster(7001, 551, 3, "Thief"));
+        host.FireKill(alice, new ScriptMonster(7002, 552, 3, "Thief"));
+        host.FireDeath(alice, null, new ScriptMonster(9001, 307, 12, "Brigand"));
+        var named = host.HandleRequest("ladders", "", [], publicOnly: true).Body;
+        Assert.AreEqual(1, System.Text.RegularExpressions.Regex.Matches(named, "Thief:").Count, "one line per creature name");
+        StringAssert.Contains(named, "Thief: <b>Alice</b> (2)");
+        StringAssert.Contains(named, "by Brigand</small>");
         Assert.IsTrue(host.FireChat(alice, "!top"));
         Assert.AreEqual("1. Cara: 70 kills", server.Told[0].Text);
     }

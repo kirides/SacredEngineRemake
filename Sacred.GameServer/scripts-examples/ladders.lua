@@ -7,11 +7,14 @@
 -- With WebUi:PublicApi=true the same addresses also work under /public/mods/ladders/... for anybody (embeds, overlays).
 -- "!top" in chat shows the kill ladder to the player who asked.
 
+server.describe("Ladders (kills, level, time online), best hunter per creature and recent deaths, as a dashboard page and JSON/CSV endpoints.")
+
 local size = 10
 local keep_deaths = 20
 
--- Creature types seen so far (type -> name), kept in this mod's storage.
-local types = server.load("types", {})
+-- Creatures seen so far, by display name: several creature types share one name (Thief, Brigand, ... come in variants),
+-- so kills are counted per name. Kept in this mod's storage.
+local creatures = server.load("creatures", {})
 
 local function remember_level(player)
   if player.level > server.get(player, "level", 0) then server.set(player, "level", player.level) end
@@ -19,10 +22,11 @@ end
 
 server.on("kill", function(player, monster)
   server.add(player, "kills")
-  server.add(player, "kills." .. monster.type)
-  if not types[tostring(monster.type)] then
-    types[tostring(monster.type)] = monster.name or ("creature type " .. monster.type)
-    server.save("types", types)
+  local creature = monster.name or ("creature type " .. monster.type)
+  server.add(player, "kills." .. creature)
+  if not creatures[creature] then
+    creatures[creature] = true
+    server.save("creatures", creatures)
   end
   remember_level(player)
 end)
@@ -57,9 +61,9 @@ end
 
 local function hunters()
   local result = {}
-  for type, name in pairs(types) do
-    local best = server.top("kills." .. type, 1)[1]
-    if best then result[#result + 1] = { creature = name, hunter = best.name, kills = best.value } end
+  for creature in pairs(creatures) do
+    local best = server.top("kills." .. creature, 1)[1]
+    if best then result[#result + 1] = { creature = creature, hunter = best.name, kills = best.value } end
   end
   table.sort(result, function(a, b) return a.kills > b.kills end)
   return result

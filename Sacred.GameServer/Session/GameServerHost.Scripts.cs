@@ -135,7 +135,11 @@ public sealed partial class GameServerHost : IScriptServer
         ScriptPlayer? killer = killerWord is >= 1 and <= MaxSlots && killerWord != slot && _slots[killerWord] is { } p ? ScriptPlayerOf(p) : null;
         ScriptMonster? monster = null;
         if (killer is null && killerWord != 0 && _world.TryGet(killerWord & 0x7FFFFFFF, out var entry))
-            monster = new ScriptMonster(killerWord & 0x7FFFFFFF, BinaryPrimitives.ReadUInt32LittleEndian(entry.Payload[4..]), CompactLevel(entry.Payload[(entry.LongPrefix ? 24 : 8)..]));
+        {
+            var body = entry.Payload[(entry.LongPrefix ? 24 : 8)..];
+            var type = BinaryPrimitives.ReadUInt32LittleEndian(entry.Payload[4..]);
+            monster = new ScriptMonster(killerWord & 0x7FFFFFFF, type, CompactLevel(body), type == 0 ? null : Names?.Creature(type, Data.NameService.InstanceName(body)));
+        }
         _scripts!.FireDeath(ScriptPlayerOf(dead), killer, monster);
         ExecuteScriptKicks();
     }

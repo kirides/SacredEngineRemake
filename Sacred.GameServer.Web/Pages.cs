@@ -46,7 +46,7 @@ internal static class Pages
           .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>").Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style)
           .Append("</style></head><body><div class=\"app\">");
         sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>management</small></div></div>");
-        Tabs(sb, "server", admin.ModEndpoints().Select(m => m.Mod).Distinct().Count());
+        Tabs(sb, "server", admin.Mods().Count);
         Head(sb, o);
         sb.Append("<button id=\"theme\" type=\"button\" class=\"themebtn ghost\" aria-label=\"Change theme\"></button></header><main class=\"grid\"><div class=\"col\">");
         Players(sb, players);
@@ -186,7 +186,7 @@ internal static class Pages
     public static string ModsPage(IServerAdmin admin, bool publicApi)
     {
         var o = admin.Overview();
-        var mods = admin.ModEndpoints().GroupBy(m => m.Mod).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase).ToList();
+        var mods = admin.Mods().OrderBy(m => m.Mod, StringComparer.OrdinalIgnoreCase).ToList();
         var sb = new StringBuilder(8 * 1024);
         sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
           .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>Mods - ")
@@ -196,13 +196,19 @@ internal static class Pages
         Tabs(sb, "mods", mods.Count);
         sb.Append("</header><main class=\"modgrid\">");
         if (mods.Count == 0)
-            sb.Append("<section class=\"card\"><div class=\"empty\">").Append(Icon("users")).Append("<p>No mods with pages or endpoints.</p>")
-              .Append("<small>Scripts add them with server.page and server.endpoint.</small></div></section>");
+            sb.Append("<section class=\"card\"><div class=\"empty\">").Append(Icon("users")).Append("<p>No mods installed.</p>")
+              .Append("<small>Put .lua scripts into the scripts folder; they load without a restart.</small></div></section>");
         foreach (var mod in mods)
         {
-            var pages = mod.Where(m => m.Page).OrderBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
-            var endpoints = mod.Where(m => !m.Page).OrderBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
-            sb.Append("<section class=\"card mod\"><h2>").Append(Icon("pulse")).Append(E(mod.Key)).Append(".lua</h2>");
+            var pages = mod.Items.Where(m => m.Page).OrderBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
+            var endpoints = mod.Items.Where(m => !m.Page).OrderBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
+            sb.Append("<section class=\"card mod\"><h2>").Append(Icon("pulse")).Append(E(mod.Mod)).Append(".lua");
+            // The description behind a (?): shown on hover, on keyboard focus and on tap (a tap focuses the button), no script needed.
+            if (mod.Description is { Length: > 0 } about)
+                sb.Append("<button type=\"button\" class=\"help\" aria-label=\"About ").Append(E(mod.Mod)).Append("\">?<span class=\"tip\" role=\"tooltip\">")
+                  .Append(E(about)).Append("</span></button>");
+            sb.Append("</h2>");
+            if (mod.Error is { Length: > 0 } error) sb.Append("<p class=\"moderror\">Failed to load: ").Append(E(error)).Append("</p>");
             ModList(sb, "Pages", pages, publicApi);
             ModList(sb, "Endpoints", endpoints, publicApi);
             sb.Append("</section>");
@@ -297,6 +303,9 @@ body{margin:0;background:radial-gradient(1200px 600px at 10% -10%,var(--bg2),var
 .top{display:flex;flex-wrap:wrap;align-items:center;gap:1rem 2rem;padding:.9rem 1.1rem;background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);margin-bottom:1rem}
 .tabs{display:flex;gap:.4rem;flex-wrap:wrap}.tabs a{display:inline-flex;align-items:center;gap:.4rem;padding:.4rem .8rem;border-radius:999px;border:1px solid var(--line);color:var(--dim);text-decoration:none}
 .tabs a[aria-current=page]{color:var(--text);border-color:var(--gold);background:var(--card2)}.tabs a:hover{color:var(--text)}
+.help{position:relative;display:inline-flex;align-items:center;justify-content:center;width:1.3rem;height:1.3rem;min-height:0;margin-left:.4rem;padding:0;border-radius:50%;font-size:.75rem;line-height:1;color:var(--dim);background:var(--card2);border:1px solid var(--line);cursor:help;text-transform:none;letter-spacing:0}
+.help .tip{display:none;position:absolute;left:50%;top:calc(100% + .4rem);transform:translateX(-50%);z-index:5;width:max-content;max-width:min(22rem,80vw);padding:.5rem .7rem;border-radius:8px;background:var(--card);border:1px solid var(--gold);color:var(--text);font-size:.85rem;font-weight:400;text-align:left;white-space:normal;box-shadow:var(--shadow)}
+.help:hover .tip,.help:focus .tip,.help:focus-visible .tip{display:block}.moderror{color:var(--bad);font-size:.85rem;margin:.3rem 0}
 .modgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(20rem,1fr));gap:1rem}.mod h3{margin:.8rem 0 .4rem;font-size:.85rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 .modlist{list-style:none;margin:0;padding:0;display:grid;gap:.45rem}.modlist li{display:flex;flex-wrap:wrap;align-items:baseline;gap:.2rem .5rem;padding:.45rem .6rem;background:var(--card2);border-radius:8px}
 .modlist small{flex-basis:100%;color:var(--dim)}.modlist a{color:var(--gold2);text-decoration:none}.modlist a:hover{text-decoration:underline}

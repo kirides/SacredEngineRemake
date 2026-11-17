@@ -150,6 +150,7 @@ server.creature_name(type or monster)  server.item_name(type or item)   -- the g
 server.top(key, n)                     -- { { name, value }, ... }: this mod's per-hero numbers, also offline heroes
 server.endpoint(path, fn [, { public = true, description = "..." }])   -- GET /mods/{script}/{path}
 server.page(path, html or fn [, { public = true, title = "..." }])     -- a single-file HTML page at the same address
+server.describe(text)                  -- short description for the Mods tab (default: first sentence of the leading comment)
 server.file(name)  server.html(text)  server.render(template, values)  server.csv(rows [, columns])  server.json(table)
 ```
 

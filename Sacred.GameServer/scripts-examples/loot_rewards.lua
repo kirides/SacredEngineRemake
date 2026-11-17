@@ -3,6 +3,7 @@
 -- server generates the item from the game's own tables). Copy into the server's scripts folder to use it.
 --
 -- Qualities are the game's generation qualities 0..14 (higher = rarer). Adjust the weights to make groups rarer or commoner.
+server.describe("Some kills drop an extra item for the killer's class and level; rarity from a weight table, every 250 kills a rare one.")
 
 local drop_chance = 0.02            -- 2 % of kills
 local every_n_kills = 250           -- plus one guaranteed rare item every 250 kills
