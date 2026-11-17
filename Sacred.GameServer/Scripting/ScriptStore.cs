@@ -73,7 +73,8 @@ public sealed class ScriptStore
         {
             if (owner == GlobalKey || !map.TryGetValue(key, out var raw) || raw.Length < 3 || raw[0] != 'n') continue;
             if (!double.TryParse(raw.AsSpan(2), NumberStyles.Float, CultureInfo.InvariantCulture, out var value)) continue;
-            var name = map.TryGetValue(NameKey, out var n) && n.Length > 2 ? n[2..] : owner;
+            // Never the owner key: it holds the lobby id or the account name. A hero without a stored name gets a neutral label.
+            var name = map.TryGetValue(NameKey, out var n) && n.Length > 2 ? DisplayName(n[2..]) : UnknownName;
             rows.Add((owner, name, value));
         }
         rows.Sort((a, b) => b.Item3.CompareTo(a.Item3));
@@ -83,6 +84,17 @@ public sealed class ScriptStore
 
     /// <summary>The character name the server stores for every hero it has seen (shown on ladders).</summary>
     public const string NameKey = "_name";
+    public const string UnknownName = "unknown hero";
+
+    /// <summary>A name that is safe to show anybody: the character part of "account.character", never an owner key.</summary>
+    public static string DisplayName(string name)
+    {
+        if (name.StartsWith("id:", StringComparison.Ordinal) || name.StartsWith("name:", StringComparison.Ordinal) || name.StartsWith(GlobalKey, StringComparison.Ordinal))
+            return UnknownName;
+        var dot = name.IndexOf('.');
+        var character = dot >= 0 ? name[(dot + 1)..] : name;
+        return character.Length == 0 ? UnknownName : character;
+    }
 
     public void Flush()
     {

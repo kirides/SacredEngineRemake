@@ -159,7 +159,10 @@ time-out, 503/504 otherwise). Answers carry `Content-Security-Policy: default-sr
 the server's site. Example: `ladders.lua` serves `/mods/ladders/top?board=kills&n=10` (JSON) and `/mods/ladders/by-creature`
 (CSV: creature type, best hunter, kills).
 
-* `player` = `{ slot, name, key, class, level, in_game, host, id }`; `key` identifies the hero across sessions (lobby id and
+* `player` = `{ slot, name, character, key, class, level, in_game, host, id, online }`. **Privacy:** `name` is the FIRSTCONTACT
+  name (`account.character` on lobby servers), `key` and `id` hold the lobby id: use `character` for anything others see
+  (chat, boards, public endpoints). `server.top` and `server.publish` only ever return/publish safe names (character part,
+  never an owner key; "unknown hero" otherwise). `key` identifies the hero across sessions (lobby id and
   hero block, or the name in LAN games). `get/set/add` keep numbers, strings and booleans per hero (or globally with `nil`)
   in `--scripts-data` (default `script-data.json`), written through a temporary file and a move, flushed every 10 s and at
   shutdown.

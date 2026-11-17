@@ -18,10 +18,10 @@ server.on("kill", function(player, monster)
   local total = server.add(player, "kills")
   local of_kind = server.add(player, "kills." .. monster.type)
   if milestones[of_kind] then
-    server.broadcast(player.name .. " has defeated " .. of_kind .. " " .. creature_name(monster.type) .. "!")
+    server.broadcast(player.character .. " has defeated " .. of_kind .. " " .. creature_name(monster.type) .. "!")
   end
   if total % 1000 == 0 then
-    server.broadcast(player.name .. " has defeated " .. total .. " creatures in total!")
+    server.broadcast(player.character .. " has defeated " .. total .. " creatures in total!")
   end
 end)
 
@@ -33,5 +33,5 @@ server.on("chat", function(player, text)
 end)
 
 server.on("enter", function(player)
-  server.message(player, "Welcome, " .. player.name .. "! Type !kills to see your kill count.")
+  server.message(player, "Welcome, " .. player.character .. "! Type !kills to see your kill count.")
 end)

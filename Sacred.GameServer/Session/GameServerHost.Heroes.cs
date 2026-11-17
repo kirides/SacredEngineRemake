@@ -34,7 +34,9 @@ public sealed partial class GameServerHost
 
     void Scripting.IScriptServer.Publish(string name, string title, IReadOnlyList<(string Name, double Value)> rows)
     {
-        var board = new BoardInfo(name, title, rows.Select((r, i) => new BoardRow(i + 1, r.Name, r.Value)).ToArray(), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        // Boards are public (/public/boards): strip "account." prefixes and refuse owner keys (lobby ids, account names).
+        var board = new BoardInfo(name, title, rows.Select((r, i) => new BoardRow(i + 1, Scripting.ScriptStore.DisplayName(r.Name), r.Value)).ToArray(),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         lock (_heroGate) _boards[name] = board;
     }
 

@@ -226,6 +226,36 @@ public class ScriptTests
     }
 
     [TestMethod]
+    public void BoardsNeverShowLobbyIdsOrAccountNames()
+    {
+        // A hero without a stored name, one whose name still has the account part, and a script that publishes keys on purpose.
+        var store = new ScriptStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"));
+        store.Set("id:4711:2", "ladder.kills", 9.0);
+        store.Set("name:acct.Cara", "ladder.kills", 5.0);
+        store.Set("name:acct.Cara", ScriptStore.NameKey, "acct.Cara");
+        var top = store.Top("ladder.kills", 10);
+        CollectionAssert.AreEqual(new[] { ScriptStore.UnknownName, "Cara" }, top.Select(t => t.Name).ToArray());
+        Assert.IsFalse(top.Any(t => t.Name.Contains("4711") || t.Name.Contains("acct")));
+
+        var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false };
+        using var host = new GameServerHost(config, new AdmissionRules(null), null);
+        ((IScriptServer)host).Publish("leak", "test", [("id:4711:2", 1), ("name:acct.Dora", 2), ("acct.Erik", 3), ("Finn", 4), ("global", 5)]);
+        var rows = host.Boards().Single().Rows.Select(r => r.Name).ToArray();
+        CollectionAssert.AreEqual(new[] { ScriptStore.UnknownName, ScriptStore.UnknownName, "Erik", "Finn", ScriptStore.UnknownName }, rows);
+        Assert.IsFalse(rows.Any(r => r.Contains("4711") || r.Contains("acct") || r.StartsWith("id:") || r.StartsWith("name:")));
+    }
+
+    [TestMethod]
+    public void ScriptsSeeTheCharacterName()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", "server.on('join', function(p) server.broadcast(p.character) end)");
+        var (host, server, _) = Host(folder);
+        host.FirePlayer("join", server.All[0] with { Name = "acct.Alice" });
+        CollectionAssert.AreEqual(new[] { "Alice" }, server.Said);
+    }
+
+    [TestMethod]
     public void ChangedScriptsAreReloaded()
     {
         using var folder = new Folder();

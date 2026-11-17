@@ -47,7 +47,8 @@ public interface IScriptServer
 /// server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- returns item or nil, error
 /// server.random([m [, n]])
 /// server.top(key, n) -> { { key, name, value }, ... }  (saved numbers of every hero, also offline)
-/// server.publish(name, title, rows)                    -- rows = { { name = "...", value = n }, ... } for the web UI
+/// server.publish(name, title, rows)                    -- rows = { { name = "...", value = n }, ... } for the web UI (names are
+///                                                       made safe: character part only, never an owner key)
 /// server.endpoint(path, fn [, { public = true, description = "..." }])  -- GET /mods/{script}/{path} (ScriptEndpoints.cs)
 /// server.csv(rows [, columns]) / server.json(table)
 /// </code>
@@ -447,9 +448,9 @@ public sealed class ScriptHost
         _ => value.ToString(),
     };
 
-    private static LuaTable PlayerTable(ScriptPlayer p) => new(0, 9)
+    private static LuaTable PlayerTable(ScriptPlayer p) => new(0, 10)
     {
-        ["slot"] = p.Slot, ["name"] = p.Name, ["key"] = p.Key, ["class"] = p.Class, ["level"] = p.Level,
+        ["slot"] = p.Slot, ["name"] = p.Name, ["character"] = ScriptStore.DisplayName(p.Name), ["key"] = p.Key, ["class"] = p.Class, ["level"] = p.Level,
         ["in_game"] = p.InGame, ["host"] = p.IsHost, ["id"] = p.LobbyId, ["online"] = p.OnlineSeconds,
     };
 }

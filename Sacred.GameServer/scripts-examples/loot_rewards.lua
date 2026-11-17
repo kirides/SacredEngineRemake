@@ -35,7 +35,7 @@ local function reward(player, rarity, why)
     return
   end
   if rarity.quality >= 6 then
-    server.broadcast(player.name .. " found a " .. rarity.name .. " " .. (item.name ~= "" and item.name or item.category) .. " " .. why .. "!")
+    server.broadcast(player.character .. " found a " .. rarity.name .. " " .. (item.name ~= "" and item.name or item.category) .. " " .. why .. "!")
   else
     server.message(player, "A " .. rarity.name .. " item dropped for you " .. why .. ".")
   end
