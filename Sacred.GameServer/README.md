@@ -173,7 +173,9 @@ the server's site. Example: `ladders.lua` serves `/mods/ladders/top?board=kills&
 * Sandbox: basic (no `dofile`, `loadfile`, `load`, `collectgarbage`), `string`, `table`, `math`, `bit32`; no `io`, `os`,
   `require` or `debug`. Each handler or timer call may run `--scripts-budget` Lua instructions (default 1,000,000, a few ms);
   more stops it with an error (an endless loop cannot freeze the game, `pcall` cannot swallow the stop), and a handler that
-  fails 20 times in a row is switched off. Errors are logged with the file name. Scripts are the server owner's code: the
+  fails 20 times in a row is switched off. Any exception from a script call (Lua errors, the budget, or a .NET exception thrown by a `server.*`
+  function or the interpreter) is logged and contained: a broken script never takes the server down; the hooks around script
+  calls catch everything except out-of-memory. Errors are logged with the file name. Scripts are the server owner's code: the
   sandbox protects against mistakes, not against a hostile author.
 * `Sacred.GameServer` references `Sacred.GameplayHost` for the drop code, which brings `Sacred.Assets` and with it `Sacred.Granny`
   (the Windows Granny DLL loader). The server never calls it and Native AOT trims it away (no ILC warnings, the native library

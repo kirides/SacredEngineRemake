@@ -30,7 +30,8 @@ public class ScriptTests
         public long NowMs => Now;
         public IReadOnlyList<ScriptPlayer> Players() => All;
         public ScriptPlayer? Player(int slot) => All.FirstOrDefault(p => p.Slot == slot);
-        public void Broadcast(string text) => Said.Add(text);
+        public Exception? BroadcastFails;
+        public void Broadcast(string text) { if (BroadcastFails is { } e) throw e; Said.Add(text); }
         public void Message(int slot, string text) => Told.Add((slot, text));
         public void Kick(int slot, string reason) => Kicked.Add(slot);
         public readonly Dictionary<string, (string Title, IReadOnlyList<(string Name, double Value)> Rows)> Boards = new();
@@ -103,6 +104,35 @@ public class ScriptTests
         for (var i = 0; i < 30; i++) host.FirePlayer("join", player);
         Assert.AreEqual(21, host.Errors);
         Assert.AreEqual(31, server.Said.Count);
+    }
+
+    [TestMethod]
+    public void ExceptionsFromServerFunctionsAreContained()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.on("join", function(p) server.broadcast("boom") end)
+            server.on("join", function(p) server.message(p, "still here") end)
+            server.every(1, function() server.broadcast("tick") end)
+            server.endpoint("x", function() server.broadcast("x"); return "unreachable" end)
+            server.on("chat", function(p, t) return server.get(p, "corrupt") + 1 end)
+            """);
+        var (host, server, store) = Host(folder);
+        foreach (var failure in new Exception[] { new NullReferenceException("null"), new IndexOutOfRangeException("index"),
+            new KeyNotFoundException("key"), new FormatException("format"), new NotImplementedException("todo") })
+        {
+            server.BroadcastFails = failure;
+            host.FirePlayer("join", server.All[0]);                        // logged, the next handler still runs
+            host.Pump(server.Now += 1500);                                 // timer
+            Assert.AreEqual(500, host.HandleRequest("a", "x", [], false).Status);
+        }
+        Assert.AreEqual(5, server.Told.Count);
+        Assert.IsTrue(host.Errors >= 15);
+        store.Set("name:Alice", "corrupt", "not a number");
+        Assert.IsFalse(host.FireChat(server.All[0], "hi"), "a Lua error in a chat handler does not swallow or crash");
+        server.BroadcastFails = null;
+        host.FirePlayer("join", server.All[0]);
+        CollectionAssert.Contains(server.Said, "boom");
     }
 
     [TestMethod]

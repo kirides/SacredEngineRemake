@@ -36,7 +36,7 @@ public sealed class LootService(string? gameDirectory)
         if (_simulator is not null || _error is not null) return _simulator;
         if (gameDirectory is null) { _error = "item generation needs --game-dir"; return null; }
         try { _simulator = new WorldEquipmentDropSimulator(SacredEquipmentGenerationData.Load(gameDirectory)); }
-        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException or NotSupportedException)
+        catch (Exception e) when (e is not OutOfMemoryException)
         { _error = $"game data in '{gameDirectory}' not readable: {e.Message}"; }
         return _simulator;
     }
@@ -51,7 +51,7 @@ public sealed class LootService(string? gameDirectory)
             (uint)Math.Clamp(heroClass, 0, 9), Quality: quality is { } q ? Math.Min(q, 14) : null);
         SacredEquipmentDropResult result;
         try { result = simulator.Roll(request); }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException or NotSupportedException) { error = e.Message; return null; }
+        catch (Exception e) when (e is not OutOfMemoryException) { error = e.Message; return null; }
         if (result.SelectedType is not { } type || result.Values.IsEmpty) { error = result.UnavailableReason ?? "no item for this level and class"; return null; }
         var values = result.Values.ToArray();
         return new GeneratedItem(System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(values), type, values, result.Category, result.RolledQuality ?? quality ?? 0, result.Name?.Text);

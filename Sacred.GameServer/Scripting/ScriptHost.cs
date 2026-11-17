@@ -96,7 +96,7 @@ public sealed class ScriptHost
             var values = Run(_state.CallAsync(endpoint.Function, One(request)));
             return ScriptEndpoints.Response(values);
         }
-        catch (Exception e) when (IsScriptError(e) || e is InvalidOperationException or ArgumentException)
+        catch (Exception e) when (Contained(e))
         {
             Errors++;
             Log.Info($"SCRIPT: {endpoint.File}: endpoint {endpoint.Mod}/{endpoint.Path}: {Describe(e)}");
@@ -133,7 +133,7 @@ public sealed class ScriptHost
                 _currentFile = name;
                 Run(() => _state.DoStringAsync(source, name));
             }
-            catch (Exception e) when (IsScriptError(e) || e is IOException or UnauthorizedAccessException) { error = Describe(e); }
+            catch (Exception e) when (Contained(e)) { error = Describe(e); }
             _files.Add((name, error));
             Log.Info(error is null ? $"SCRIPT: loaded {name}." : $"SCRIPT: {name} failed to load: {error}");
         }
@@ -222,7 +222,7 @@ public sealed class ScriptHost
             errors = 0;
             return true;
         }
-        catch (Exception e) when (IsScriptError(e) || e is InvalidOperationException or ArgumentException)
+        catch (Exception e) when (Contained(e))
         {
             errors++; Errors++;
             Log.Info($"SCRIPT: {file}: {Describe(e)}");
@@ -244,6 +244,10 @@ public sealed class ScriptHost
         Run(start());
     }
 
+    /// <summary>A script must never take the server down: every failure of a script call (Lua errors, the budget, and any .NET
+    /// exception a server function or the interpreter throws) is logged and contained. Only out-of-memory is not swallowed.</summary>
+    private static bool Contained(Exception e) => e is not OutOfMemoryException;
+
     private static bool IsScriptError(Exception e) => e is LuaRuntimeException or LuaParseException or LuaCompileException or LuaStackOverflowException
         or LuaCanceledException or ScriptBudgetException or InvalidCastException;
 
@@ -252,7 +256,8 @@ public sealed class ScriptHost
         ScriptBudgetException => e.Message,
         LuaRuntimeException { InnerException: ScriptBudgetException inner } => inner.Message,
         _ when e.InnerException is ScriptBudgetException inner => inner.Message,
-        _ => e.Message,
+        _ when IsScriptError(e) => e.Message,
+        _ => $"{e.GetType().Name}: {e.Message}",
     };
 
     // ---- the Lua state ----------------------------------------------------------------------------------------------------

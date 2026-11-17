@@ -39,18 +39,26 @@ public sealed partial class GameServerHost : IScriptServer
         _scriptStore.Load();
         _scripts = new ScriptHost(options, this, _scriptStore);
         _scripts.Load();
-        _scripts.Watch();
+        try { _scripts.Watch(); }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("watching the scripts folder", e); }
         ExecuteScriptKicks();
     }
 
     private void PumpScripts(long now)
     {
         if (_scripts is null) return;
-        _scripts.Pump(now);
-        PumpModRequests();
-        ExecuteScriptKicks();
-        if (now >= _nextScriptFlushMs) { _nextScriptFlushMs = now + 10_000; _scriptStore?.Flush(); }
+        try
+        {
+            _scripts.Pump(now);
+            PumpModRequests();
+            ExecuteScriptKicks();
+            if (now >= _nextScriptFlushMs) { _nextScriptFlushMs = now + 10_000; _scriptStore?.Flush(); }
+        }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("tick", e); }
     }
+
+    /// <summary>The last line of defence: whatever goes wrong around a script call is logged, the game goes on.</summary>
+    private void ScriptFault(string where, Exception e) => Log.Info($"SCRIPT: {where} failed ({e.GetType().Name}: {e.Message}); the server continues.");
 
     private void StopScripts()
     {
@@ -62,6 +70,12 @@ public sealed partial class GameServerHost : IScriptServer
 
     /// <summary>Route: returns true when a script consumed the message.</summary>
     private bool ScriptMessage(PlayerSession s, in GoldMessageView m)
+    {
+        try { return ScriptMessageCore(s, m); }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault($"message 0x{m.Opcode:X3}", e); return false; }
+    }
+
+    private bool ScriptMessageCore(PlayerSession s, in GoldMessageView m)
     {
         switch (m.Opcode)
         {
@@ -81,8 +95,12 @@ public sealed partial class GameServerHost : IScriptServer
     private void ScriptPlayerEvent(string name, PlayerSession s)
     {
         if (_scripts is null || s.Slot == 0 || !_scripts.Has(name)) return;
-        _scripts.FirePlayer(name, ScriptPlayerOf(s));
-        if (name != "leave") ExecuteScriptKicks();
+        try
+        {
+            _scripts.FirePlayer(name, ScriptPlayerOf(s));
+            if (name != "leave") ExecuteScriptKicks();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault(name, e); }
     }
 
     private void OnKill(PlayerSession sender, uint victim, uint killerWord)
