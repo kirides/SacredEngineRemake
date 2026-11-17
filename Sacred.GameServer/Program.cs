@@ -76,6 +76,12 @@ if (config.Auth.Enabled && config.GameDirectory is { } itemDir)
     if (itemError is not null) Log.Info($"WARNING: item tables not read from '{itemDir}' ({itemError}); unseen items are saved as 1x1.");
     else if (host.ItemFootprints is { } tables) Log.Info($"Item tables: {tables.FromRows} types with a Weapon.pak footprint (of {Sacred.GameServer.Auth.Hero.ItemFootprints.ResourceCount}) from '{itemDir}'.");
 }
+if (config.Auth.Enabled && config.Auth.Witness.PriceCheck != Sacred.GameServer.Auth.StrictItemsMode.Off && config.GameDirectory is { } priceDir)
+{
+    host.ItemPrices = Sacred.GameServer.Auth.ItemPrices.Load(priceDir, out var priceError);
+    if (priceError is not null) Log.Info($"WARNING: item pricing not read from '{priceDir}' ({priceError}); purchases are checked against the price the client states.");
+    else Log.Info($"Item pricing read from '{priceDir}' (AUTH_PRICE_CHECK={config.Auth.Witness.PriceCheck.ToString().ToLowerInvariant()}).");
+}
 if (config.GameDirectory is { } nameDir)
 {
     // Display names for the web API and scripts; read once here, never in the game loop.

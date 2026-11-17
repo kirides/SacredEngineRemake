@@ -341,4 +341,28 @@ public partial class AuthoritativeTests
             Assert.AreEqual("nil", ItemWhere(host, player, 0x6401, not: "world"), "removed: never saved");
         }, configure: config => config.Auth.Witness.WorldStartGraceMs = 5000);
     }
+
+    /// <summary>A trader stock item whose stated price is far below the game's price is noted (AUTH_PRICE_CHECK) and, with on, judged by the computed one.</summary>
+    [TestMethod]
+    public void AStatedPriceFarBelowTheGamesPriceIsNoted()
+    {
+        StrictRun(StrictItemsMode.On, (host, player) =>
+        {
+            host.ItemPrices = ItemPrices.From((type, record) => 5000u);
+            Thread.Sleep(700);
+            var full = ItemState(0x6501, 0x12A, 0x81);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(full.AsSpan(24 + Sacred.Network.Gameplay.GoldItemStateLayout.RecordsOffset + 8), 3);   // states 3 gold
+            var short8 = new byte[8 + full.Length - 24];
+            full.AsSpan(0, 8).CopyTo(short8);
+            full.AsSpan(24).CopyTo(short8.AsSpan(8));
+            player.Send(0x16E, short8);
+            Assert.AreEqual("world", ItemWhere(host, player, 0x6501), "stock is kept");
+            Assert.AreEqual(1, host.PriceMismatches, "the stated price differs from the computed one");
+        }, configure: config =>
+        {
+            config.Auth.Witness.Sources = Sacred.GameServer.Simulation.WitnessOptions.AllSources;
+            config.Auth.Witness.PriceCheck = StrictItemsMode.On;
+            config.Auth.Witness.WorldStartGraceMs = 300;
+        });
+    }
 }

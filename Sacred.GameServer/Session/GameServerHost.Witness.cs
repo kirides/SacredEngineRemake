@@ -42,6 +42,11 @@ public sealed partial class GameServerHost
 
     private ushort _nextCaptureLink;
 
+    /// <summary>The game's pricing for the payment check (<c>--game-dir</c>, AUTH_PRICE_CHECK); null without it.</summary>
+    public ItemPrices? ItemPrices { get; set; }
+    /// <summary>Purchase or stock items whose stated price differs from the computed one (diagnostics).</summary>
+    public int PriceMismatches { get; private set; }
+
     /// <summary>An item created in the world start window that is not a baseline item went into the hero's inventory while the window was still open:
     /// a client that makes an item while it builds the world and puts it into its hero. Logged; with AUTH_STRICT_ITEMS=on removed from the server's world.</summary>
     private void WorldStartItemInHero(PlayerSession s, uint reference)
@@ -208,6 +213,16 @@ public sealed partial class GameServerHost
         else (sector, x, y) = (BinaryPrimitives.ReadUInt16LittleEndian(body[GoldObjectStateLayout.SectorOffset..]), BinaryPrimitives.ReadInt32LittleEndian(body[GoldObjectStateLayout.XOffset..]),
             BinaryPrimitives.ReadInt32LittleEndian(body[GoldObjectStateLayout.YOffset..]));
         var price = BinaryPrimitives.ReadUInt32LittleEndian(data[8..]);
+        if (ItemPrices is { } prices && WitnessConfig.PriceCheck != StrictItemsMode.Off && (purchase || (x == 0 && y == 0)) && prices.TryExpected(type, data, out var expected))
+        {
+            if (ItemPrices.Deviates(price, expected))
+            {
+                PriceMismatches++;
+                Log.Info($"AUTH: price: {s.Describe()}: item 0x{reference:X} (type 0x{type:X}) says {price} gold, the game's pricing gives {expected}"
+                    + (WitnessConfig.PriceCheck == StrictItemsMode.On ? ", the computed price counts." : " (log mode, the stated price counts)."));
+            }
+            if (WitnessConfig.PriceCheck == StrictItemsMode.On) price = expected;
+        }
         var facts = new ItemFacts(reference, type, data[25], data[6] & 15, sector, x, y, ItemWitness.Fnv(content), purchase, price);
         var now = _clock.ElapsedMilliseconds;
         var source = Witness!.Classify(s.Slot, facts, content, now);

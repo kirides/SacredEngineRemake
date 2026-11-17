@@ -392,4 +392,19 @@ public class WitnessTests
         w.OnWorldEntered(3, 400);
         Assert.IsFalse(w.WorldStartItemAnchored(3, 5, 2000), "the window is closed (a later pick-up of a ground item is normal)");
     }
+
+    [TestMethod]
+    public void ThePriceCheckToleratesTheKnownDeviationOfHonestItemsButNotAClearlyLowerPrice()
+    {
+        Assert.IsFalse(ItemPrices.Deviates(11046, 11045), "off by one (rounding)");
+        Assert.IsFalse(ItemPrices.Deviates(1264, 1167), "+8 %, as magic items come out");
+        Assert.IsFalse(ItemPrices.Deviates(1505, 1694), "-11 %");
+        Assert.IsTrue(ItemPrices.Deviates(1, 3000), "a price a cheating client states");
+        Assert.IsTrue(ItemPrices.Deviates(4776, 6513), "-27 %: reported, still paid for by the share rule");
+        var prices = ItemPrices.From((type, record) => type == 0x12A ? 5000u : null);
+        Assert.IsTrue(prices.TryExpected(0x12A, new byte[130], out var price));
+        Assert.AreEqual(5000u, price);
+        Assert.IsFalse(prices.TryExpected(0x999, new byte[130], out _), "no price for other kinds");
+        Assert.IsFalse(prices.TryExpected(0x12A, new byte[10], out _), "not a value record");
+    }
 }
