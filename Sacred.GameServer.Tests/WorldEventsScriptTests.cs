@@ -277,6 +277,7 @@ public class WorldEventsScriptTests
         var alice = server.Pushed.Single(p => p.Slot == 1).Payload;
         var bob = server.Pushed.Single(p => p.Slot == 2).Payload;
         Assert.AreEqual("active", alice.GetProperty("st").GetString());
+        Assert.AreEqual("creatures", alice.GetProperty("unit").GetString());
         Assert.AreEqual(1, alice.GetProperty("count").GetInt32());
         Assert.AreEqual(4, alice.GetProperty("target").GetInt32());
         Assert.AreEqual(1, alice.GetProperty("mine").GetInt32());

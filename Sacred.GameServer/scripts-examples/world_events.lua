@@ -36,6 +36,7 @@ local CONFIG = {
 --   types          or creature types (numbers), when the server has no game data
 --   sectors        only kills in these sectors count, and the client bar shows only there (find the numbers with !sector)
 --   text           the goal in words (default: built from the above)
+--   unit           what is counted, for the clients' two-line label ("370 / 1,000 orcs"; default: the first name + s, else creatures)
 --   min_contribution  kills a hero needs to share the reward (default 1)
 --   reward         gold = pool shared by contribution, gold_each = gold for everyone who qualifies,
 --                  item = {quality=.., category=.., level=..} (as server.drop_item) one for everyone who qualifies,
@@ -84,7 +85,7 @@ local function snapshot(def)
     id = tostring(def.id), title = tostring(def.title or def.id), goal = "kill",
     target = math.max(1, math.floor(tonumber(def.target) or 100)), duration = math.max(1, tonumber(def.duration) or 3600),
     names = copy_list(def.names, lower_of), types = copy_list(def.types, number_of), sectors = copy_list(def.sectors, number_of),
-    text = def.text and tostring(def.text) or nil, min_contribution = math.max(1, math.floor(tonumber(def.min_contribution) or 1)),
+    text = def.text and tostring(def.text) or nil, unit = def.unit and tostring(def.unit) or nil, min_contribution = math.max(1, math.floor(tonumber(def.min_contribution) or 1)),
     reward = {
       gold = math.max(0, math.floor(tonumber(reward.gold) or 0)), gold_each = math.max(0, math.floor(tonumber(reward.gold_each) or 0)),
       item = type(reward.item) == "table" and reward.item or nil, top_item = type(reward.top_item) == "table" and reward.top_item or nil,
@@ -96,6 +97,12 @@ local definitions = {}
 for i, def in ipairs(EVENTS) do
   if type(def) == "table" and def.id and def.target then definitions[#definitions + 1] = def
   else server.log("event #" .. i .. " has no id or target: ignored") end
+end
+
+local function unit_of(def)
+  if def.unit then return def.unit end
+  if def.names then return def.names[1] .. "s" end
+  return "creatures"
 end
 
 local function goal_text(def)
@@ -202,7 +209,7 @@ local function payload_for(player)
     local def = ev.def
     local mine = ev.players[player.uid]
     return {
-      v = 1, st = "active", n = ev.n, title = def.title, text = goal_text(def), count = ev.count, target = def.target,
+      v = 1, st = "active", n = ev.n, title = def.title, text = goal_text(def), unit = unit_of(def), count = ev.count, target = def.target,
       left = math.floor(math.max(0, ev.ends - t)), dur = def.duration, here = in_area(def, player), mine = mine and mine.n or 0,
       need = def.min_contribution, people = participants(ev), reward = reward_text(def),
     }
@@ -210,7 +217,7 @@ local function payload_for(player)
   local last = state.last
   if last and t - last.finished < CONFIG.result_hold then
     return {
-      v = 1, st = last.success and "won" or "failed", n = last.n, title = last.title, text = last.text, count = last.count,
+      v = 1, st = last.success and "won" or "failed", n = last.n, title = last.title, text = last.text, unit = last.unit, count = last.count,
       target = last.target, hold = math.floor(CONFIG.result_hold - (t - last.finished)), here = in_area(last, player), people = last.people,
     }
   end
@@ -306,7 +313,7 @@ local function finish(success)
   state.current = nil
   local def, top = ev.def, ranked(ev)
   local record = {
-    n = ev.n, id = def.id, title = def.title, text = goal_text(def), success = success, count = ev.count, target = def.target,
+    n = ev.n, id = def.id, title = def.title, text = goal_text(def), unit = unit_of(def), success = success, count = ev.count, target = def.target,
     started = ev.started, finished = NOW(), people = #top, sectors = def.sectors, top = {},
   }
   for i = 1, math.min(5, #top) do record.top[i] = { name = top[i].name, n = top[i].n } end
