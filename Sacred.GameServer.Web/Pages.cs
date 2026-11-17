@@ -176,14 +176,50 @@ internal static class Pages
         sb.Append("<nav class=\"tabs\" aria-label=\"Sections\">")
           .Append("<a href=\"./\"").Append(current == "server" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Server</a>")
           .Append("<a href=\"mods\"").Append(current == "mods" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("users")).Append("Mods <span class=\"count\">")
-          .Append(mods).Append("</span></a></nav>");
+          .Append(mods).Append("</span></a>")
+          .Append("<a href=\"areas\"").Append(current == "areas" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Areas</a></nav>");
+    }
+
+    /// <summary>
+    /// <c>GET /areas</c>: the area editor. A canvas with the game's own world map and its sector grid (<c>/api/areas/map</c>, needs
+    /// --game-dir), tools to paint, erase and rectangle-select sectors and to draw a circle, a list of named areas and a save button
+    /// (through <c>POST /api/mod-store</c> into the world_events mod's storage). Script and style are in <see cref="AreaEditorAssets"/>.
+    /// </summary>
+    public static string AreaEditorPage(IServerAdmin admin)
+    {
+        var o = admin.Overview();
+        var sb = new StringBuilder(12 * 1024);
+        sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">")
+          .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>Areas - ")
+          .Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style).Append(AreaEditorAssets.Css).Append("</style></head><body><div class=\"app\">");
+        sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>")
+          .Append(E(o.Name)).Append("</small></div></div>");
+        Tabs(sb, "areas", admin.Mods().Count);
+        sb.Append("</header><main class=\"ae\"><div class=\"side\">")
+          .Append("<section class=\"card\"><h2>Tools</h2><div class=\"tools\">")
+          .Append("<button type=\"button\" data-tool=\"pan\" aria-pressed=\"true\">Move</button><button type=\"button\" data-tool=\"paint\">Paint</button>")
+          .Append("<button type=\"button\" data-tool=\"erase\">Erase</button><button type=\"button\" data-tool=\"rectadd\">Rect +</button>")
+          .Append("<button type=\"button\" data-tool=\"rectdel\">Rect &minus;</button><button type=\"button\" data-tool=\"circle\">Circle</button>")
+          .Append("<button type=\"button\" id=\"fit\">Fit</button></div><p class=\"hint\" id=\"toolhint\"></p></section>")
+          .Append("<section class=\"card\"><h2>Areas</h2><ul class=\"areas\" id=\"areas\"></ul>")
+          .Append("<div class=\"row\" style=\"margin-top:.6rem\"><input type=\"text\" id=\"newName\" maxlength=\"40\" placeholder=\"New area, e.g. Silver Creek\" autocomplete=\"off\"><button type=\"button\" class=\"primary\" id=\"new\">Create</button></div></section>")
+          .Append("<section class=\"card\" id=\"detail\" hidden><h2>Selected area</h2><div class=\"row\"><input type=\"text\" id=\"name\" maxlength=\"40\" aria-label=\"Name\"></div>")
+          .Append("<div class=\"row\" style=\"margin-top:.4rem\"><label for=\"near\">Plus neighbours within</label><input type=\"number\" id=\"near\" min=\"0\" max=\"3\" value=\"0\"><span class=\"hint\">cells</span></div>")
+          .Append("<p class=\"hint\" id=\"info\"></p><div class=\"row\"><button type=\"button\" id=\"zoomArea\">Zoom to it</button><button type=\"button\" id=\"circleOff\" hidden>Remove circle</button><button type=\"button\" id=\"clear\">Clear</button><button type=\"button\" id=\"delete\">Delete</button></div>")
+          .Append("<p class=\"hint\" style=\"margin-top:.6rem\">Config line for <code>world_events.lua</code>:</p><textarea class=\"snip\" id=\"snip\" readonly></textarea>")
+          .Append("<div class=\"row\"><button type=\"button\" id=\"copy\">Copy snippet</button></div></section>")
+          .Append("<section class=\"card\"><div class=\"row\"><button type=\"button\" class=\"primary\" id=\"save\" disabled>Save to the server</button></div><p class=\"status\" id=\"status\" aria-live=\"polite\"></p>")
+          .Append("<p class=\"hint\">Saved areas go into the <code>world_events</code> mod's storage (key <code>areas</code>) and win over an area of the same id in the script file. Events use them by id.</p></section>")
+          .Append("</div><div class=\"stage\"><canvas id=\"cv\" aria-label=\"World map with the sector grid\"></canvas><p class=\"status\" id=\"loading\" style=\"position:absolute;top:.6rem;left:.8rem;margin:0;color:#efe6d6\">Loading the map...</p><div class=\"readout\" id=\"readout\"></div></div>")
+          .Append("</main></div><script>").Append(AreaEditorAssets.Script).Append("</script></body></html>");
+        return sb.ToString();
     }
 
     /// <summary>
     /// <c>GET /mods</c>: one card per mod (script file) with its pages and its endpoints listed apart. Links open in a new tab; pages
     /// run sandboxed (see WebUiServer.ModEndpoint). Public ones show their <c>/public/mods/...</c> address too.
     /// </summary>
-    public static string ModsPage(IServerAdmin admin, bool publicApi)
+    public static string ModsPage(IServerAdmin admin, bool publicApi, string? notice = null)
     {
         var o = admin.Overview();
         var mods = admin.Mods().OrderBy(m => m.Mod, StringComparer.OrdinalIgnoreCase).ToList();
@@ -195,6 +231,14 @@ internal static class Pages
           .Append(E(o.Name)).Append("</small></div></div>");
         Tabs(sb, "mods", mods.Count);
         sb.Append("</header><main class=\"modgrid\">");
+        if (notice is not null) sb.Append("<div id=\"toast\" role=\"status\">").Append(E(notice)).Append("</div>");
+        if (mods.Count > 0)
+            sb.Append("<section class=\"card modbar\"><p class=\"dim small\">Scripts reload by themselves when a file changes (only that mod). A mod's <code>unload</code> handler saves its state first.</p>");
+        if (mods.Count > 0)
+        {
+            Form(sb, "reload-mods", "<input type=\"hidden\" name=\"back\" value=\"mods\"><input type=\"hidden\" name=\"text\" value=\"\"><button class=\"ghost\" title=\"Every mod saves its state in its unload handler and is loaded again from disk, in a fresh Lua state\">Reload all mods</button>", null, null, false, inline: true);
+            sb.Append("</section>");
+        }
         if (mods.Count == 0)
             sb.Append("<section class=\"card\"><div class=\"empty\">").Append(Icon("users")).Append("<p>No mods installed.</p>")
               .Append("<small>Put .lua scripts into the scripts folder; they load without a restart.</small></div></section>");
@@ -211,6 +255,7 @@ internal static class Pages
             if (mod.Error is { Length: > 0 } error) sb.Append("<p class=\"moderror\">Failed to load: ").Append(E(error)).Append("</p>");
             ModList(sb, "Pages", pages, publicApi);
             ModList(sb, "Endpoints", endpoints, publicApi);
+            Form(sb, "reload-mods", $"<input type=\"hidden\" name=\"back\" value=\"mods\"><input type=\"hidden\" name=\"text\" value=\"{E(mod.Mod)}\"><button class=\"ghost\">Reload</button>", null, null, false, inline: true);
             sb.Append("</section>");
         }
         sb.Append("</main></div></body></html>");

@@ -42,6 +42,19 @@ public sealed partial class GameServerHost : IScriptServer
         ExecuteScriptKicks();
     }
 
+    /// <summary>Game loop (web admin): one mod, or every mod with null, runs its unload handlers and is loaded again from disk.</summary>
+    private void ReloadMods(string? mod)
+    {
+        if (_scripts is null) { Log.Info("web admin: scripts are off, nothing to reload."); return; }
+        try
+        {
+            Log.Info(mod is null ? "web admin: reloading every mod." : $"web admin: reloading mod {mod}.");
+            if (!_scripts.Reload(mod)) Log.Info($"web admin: no mod {mod}.");
+            ExecuteScriptKicks();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("reload", e); }
+    }
+
     private void PumpScripts(long now)
     {
         if (_scripts is null) return;
@@ -49,6 +62,7 @@ public sealed partial class GameServerHost : IScriptServer
         {
             _scripts.Pump(now);
             PumpModRequests();
+            PumpStoreRequests();
             ExecuteScriptKicks();
             if (now >= _nextScriptFlushMs) { _nextScriptFlushMs = now + 10_000; _scripts.FlushStores(); }
         }
@@ -60,8 +74,11 @@ public sealed partial class GameServerHost : IScriptServer
 
     private void StopScripts()
     {
+        try { _scripts?.Shutdown(); }                                       // the mods' "unload" handlers (reason "shutdown") save their state
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("unloading the scripts", e); }
         _scripts?.Dispose(); _scripts?.FlushStores(wait: true);
         while (_modRequests.TryDequeue(out var pending)) pending.Done.TrySetResult(new Web.ModResponse(503, "text/plain; charset=utf-8", "server stopping"));
+        while (_storeRequests.TryDequeue(out var pendingStore)) pendingStore.Done.TrySetResult(new Web.ModResponse(503, "text/plain; charset=utf-8", "server stopping"));
     }
 
     // ---- hooks --------------------------------------------------------------------------------------------------------
@@ -118,15 +135,17 @@ public sealed partial class GameServerHost : IScriptServer
         var killer = killerWord is >= 1 and <= MaxSlots && _slots[killerWord] is { } p ? p
             : _world.TryGet(killerWord & 0x7FFFFFFF, out var owned) && owned.Owner is >= 1 and <= MaxSlots && _slots[owned.Owner] is { } owner ? owner
             : sender;
-        uint type = 0, name = 0; var level = 0;
+        uint type = 0, name = 0; var level = 0; int sector = 0, vx = 0, vy = 0;
         if (_world.TryGet(victim, out var entry))
         {
+            var where = Position(entry);
+            (sector, vx, vy) = (where.Sector, where.X, where.Y);
             var payload = entry.Payload;
             type = BinaryPrimitives.ReadUInt32LittleEndian(payload[4..]);
             level = CompactLevel(payload[(entry.LongPrefix ? 24 : 8)..]);
             name = Data.NameService.InstanceName(payload[(entry.LongPrefix ? 24 : 8)..]);
         }
-        _scripts!.FireKill(ScriptPlayerOf(killer), new ScriptMonster(victim, type, level, type == 0 ? null : Names?.Creature(type, name)));
+        _scripts!.FireKill(ScriptPlayerOf(killer), new ScriptMonster(victim, type, level, type == 0 ? null : Names?.Creature(type, name), sector, vx, vy));
         ExecuteScriptKicks();
     }
 
@@ -193,11 +212,15 @@ public sealed partial class GameServerHost : IScriptServer
 
     private ScriptPlayer ScriptPlayerOf(PlayerSession s)
     {
-        var level = 0;
-        if (_world.TryGet(s.Slot, out var hero)) level = CompactLevel(hero.Payload[(hero.LongPrefix ? 24 : 8)..]);
+        var level = 0; int x = 0, y = 0;
+        if (_world.TryGet(s.Slot, out var hero))
+        {
+            level = CompactLevel(hero.Payload[(hero.LongPrefix ? 24 : 8)..]);
+            (_, x, y) = Position(hero);
+        }
         var key = s.LobbyIdentity is not (0 or -1) ? $"id:{s.LobbyIdentity}:{s.CharacterBlock}" : "name:" + s.Name;
         return new ScriptPlayer(s.Slot, s.Name, key, s.RosterEntry[RosterClass], level, s.InGame, s.IsHost, s.LobbyIdentity,
-            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0, CharacterName(s), s.CurrentSector);
+            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0, CharacterName(s), s.CurrentSector, x, y);
     }
 
     private void ExecuteScriptKicks()

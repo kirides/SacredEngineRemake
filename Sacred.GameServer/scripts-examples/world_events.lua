@@ -3,7 +3,8 @@
 -- show a movable progress bar. Copy into the server's scripts folder (default ./scripts) to use it.
 --
 --   !event                       progress of the running event (or the next one) to the player who asked
---   !sector                      the number of the sector the player stands in (for the `sectors` lists below)
+--   !sector / !here              the sector the player stands in (id, grid cell), the position and the areas it is in
+--   !area ...                    (admins) record named areas by walking: see "areas" below
 --   /mods/world_events/          the public dashboard page (character names only)
 --   /mods/world_events/state     the same as JSON (public, with WebUi:PublicApi=true also under /public/mods/...)
 --
@@ -25,6 +26,30 @@ local CONFIG = {
   milestones = { 25, 50, 75 },
   announce = true,          -- broadcast start, milestones and result to everybody
   max_contributors = 2000,  -- heroes remembered per event (more still count for the total, but get no share)
+  where = "victim",         -- where a kill counts, unless an event says otherwise: "victim" = where the creature died (where the
+                            -- player stands when the server never saw the creature), "player" = where the killer stands,
+                            -- "either" = either place is in the area
+  margin = 1,               -- the client shows the event this many sector cells beyond the area too (needs --game-dir)
+  circle_margin = 1500,     -- ... and this many world units beyond a circle
+  max_area_sectors = 1500,  -- an area is cut off at this many sectors
+  admins = {},              -- character names that may record areas with !area (empty: the host player)
+  debug_kills = false,      -- log every kill with the creature's sector and position (to read sector numbers off)
+}
+
+-- Named AREAS: sets of sectors an event can be tied to (`area = "silver_creek"` in an event, or `areas = {...}` for several).
+-- Sector ids are slots of the game's sector table, NOT coordinates: neighbours in the world are not neighbours in the numbers. To
+-- find the numbers: stand in a place and type !sector (or !here), or set debug_kills = true and read the log, or record an area by
+-- walking with !area start, or use the area editor page of the web UI. An area is the UNION of its parts:
+--   sectors   sector ids and inclusive ranges: { 2909, 2910, { 2915, 2920 } }   (`ranges` = { { 2915, 2920 } } is the same)
+--   rect      { x1, y1, x2, y2 }: every sector of those cells of the 128 x 128 sector grid (needs --game-dir)
+--   near      n: plus every sector within n grid cells of the ones above (needs --game-dir)
+--   circle    { x = , y = , r = } in world units: a point inside it counts (a tile is 53.67 units, a sector 64 tiles = 3435 units);
+--             finer than sectors, for a village inside a big sector. !here prints your x and y.
+-- Areas recorded in game (!area) and by the area editor are kept in this mod's storage (key "areas") in this same format; a
+-- recorded one wins over one here with the same id.
+local AREAS = {
+  -- Fill in the real numbers (see above); the "Thief hunt" below is offered once this area has sectors:
+  silver_creek = { name = "Silver Creek", sectors = {}, near = 1 },
 }
 
 -- One entry per event. Rotation goes through the list; an event ends when its target is reached (success) or its time is up (fail).
@@ -34,20 +59,55 @@ local CONFIG = {
 --   duration       seconds
 --   names          only creatures whose name contains one of these words count (needs --game-dir; any case)
 --   types          or creature types (numbers), when the server has no game data
---   sectors        only kills in these sectors count, and the client bar shows only there (find the numbers with !sector)
+--   area / areas   only kills in these named AREAS count (see above), and the client's indicator shows only in or near them
+--   sectors        or a list of sector ids and ranges right here, for an area of its own
+--   where          "victim", "player" or "either" for this event (default: CONFIG.where)
 --   text           the goal in words (default: built from the above)
 --   unit           what is counted, for the clients' two-line label ("370 / 1,000 orcs"; default: the first name + s, else creatures)
 --   min_contribution  kills a hero needs to share the reward (default 1)
 --   reward         gold = pool shared by contribution, gold_each = gold for everyone who qualifies,
 --                  item = {quality=.., category=.., level=..} (as server.drop_item) one for everyone who qualifies,
---                  top_item = the same for the best contributor only
+--                  top_item = the same for the best contributor only,
+--                  milestones = rarity ODDS that improve with the event's progress (below); then `item` only says which kind of
+--                  item (category, level) and its quality is rolled from the odds,
+--                  on_fail = false: no item rolls when the time runs out (default: a failed event still rolls, with the odds of the
+--                  highest milestone it reached; gold and the top prize are paid only for a completed event)
+--
+-- REWARD ODDS (milestones). `milestones = { { at = 1, weights = { common = 100 } }, { at = 10, weights = { common = 70, magic = 30 } }, ... }`:
+-- `at` is the percent of the target the realm has reached, `weights` are relative weights per rarity tier (TIERS below); a tier's chance
+-- is its weight divided by the sum of the weights, so the chances always add up to 100 %. Rule, checked when the script loads: every
+-- weight is >= 0, at least one is > 0, and the best tier (legendary) may never be the only one with weight: its chance stays
+-- below 100 % (a milestone that breaks the rule is refused with a log line). When the event ends (completed or out of time) every
+-- hero with at least `min_contribution` kills gets ONE item rolled with server.random using the odds of the HIGHEST milestone the event
+-- reached (an event that ended at 35 % uses the 30 % row). Nothing else changes the roll: not level, class, luck or magic find, not how
+-- many kills beyond the minimum. All odds are shown: the dashboard page, /mods/world_events/state, !event rewards, the announcement
+-- when a milestone is reached and the tooltip of the Sacred Gear mod. What was rolled for whom goes to the public "recent rewards".
+-- The rarity tiers and the game's generation quality (0..14, higher is rarer) they force in server.drop_item:
+local TIERS = {
+  { id = "common", name = "Common", quality = 0 },
+  { id = "magic", name = "Magic", quality = 4 },
+  { id = "rare", name = "Rare", quality = 8 },
+  { id = "epic", name = "Epic", quality = 11 },
+  { id = "legendary", name = "Legendary", quality = 14 },
+}
 local EVENTS = {
   { id = "orc-hunt", title = "Orc hunt", goal = "kill", target = 1000, duration = 2 * 3600, names = { "orc" },
     text = "Slay 1000 orcs", min_contribution = 10,
-    reward = { gold = 50000, gold_each = 500, item = { quality = 3 }, top_item = { quality = 9 } } },
+    reward = { gold = 50000, gold_each = 500, item = {}, top_item = { quality = 9 },
+      milestones = {
+        { at = 1,  weights = { common = 100 } },
+        { at = 10, weights = { common = 75, magic = 25 } },
+        { at = 30, weights = { common = 50, magic = 30, rare = 20 } },
+        { at = 80, weights = { common = 35, magic = 30, rare = 25, epic = 8, legendary = 2 } },
+      } } },
   { id = "great-cull", title = "The great cull", goal = "kill", target = 3000, duration = 3 * 3600,
     text = "Defeat 3000 creatures of any kind", min_contribution = 20,
     reward = { gold = 150000, gold_each = 1000, item = { quality = 6 }, top_item = { quality = 10 } } },
+  -- Dormant until the area silver_creek above has sectors. The names are matched in any case against the game's creature names
+  -- (check them with debug_kills = true).
+  { id = "thief-hunt", title = "Thief hunt", goal = "kill", target = 500, duration = 2 * 3600, area = "silver_creek",
+    names = { "thief", "bandit", "brigand", "robber" }, unit = "thieves", text = "Defeat 500 thieves around Silver Creek",
+    min_contribution = 5, reward = { gold = 40000, gold_each = 400, item = { quality = 3 }, top_item = { quality = 8 } } },
 }
 
 -- ---- helpers -----------------------------------------------------------------------------------------------------------
@@ -78,17 +138,102 @@ end
 local function number_of(v) return tonumber(v) end
 local function lower_of(v) return type(v) == "string" and v ~= "" and v:lower() or nil end
 
+-- ---- reward odds ---------------------------------------------------------------------------------------------------------
+
+local tier_index = {}
+table.sort(TIERS, function(a, b) return a.quality < b.quality end)
+for i, tier in ipairs(TIERS) do tier_index[tier.id] = i end
+local TOP_TIER = TIERS[#TIERS]
+
+local function percent_text(value)
+  local text = string.format("%.1f", value):gsub("%.0$", "")
+  return text .. "%"
+end
+
+-- A milestone from its config: { at, odds = { { id, name, quality, weight, percent }, ... } } (tiers with a weight, worst first), or
+-- nil and the reason. The chances are the weights divided by their sum, so they add up to 100 %.
+local function make_milestone(m)
+  if type(m) ~= "table" or type(m.weights) ~= "table" then return nil, "no weights" end
+  local at = tonumber(m.at)
+  if not at or at < 0 or at > 100 then return nil, "'at' must be a percent from 0 to 100" end
+  local total, entries = 0, {}
+  for id, weight in pairs(m.weights) do
+    local i = tier_index[id]
+    if not i then return nil, "unknown tier '" .. tostring(id) .. "'" end
+    weight = tonumber(weight)
+    if not weight or weight < 0 then return nil, "the weight of '" .. id .. "' must be a number >= 0" end
+    if weight > 0 then total = total + weight; entries[#entries + 1] = { i = i, weight = weight } end
+  end
+  if total <= 0 then return nil, "no tier has a weight" end
+  table.sort(entries, function(a, b) return a.i < b.i end)
+  local odds, top = {}, 0
+  for _, e in ipairs(entries) do
+    local tier = TIERS[e.i]
+    local percent = e.weight * 100 / total
+    odds[#odds + 1] = { id = tier.id, name = tier.name, quality = tier.quality, weight = e.weight, percent = percent }
+    if tier.id == TOP_TIER.id then top = percent end
+  end
+  if top >= 100 then return nil, "the best tier (" .. TOP_TIER.id .. ") would be 100 %: give another tier a weight" end
+  return { at = at, odds = odds }
+end
+
+local milestone_cache = setmetatable({}, { __mode = "k" })
+
+-- The validated milestones of a reward config (sorted by `at`), nil when there are none. Refused rows are logged once.
+local function build_milestones(reward, event_id)
+  if type(reward) ~= "table" or type(reward.milestones) ~= "table" then return nil end
+  if milestone_cache[reward] ~= nil then return milestone_cache[reward] or nil end
+  local list = {}
+  for i, m in ipairs(reward.milestones) do
+    local milestone, why = make_milestone(m)
+    if milestone then list[#list + 1] = milestone
+    else server.log("event " .. tostring(event_id) .. ": reward milestone #" .. i .. " refused: " .. why) end
+  end
+  table.sort(list, function(a, b) return a.at < b.at end)
+  milestone_cache[reward] = #list > 0 and list or false
+  return #list > 0 and list or nil
+end
+
+local function odds_text(milestone)
+  local parts = {}
+  for i = #milestone.odds, 1, -1 do
+    parts[#parts + 1] = milestone.odds[i].name .. " " .. percent_text(milestone.odds[i].percent)
+  end
+  return table.concat(parts, ", ")
+end
+
+-- The highest milestone with at <= percent (index), and the next one (index), either may be nil.
+local function milestone_at(milestones, percent)
+  local current, nextm
+  for i, m in ipairs(milestones or {}) do
+    if m.at <= percent then current = i elseif not nextm then nextm = i end
+  end
+  return current, nextm
+end
+
+local function roll_tier(milestone)
+  local total = 0
+  for _, o in ipairs(milestone.odds) do total = total + o.weight end
+  local pick = server.random() * total
+  for _, o in ipairs(milestone.odds) do
+    pick = pick - o.weight
+    if pick < 0 then return o end
+  end
+  return milestone.odds[#milestone.odds]
+end
+
 -- A definition as it is stored with a running event (so editing this file does not change an event in progress).
 local function snapshot(def)
   local reward = type(def.reward) == "table" and def.reward or {}
   return {
     id = tostring(def.id), title = tostring(def.title or def.id), goal = "kill",
     target = math.max(1, math.floor(tonumber(def.target) or 100)), duration = math.max(1, tonumber(def.duration) or 3600),
-    names = copy_list(def.names, lower_of), types = copy_list(def.types, number_of), sectors = copy_list(def.sectors, number_of),
+    names = copy_list(def.names, lower_of), types = copy_list(def.types, number_of), where = def.where,
     text = def.text and tostring(def.text) or nil, unit = def.unit and tostring(def.unit) or nil, min_contribution = math.max(1, math.floor(tonumber(def.min_contribution) or 1)),
     reward = {
       gold = math.max(0, math.floor(tonumber(reward.gold) or 0)), gold_each = math.max(0, math.floor(tonumber(reward.gold_each) or 0)),
       item = type(reward.item) == "table" and reward.item or nil, top_item = type(reward.top_item) == "table" and reward.top_item or nil,
+      milestones = build_milestones(reward, def.id), on_fail = reward.on_fail,
     },
   }
 end
@@ -110,7 +255,7 @@ local function goal_text(def)
   local what = "creatures"
   if def.names then what = table.concat(def.names, "/") .. " creatures" end
   local text = "Defeat " .. def.target .. " " .. what
-  if def.sectors then text = text .. " in sector " .. table.concat(def.sectors, "/") end
+  if def.region and def.region.name then text = text .. " around " .. def.region.name end
   return text
 end
 
@@ -128,13 +273,169 @@ local function in_set(list, value)
   return false
 end
 
--- Is the player where the event happens? (Events without sectors happen everywhere.)
+-- ---- areas: where an event happens ------------------------------------------------------------------------------------------
+
+local function clean_name(text)
+  return (tostring(text or ""):gsub("[%c\\]", " "):sub(1, 40))
+end
+
+local function add_range(set, a, b)
+  a, b = math.floor(a), math.floor(b)
+  if b < a then a, b = b, a end
+  if b - a >= CONFIG.max_area_sectors then b = a + CONFIG.max_area_sectors - 1 end
+  for id = a, b do set[id] = true end
+end
+
+local function set_size(set)
+  local n = 0
+  for _ in pairs(set) do n = n + 1 end
+  return n
+end
+
+-- Every sector within n grid cells of the ones in `set` (the set itself included); needs the sector grid.
+local function grow(set, n)
+  if n <= 0 or set_size(set) > CONFIG.max_area_sectors then return set end
+  local out = {}
+  for id in pairs(set) do
+    out[id] = true
+    local cell = server.sector_cell(id)
+    if cell then
+      for dx = -n, n do
+        for dy = -n, n do
+          local other = server.sector_at(cell.x + dx, cell.y + dy)
+          if other then out[other] = true end
+        end
+      end
+    end
+  end
+  return out
+end
+
+-- The sectors and circles of one area definition (a config or a recorded one) added to `ids` / `circles`.
+local function add_parts(def, ids, circles)
+  local own = {}
+  for _, part in ipairs(def.sectors or {}) do
+    if type(part) == "table" then add_range(own, tonumber(part[1]) or 0, tonumber(part[2]) or tonumber(part[1]) or 0)
+    elseif tonumber(part) then own[math.floor(tonumber(part))] = true end
+  end
+  for _, part in ipairs(def.ranges or {}) do
+    if type(part) == "table" then add_range(own, tonumber(part[1]) or 0, tonumber(part[2]) or tonumber(part[1]) or 0) end
+  end
+  if type(def.rect) == "table" and #def.rect >= 4 then
+    local x1, y1 = math.min(def.rect[1], def.rect[3]), math.min(def.rect[2], def.rect[4])
+    local x2, y2 = math.max(def.rect[1], def.rect[3]), math.max(def.rect[2], def.rect[4])
+    local count = 0
+    for cx = x1, x2 do
+      for cy = y1, y2 do
+        local id = count < CONFIG.max_area_sectors and server.sector_at(cx, cy)
+        if id then own[id] = true; count = count + 1 end
+      end
+    end
+  end
+  if tonumber(def.near) and def.near > 0 then own = grow(own, math.floor(def.near)) end
+  for id in pairs(own) do ids[id] = true end
+  local c = def.circle
+  if type(c) == "table" and tonumber(c.x) and tonumber(c.y) and tonumber(c.r) and c.r > 0 then
+    circles[#circles + 1] = { x = c.x, y = c.y, r = c.r }
+  end
+end
+
+local recorded = (function()
+  local ok, value = pcall(server.load, "areas", nil)
+  return ok and type(value) == "table" and value or {}
+end)()
+local areas_rev = (function() local ok, v = pcall(server.load, "areas_rev", 0); return ok and tonumber(v) or 0 end)()
+
+local function area_def(id)
+  return recorded[id] or AREAS[id]
+end
+
+local function sorted_ids(set)
+  local list = {}
+  for id in pairs(set) do list[#list + 1] = id end
+  table.sort(list)
+  return list
+end
+
+-- The region of an event definition as it is stored with the event: { name, ids = {sorted}, margin = {sorted}, circles = {..} },
+-- or nil for "everywhere". A region with no sector and no circle is empty: it matches nothing (the event is not offered).
+local function region_of(def)
+  local names, ids, circles = {}, {}, {}
+  local wanted = {}
+  if def.area then wanted[#wanted + 1] = def.area end
+  for _, id in ipairs(def.areas or {}) do wanted[#wanted + 1] = id end
+  for _, id in ipairs(wanted) do
+    local a = area_def(id)
+    if a then
+      names[#names + 1] = clean_name(a.name or id)
+      add_parts(a, ids, circles)
+    else
+      server.log("event " .. tostring(def.id) .. ": unknown area '" .. tostring(id) .. "'")
+    end
+  end
+  if def.sectors then add_parts({ sectors = def.sectors }, ids, circles) end
+  if #wanted == 0 and not def.sectors then return nil end
+  local region = { ids = sorted_ids(ids), circles = circles }
+  if #names > 0 then region.name = table.concat(names, " & ") end
+  region.margin = sorted_ids(grow(ids, CONFIG.margin))
+  return region
+end
+
+-- The sets behind a stored region, built once per stored table.
+local runtime = setmetatable({}, { __mode = "k" })
+local function sets_of(region)
+  local r = runtime[region]
+  if not r then
+    r = { ids = {}, margin = {} }
+    for _, id in ipairs(region.ids or {}) do r.ids[id] = true end
+    for _, id in ipairs(region.margin or {}) do r.margin[id] = true end
+    runtime[region] = r
+  end
+  return r
+end
+
+local function in_circle(c, x, y)
+  if not x or not y then return false end
+  local dx, dy = x - c.x, y - c.y
+  return dx * dx + dy * dy <= c.r * c.r
+end
+
+-- Is the point inside the region (or, with `slack`, close to it)?
+local function contains(region, sector, x, y, slack)
+  local r = sets_of(region)
+  if sector and (r.ids[sector] or (slack and r.margin[sector])) then return true end
+  for _, c in ipairs(region.circles or {}) do
+    if in_circle({ x = c.x, y = c.y, r = c.r + (slack and CONFIG.circle_margin or 0) }, x, y) then return true end
+  end
+  return false
+end
+
+local function region_empty(region)
+  return region ~= nil and #region.ids == 0 and #(region.circles or {}) == 0
+end
+
+-- Is the player where the event happens (or near it: the indicator shows a little beyond)? Events without an area happen everywhere.
 local function in_area(def, player)
-  return not def.sectors or in_set(def.sectors, player.sector or 0)
+  local region = def.region
+  if not region then return true end
+  return contains(region, player.sector, player.x, player.y, true)
+end
+
+-- Does the kill happen in the event's area? See CONFIG.where.
+local function kill_in_area(def, player, monster)
+  local region = def.region
+  if not region then return true end
+  local where = def.where or CONFIG.where
+  local function victim() return monster.sector ~= nil and contains(region, monster.sector, monster.x, monster.y) end
+  local function killer() return contains(region, player.sector, player.x, player.y) end
+  if where == "player" then return killer() end
+  if where == "either" then return victim() or killer() end
+  if monster.sector ~= nil then return victim() end       -- "victim": the creature's place, the player's when it is unknown
+  return killer()
 end
 
 local function counts(def, player, monster)
-  if not in_area(def, player) then return false end
+  if not kill_in_area(def, player, monster) then return false end
   if not def.names and not def.types then return true end
   if def.names and monster.name then
     local name = monster.name:lower()
@@ -142,6 +443,38 @@ local function counts(def, player, monster)
   end
   if def.types and in_set(def.types, monster.type) then return true end
   return false
+end
+
+-- Compact text of a sorted list of sector ids: runs of three or more become ranges: 2909, {2911, 2913}.
+local function compact(ids)
+  local out, i = {}, 1
+  while i <= #ids do
+    local j = i
+    while ids[j + 1] == ids[j] + 1 do j = j + 1 end
+    if j - i >= 2 then out[#out + 1] = "{" .. ids[i] .. ", " .. ids[j] .. "}"
+    else for k = i, j do out[#out + 1] = tostring(ids[k]) end end
+    i = j + 1
+  end
+  return table.concat(out, ", ")
+end
+
+local function lua_string(text)
+  local escaped = tostring(text):gsub("%c", " "):gsub("\\", "\\\\"):gsub('"', '\\"')
+  return '"' .. escaped .. '"'
+end
+
+-- The Lua line for an area (what !area show prints and the area editor copies).
+local function snippet(id, a)
+  local parts = { "name = " .. lua_string(a.name or id) }
+  local ids = {}
+  for _, part in ipairs(a.sectors or {}) do
+    if type(part) == "table" then for n = part[1], part[2] do ids[#ids + 1] = n end else ids[#ids + 1] = part end
+  end
+  table.sort(ids)
+  if #ids > 0 then parts[#parts + 1] = "sectors = {" .. compact(ids) .. "}" end
+  if a.near then parts[#parts + 1] = "near = " .. a.near end
+  if a.circle then parts[#parts + 1] = string.format("circle = { x = %d, y = %d, r = %d }", a.circle.x, a.circle.y, a.circle.r) end
+  return id .. " = { " .. table.concat(parts, ", ") .. " },"
 end
 
 -- ---- state (kept in this mod's storage) ---------------------------------------------------------------------------------------
@@ -170,11 +503,20 @@ local pending = (function()
   return ok and type(value) == "table" and value or {}
 end)()
 
-local dirty, pending_dirty, push_due = false, false, false
+local rewardlog = (function()
+  local ok, value = pcall(server.load, "rewardlog", nil)
+  return ok and type(value) == "table" and value or {}
+end)()
+
+local dirty, pending_dirty, push_due, rewardlog_dirty = false, false, false, false
 
 local function save_state()
   local ok, err = pcall(server.save, "state", state)
   if ok then dirty = false else server.log("cannot save the state: " .. tostring(err)) end
+  if rewardlog_dirty then
+    local ok3, err3 = pcall(server.save, "rewardlog", rewardlog)
+    if ok3 then rewardlog_dirty = false else server.log("cannot save the reward log: " .. tostring(err3)) end
+  end
   if pending_dirty then
     local ok2, err2 = pcall(server.save, "pending", pending)
     if ok2 then pending_dirty = false else server.log("cannot save pending rewards: " .. tostring(err2)) end
@@ -208,10 +550,18 @@ local function payload_for(player)
   if ev then
     local def = ev.def
     local mine = ev.players[player.uid]
+    local odds_now, odds_at, odds_next, odds_next_at
+    local milestones = def.reward.milestones
+    if milestones then
+      local current, nextm = milestone_at(milestones, math.min(100, ev.count * 100 / def.target))
+      if current then odds_now, odds_at = odds_text(milestones[current]), milestones[current].at end
+      if nextm then odds_next, odds_next_at = odds_text(milestones[nextm]), milestones[nextm].at end
+    end
     return {
       v = 1, st = "active", n = ev.n, title = def.title, text = goal_text(def), unit = unit_of(def), count = ev.count, target = def.target,
       left = math.floor(math.max(0, ev.ends - t)), dur = def.duration, here = in_area(def, player), mine = mine and mine.n or 0,
-      need = def.min_contribution, people = participants(ev), reward = reward_text(def),
+      need = def.min_contribution, people = participants(ev), reward = reward_text(def), area = def.region and def.region.name or nil,
+      odds = odds_now, odds_at = odds_at, odds_next = odds_next, odds_next_at = odds_next_at,
     }
   end
   local last = state.last
@@ -219,6 +569,7 @@ local function payload_for(player)
     return {
       v = 1, st = last.success and "won" or "failed", n = last.n, title = last.title, text = last.text, unit = last.unit, count = last.count,
       target = last.target, hold = math.floor(CONFIG.result_hold - (t - last.finished)), here = in_area(last, player), people = last.people,
+      area = last.region and last.region.name or nil,
     }
   end
   return { v = 1, st = "idle", next_in = math.floor(math.max(0, (state.next_start or t) - t)), here = false }
@@ -246,9 +597,17 @@ local function give(player, entry, why)
     if ok and pile then given[#given + 1] = entry.gold .. " gold"
     else server.log("no gold for " .. player.name .. ": " .. tostring(ok and err or pile)) end
   end
-  for _, spec in ipairs(entry.items or {}) do
+  for _, wrapped in ipairs(entry.items or {}) do
+    local spec, roll = wrapped.spec or wrapped, wrapped.roll
     local ok, item, err = pcall(server.drop_item, player, spec)
-    if ok and item then given[#given + 1] = (item.name and item.name ~= "") and item.name or "an item"
+    if ok and item then
+      local name = (item.name and item.name ~= "") and item.name or "an item"
+      given[#given + 1] = name
+      if roll then
+        for _, logged in ipairs(rewardlog) do
+          if logged.id == roll then logged.item = name; rewardlog_dirty = true; break end
+        end
+      end
     else server.log("no item for " .. player.name .. ": " .. tostring(ok and err or item)) end
   end
   if #given > 0 then server.message(player, PREFIX .. why .. ": " .. table.concat(given, ", ") .. " dropped for you.") end
@@ -288,20 +647,44 @@ local function deliver_pending()
   end
 end
 
--- Splits the reward of a won event: who qualifies, how much gold, who gets the prize.
-local function reward_plan(ev)
+-- Splits the reward of an event: who qualifies, how much gold (a completed event), who gets the prize (a completed event) and which
+-- item each rolls: with milestones from the odds of the highest milestone reached (`percent`), else the fixed `item`.
+local function reward_plan(ev, success, percent)
   local def, plan, total = ev.def, {}, 0
   local list = {}
+  local milestones = def.reward.milestones
+  local reached = milestones and milestone_at(milestones, percent)
+  if not success and not (reached and def.reward.on_fail ~= false) then return plan end
   for _, p in ipairs(ranked(ev)) do
     if p.n >= def.min_contribution then list[#list + 1] = p; total = total + p.n end
   end
   for i, p in ipairs(list) do
-    local entry = { uid = p.uid, name = p.name, n = p.n, gold = def.reward.gold_each, items = {} }
-    if def.reward.gold > 0 and total > 0 then entry.gold = entry.gold + math.floor(def.reward.gold * p.n / total) end
-    if def.reward.item then entry.items[#entry.items + 1] = def.reward.item end
-    if i == 1 and def.reward.top_item then entry.items[#entry.items + 1] = def.reward.top_item end
+    local entry = { uid = p.uid, name = p.name, n = p.n, gold = 0, items = {} }
+    if success then
+      entry.gold = def.reward.gold_each
+      if def.reward.gold > 0 and total > 0 then entry.gold = entry.gold + math.floor(def.reward.gold * p.n / total) end
+    end
+    if milestones then
+      if reached then
+        local milestone = milestones[reached]
+        local tier = roll_tier(milestone)
+        state.roll_seq = (state.roll_seq or 0) + 1
+        local spec = {}
+        for k, v in pairs(def.reward.item or {}) do spec[k] = v end
+        spec.quality = tier.quality
+        table.insert(rewardlog, 1, { id = state.roll_seq, time = NOW(), event = def.title, name = p.name, tier = tier.name, at = milestone.at,
+          chance = tier.percent, odds = odds_text(milestone) })
+        entry.items[#entry.items + 1] = { spec = spec, roll = state.roll_seq }
+        entry.roll_note = tier.name
+      end
+    elseif success and def.reward.item then
+      entry.items[#entry.items + 1] = def.reward.item
+    end
+    if success and i == 1 and def.reward.top_item then entry.items[#entry.items + 1] = def.reward.top_item end
     plan[#plan + 1] = entry
   end
+  while #rewardlog > 100 do table.remove(rewardlog) end
+  rewardlog_dirty = true
   return plan
 end
 
@@ -314,7 +697,7 @@ local function finish(success)
   local def, top = ev.def, ranked(ev)
   local record = {
     n = ev.n, id = def.id, title = def.title, text = goal_text(def), unit = unit_of(def), success = success, count = ev.count, target = def.target,
-    started = ev.started, finished = NOW(), people = #top, sectors = def.sectors, top = {},
+    started = ev.started, finished = NOW(), people = #top, region = def.region, top = {},
   }
   for i = 1, math.min(5, #top) do record.top[i] = { name = top[i].name, n = top[i].n } end
   state.last = record
@@ -323,37 +706,63 @@ local function finish(success)
   while #state.history > 10 do table.remove(state.history) end
   state.next_start = NOW() + CONFIG.cooldown
 
-  if success then
-    local ok, plan = pcall(reward_plan, ev)
-    if ok then
-      for _, entry in ipairs(plan) do
-        local granted, err = pcall(grant, entry.uid, entry.name, entry, "Your reward for '" .. def.title .. "'")
-        if not granted then server.log("reward failed for " .. entry.name .. ": " .. tostring(err)) end
-      end
-      record.rewarded = #plan
-    else
-      server.log("reward plan failed: " .. tostring(plan))
+  local percent = math.min(100, ev.count * 100 / def.target)
+  local milestones = def.reward.milestones
+  local reached_index = milestones and milestone_at(milestones, percent)
+  record.reached = reached_index and milestones[reached_index].at or nil
+  local ok, plan = pcall(reward_plan, ev, success, percent)
+  if ok then
+    for _, entry in ipairs(plan) do
+      local granted, err = pcall(grant, entry.uid, entry.name, entry, "Your reward for '" .. def.title .. "'")
+      if not granted then server.log("reward failed for " .. entry.name .. ": " .. tostring(err)) end
     end
+    record.rewarded = #plan
+  else
+    server.log("reward plan failed: " .. tostring(plan))
+  end
+  local odds_note = reached_index and (" Rewards were rolled with the " .. percent_text(milestones[reached_index].at) .. " odds: "
+    .. odds_text(milestones[reached_index]) .. ".") or ""
+  if success then
     local names = {}
     for i = 1, math.min(3, #top) do names[i] = top[i].name .. " (" .. top[i].n .. ")" end
     say(def.title .. " is complete! " .. ev.count .. "/" .. def.target .. " in " .. duration_text(NOW() - ev.started)
-      .. ". " .. (record.rewarded or 0) .. " heroes share the reward." .. (#names > 0 and (" Best: " .. table.concat(names, ", ") .. ".") or ""))
+      .. ". " .. (record.rewarded or 0) .. " heroes share the reward." .. (#names > 0 and (" Best: " .. table.concat(names, ", ") .. ".") or "") .. odds_note)
   else
-    say(def.title .. " has failed: " .. ev.count .. "/" .. def.target .. " when the time ran out.")
+    say(def.title .. " has failed: " .. ev.count .. "/" .. def.target .. " when the time ran out."
+      .. ((record.rewarded or 0) > 0 and (" " .. record.rewarded .. " heroes get an item for what the realm reached." .. odds_note) or ""))
   end
   save_state()
   push_all()
 end
 
+-- Is the event offered? Not when its area has no sector and no circle yet.
+local function offered(index)
+  local def = definitions[index]
+  if not def or not (def.area or def.areas or def.sectors) then return def ~= nil end
+  local region = region_of(def)
+  if region_empty(region) then
+    server.log("event " .. tostring(def.id) .. " is not offered: its area has no sector yet")
+    return false
+  end
+  return true
+end
+
 local function next_index()
   local n = #definitions
   if n == 0 then return nil end
+  local from = state.index or 0
   if CONFIG.order == "random" and n > 1 then
-    local pick = server.random(n - 1)
-    if (state.index or 0) > 0 and pick >= state.index then pick = pick + 1 end
-    return pick
+    for _ = 1, 8 do
+      local pick = server.random(n - 1)
+      if from > 0 and pick >= from then pick = pick + 1 end
+      if offered(pick) then return pick end
+    end
   end
-  return ((state.index or 0) % n) + 1
+  for step = 1, n do
+    local index = ((from + step - 1) % n) + 1
+    if offered(index) then return index end
+  end
+  return nil
 end
 
 local function start_event(index)
@@ -362,11 +771,32 @@ local function start_event(index)
   state.seq = state.seq + 1
   state.index = index
   local snap, t = snapshot(def), NOW()
+  snap.region = region_of(def)
   state.current = { n = state.seq, def = snap, started = t, ends = t + snap.duration, count = 0, players = {}, marks = {} }
   say(snap.title .. " begins: " .. goal_text(snap) .. " within " .. duration_text(snap.duration) .. "! Reward: "
     .. (reward_text(snap) ~= "" and reward_text(snap) or "glory") .. ". Type !event for the progress.")
   save_state()
   push_all()
+end
+
+-- The rules and odds of the reward of an event definition, as lines of text.
+local function reward_lines(def)
+  local lines, r = {}, def.reward or {}
+  local milestones = r.milestones
+  if milestones then
+    lines[#lines + 1] = "Item odds by progress (rolled once when the event ends, with the highest milestone reached):"
+    for _, m in ipairs(milestones) do lines[#lines + 1] = "  from " .. percent_text(m.at) .. ": " .. odds_text(m) end
+    lines[#lines + 1] = "Only heroes with at least " .. def.min_contribution .. " kills take part. Nothing else changes the odds."
+      .. (r.on_fail == false and "" or " An event that runs out of time still rolls items with the odds it reached.")
+  elseif r.item then
+    lines[#lines + 1] = "Everyone with at least " .. def.min_contribution .. " kills gets an item"
+      .. (r.item.quality and (" of generation quality " .. r.item.quality) or " of the game's usual rarity") .. "."
+  end
+  if (r.gold or 0) > 0 or (r.gold_each or 0) > 0 then
+    lines[#lines + 1] = "Gold (completed event only): " .. (r.gold_each or 0) .. " each plus " .. (r.gold or 0) .. " shared by kills."
+  end
+  if r.top_item then lines[#lines + 1] = "The best contributor gets a prize item of generation quality " .. tostring(r.top_item.quality or "?") .. " (completed event only)." end
+  return lines
 end
 
 local function status_lines(player)
@@ -394,6 +824,10 @@ end
 -- ---- events ------------------------------------------------------------------------------------------------------------------
 
 server.on("kill", function(player, monster)
+  if CONFIG.debug_kills then
+    server.log(string.format("kill: %s (type %s) at sector %s x %s y %s by %s in sector %s", tostring(monster.name), tostring(monster.type),
+      tostring(monster.sector), tostring(monster.x), tostring(monster.y), player.character, tostring(player.sector)))
+  end
   local ev = state.current
   if not ev or not counts(ev.def, player, monster) then return end
   ev.count = ev.count + 1
@@ -411,6 +845,14 @@ server.on("kill", function(player, monster)
       say(ev.def.title .. ": " .. mark .. "% (" .. ev.count .. "/" .. ev.def.target .. "), " .. duration_text(ev.ends - NOW()) .. " left.")
     end
   end
+  local milestones = ev.def.reward.milestones
+  if milestones then
+    local index = milestone_at(milestones, math.min(100, percent))
+    if index and not ev.marks["r" .. index] then
+      ev.marks["r" .. index] = true
+      say(ev.def.title .. " " .. percent_text(milestones[index].at) .. ": reward odds now: " .. odds_text(milestones[index]) .. ".")
+    end
+  end
   if ev.count >= ev.def.target then finish(true) end
 end)
 
@@ -422,14 +864,174 @@ server.on("enter", function(player)
   push(player)
 end)
 
-server.on("sector", push)
+-- ---- finding and recording areas (chat) -------------------------------------------------------------------------------------
+
+local function is_admin(player)
+  if #CONFIG.admins == 0 then return player.host end
+  local name = (player.character or ""):lower()
+  for _, admin in ipairs(CONFIG.admins) do if tostring(admin):lower() == name then return true end end
+  return false
+end
+
+local recording = {}          -- slot -> { id, name, ids = set, circle }
+
+local function areas_containing(player)
+  local found = {}
+  local seen = {}
+  for _, source in ipairs({ recorded, AREAS }) do
+    for id, a in pairs(source) do
+      if not seen[id] then
+        seen[id] = true
+        local ids, circles = {}, {}
+        add_parts(a, ids, circles)
+        if ids[player.sector or 0] then found[#found + 1] = id
+        else for _, c in ipairs(circles) do if in_circle(c, player.x, player.y) then found[#found + 1] = id; break end end end
+      end
+    end
+  end
+  table.sort(found)
+  return found
+end
+
+local function where_text(player)
+  local text = "You are in sector " .. (player.sector or 0)
+  local cell = player.sector and server.sector_cell(player.sector)
+  if cell then text = text .. " (grid cell " .. cell.x .. "," .. cell.y .. ")" end
+  if (player.x or 0) ~= 0 or (player.y or 0) ~= 0 then text = text .. ", position x " .. player.x .. " y " .. player.y end
+  local in_areas = areas_containing(player)
+  if #in_areas > 0 then text = text .. ", area " .. table.concat(in_areas, ", ") end
+  return text .. "."
+end
+
+local function save_areas()
+  local ok, err = pcall(server.save, "areas", recorded)
+  if ok then
+    areas_rev = areas_rev + 1
+    pcall(server.save, "areas_rev", areas_rev)
+  else
+    server.log("cannot save the areas: " .. tostring(err))
+  end
+end
+
+local function recording_area(rec)
+  local ids = sorted_ids(rec.ids)
+  local a = { name = rec.name, sectors = {} }
+  local i = 1
+  while i <= #ids do
+    local j = i
+    while ids[j + 1] == ids[j] + 1 do j = j + 1 end
+    if j - i >= 2 then a.sectors[#a.sectors + 1] = { ids[i], ids[j] }
+    else for k = i, j do a.sectors[#a.sectors + 1] = ids[k] end end
+    i = j + 1
+  end
+  if rec.circle then a.circle = rec.circle end
+  if rec.near then a.near = rec.near end
+  return a
+end
+
+local function finish_recording(player, rec)
+  recorded[rec.id] = recording_area(rec)
+  save_areas()
+  local line = snippet(rec.id, recorded[rec.id])
+  server.log("area recorded: " .. line)
+  server.message(player, "Area " .. rec.id .. " saved (" .. set_size(rec.ids) .. " sectors" .. (rec.circle and ", a circle" or "") .. ").")
+  server.message(player, line)
+end
+
+local HELP = "!area start <id> [name] | add | remove | circle [radius] | near <n> | stop | cancel | show <id> | list | drop <id>"
+
+local function area_command(player, args)
+  if not is_admin(player) then server.message(player, "Only the admins may record areas."); return end
+  local cmd, rest = args:match("^(%S*)%s*(.-)%s*$")
+  local rec = recording[player.slot]
+  if cmd == "start" then
+    local id, name = rest:match("^([%w_%-]+)%s*(.-)$")
+    if not id then server.message(player, "!area start <id> [name]"); return end
+    rec = { id = id:lower(), name = name ~= "" and clean_name(name) or id, ids = {} }
+    local old = recorded[rec.id]
+    if old then add_parts(old, rec.ids, {}); rec.circle = old.circle; rec.near = old.near; rec.name = old.name or rec.name end
+    if (player.sector or 0) ~= 0 then rec.ids[player.sector] = true end
+    recording[player.slot] = rec
+    server.message(player, "Recording " .. rec.id .. ": every sector you walk into is added. !area stop saves it. " .. set_size(rec.ids) .. " sectors so far.")
+  elseif not rec and (cmd == "add" or cmd == "remove" or cmd == "circle" or cmd == "near" or cmd == "stop" or cmd == "cancel") then
+    server.message(player, "Not recording: !area start <id> [name] first.")
+  elseif cmd == "add" then
+    if (player.sector or 0) ~= 0 then rec.ids[player.sector] = true end
+    server.message(player, "Sector " .. (player.sector or 0) .. " added, " .. set_size(rec.ids) .. " sectors.")
+  elseif cmd == "remove" then
+    rec.ids[player.sector or 0] = nil
+    server.message(player, "Sector " .. (player.sector or 0) .. " removed, " .. set_size(rec.ids) .. " sectors.")
+  elseif cmd == "circle" then
+    local radius = tonumber(rest) or (rec.circle and rec.circle.r) or 1500
+    if (player.x or 0) == 0 and (player.y or 0) == 0 then
+      server.message(player, "The server does not know your position yet (it may lag: move a little, or use the sector-tools mod to read it).")
+    else
+      rec.circle = { x = player.x, y = player.y, r = math.floor(radius) }
+      server.message(player, "Circle at x " .. player.x .. " y " .. player.y .. ", radius " .. math.floor(radius) .. ".")
+    end
+  elseif cmd == "near" then
+    rec.near = math.max(0, math.min(5, math.floor(tonumber(rest) or 0)))
+    if rec.near == 0 then rec.near = nil end
+    server.message(player, "Neighbours within " .. (rec.near or 0) .. " sector cells " .. (rec.near and "included." or "not included."))
+  elseif cmd == "stop" then
+    recording[player.slot] = nil
+    finish_recording(player, rec)
+  elseif cmd == "cancel" then
+    recording[player.slot] = nil
+    server.message(player, "Recording of " .. rec.id .. " dropped.")
+  elseif cmd == "show" then
+    local a = area_def(rest:lower())
+    server.message(player, a and snippet(rest:lower(), a) or ("No area " .. rest))
+  elseif cmd == "drop" then
+    if recorded[rest:lower()] then
+      recorded[rest:lower()] = nil
+      save_areas()
+      server.message(player, "Area " .. rest:lower() .. " dropped.")
+    else
+      server.message(player, "No recorded area " .. rest .. " (areas in the script file are edited there).")
+    end
+  elseif cmd == "list" then
+    local names = {}
+    for id in pairs(recorded) do names[#names + 1] = id .. "*" end
+    for id in pairs(AREAS) do if not recorded[id] then names[#names + 1] = id end end
+    table.sort(names)
+    server.message(player, "Areas (* recorded in game): " .. (#names > 0 and table.concat(names, ", ") or "none"))
+  else
+    server.message(player, HELP)
+  end
+end
+
+server.on("sector", function(player)
+  local rec = recording[player.slot]
+  if rec and (player.sector or 0) ~= 0 and not rec.ids[player.sector] then
+    rec.ids[player.sector] = true
+    server.message(player, "Area " .. rec.id .. ": sector " .. player.sector .. " added (" .. set_size(rec.ids) .. ").")
+  end
+  push(player)
+end)
+
+server.on("leave", function(player) recording[player.slot] = nil end)
 
 server.on("chat", function(player, text)
   if text == "!event" then
     for _, line in ipairs(status_lines(player)) do server.message(player, PREFIX .. line) end
     return true
-  elseif text == "!sector" then
-    server.message(player, "You are in sector " .. (player.sector or 0) .. ".")
+  elseif text == "!event rewards" or text == "!event odds" then
+    local ev = state.current
+    if not ev then server.message(player, PREFIX .. "No world event is running."); return true end
+    for _, line in ipairs(reward_lines(ev.def)) do server.message(player, PREFIX .. line) end
+    local milestones = ev.def.reward.milestones
+    if milestones then
+      local index = milestone_at(milestones, math.min(100, ev.count * 100 / ev.def.target))
+      server.message(player, PREFIX .. (index and ("Now (" .. percent_text(ev.count * 100 / ev.def.target) .. " done): " .. odds_text(milestones[index]))
+        or "Not at the first milestone yet."))
+    end
+    return true
+  elseif text == "!sector" or text == "!here" then
+    server.message(player, where_text(player))
+    return true
+  elseif text == "!area" or text:sub(1, 6) == "!area " then
+    area_command(player, text:sub(7))
     return true
   end
 end)
@@ -455,6 +1057,14 @@ local function tick()
     start_event(next_index())
   end
   deliver_pending()
+  if ticks % 5 == 0 then
+    local ok, rev = pcall(server.load, "areas_rev", 0)
+    if ok and tonumber(rev) and rev ~= areas_rev then
+      areas_rev = rev
+      local loaded = server.load("areas", {})
+      recorded = type(loaded) == "table" and loaded or {}
+    end
+  end
   if dirty or pending_dirty then save_state() end
   if push_due or (state.current and ticks % 3 == 0) then push_all() end
 end
@@ -484,10 +1094,34 @@ local function public_state()
     out.active = {
       n = ev.n, id = ev.def.id, title = ev.def.title, text = goal_text(ev.def), count = ev.count, target = ev.def.target,
       percent = math.min(100, math.floor(ev.count * 100 / ev.def.target)), left = math.floor(math.max(0, ev.ends - t)), ends = ev.ends,
-      sectors = ev.def.sectors, participants = participants(ev), top = top, reward = reward_text(ev.def),
+      area = ev.def.region and ev.def.region.name or nil, participants = participants(ev), top = top, reward = reward_text(ev.def),
     }
   else
     out.next_in = math.floor(math.max(0, (state.next_start or t) - t))
+  end
+  local function odds_json(def)
+    local milestones = def.reward and def.reward.milestones
+    if not milestones then return nil end
+    local list = {}
+    for i, m in ipairs(milestones) do
+      local chances = {}
+      for j, o in ipairs(m.odds) do chances[j] = { tier = o.id, name = o.name, quality = o.quality, weight = o.weight, percent = o.percent } end
+      list[i] = { at = m.at, chances = chances }
+    end
+    return list
+  end
+  if out.active then
+    out.active.reward_odds = odds_json(ev.def)
+    out.active.reward_rules = reward_lines(ev.def)
+    out.active.odds_now = (function()
+      local m = ev.def.reward.milestones
+      return m and milestone_at(m, math.min(100, ev.count * 100 / ev.def.target)) or nil
+    end)()
+  end
+  out.rewards = {}
+  for i = 1, math.min(20, #rewardlog) do
+    local e = rewardlog[i]
+    out.rewards[i] = { time = e.time, event = e.event, name = e.name, tier = e.tier, item = e.item, at = e.at, chance = e.chance }
   end
   out.last = state.last and {
     n = state.last.n, title = state.last.title, success = state.last.success, count = state.last.count, target = state.last.target,
@@ -495,12 +1129,38 @@ local function public_state()
   } or nil
   out.history = state.history
   out.events = {}
-  for i, def in ipairs(definitions) do out.events[i] = { id = def.id, title = def.title, text = goal_text(snapshot(def)), duration = def.duration } end
+  for i, def in ipairs(definitions) do
+    local snap = snapshot(def)
+    out.events[i] = { id = def.id, title = def.title, text = goal_text(snap), duration = def.duration, reward_odds = odds_json(snap) }
+  end
   return out
 end
 
 server.endpoint("state", function() return public_state() end,
   { public = true, description = "the running event, the last result and the history as JSON (character names only)" })
+
+-- For the area editor page of the web UI (admin only, not public): the areas as defined (the script file's and the saved ones, which win)
+-- and where the heroes are. The page saves areas into this mod's storage through POST /api/mod-store.
+local function area_json(a, source)
+  return { name = a.name, sectors = a.sectors or {}, ranges = a.ranges, rect = a.rect, near = a.near, circle = a.circle, source = source }
+end
+
+server.endpoint("areas", function()
+  local out = {}
+  for id, a in pairs(AREAS) do out[id] = area_json(a, "file") end
+  for id, a in pairs(recorded) do if type(a) == "table" then out[id] = area_json(a, "saved") end end
+  local events = {}
+  for i, def in ipairs(definitions) do events[i] = { id = def.id, title = def.title, area = def.area, areas = def.areas } end
+  return { areas = out, events = events }
+end, { description = "the named areas (script file and saved), for the area editor" })
+
+server.endpoint("whereabouts", function()
+  local list = {}
+  for i, player in ipairs(server.players()) do
+    list[i] = { name = player.character, sector = player.sector or 0, x = player.x or 0, y = player.y or 0 }
+  end
+  return { players = list }
+end, { description = "where the heroes are (sector and position), for the area editor" })
 
 local style = [[
 body{margin:0;font:15px/1.4 system-ui,sans-serif;background:#15110d;color:#efe6d6}h1{margin:0;padding:1rem 1.2rem;font-size:1.3rem;color:#e0a944}
@@ -508,7 +1168,9 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(19rem,1fr));gap:
 section{background:#241d16;border:1px solid #3b3025;border-radius:10px;padding:.8rem 1rem}h2{margin:0 0 .5rem;font-size:1rem;color:#f2c36b}
 ol,ul{margin:0;padding-left:1.3rem}li{margin:.15rem 0}b{color:#fff}small{color:#a39683}
 .bar{height:1.2rem;background:#0e0b08;border:1px solid #5a4a36;border-radius:6px;overflow:hidden;margin:.4rem 0}
-.bar i{display:block;height:100%;background:linear-gradient(#e8b84a,#b07a1e)}.ok{color:#8fd08f}.bad{color:#e08f8f}]]
+.bar i{display:block;height:100%;background:linear-gradient(#e8b84a,#b07a1e)}.ok{color:#8fd08f}.bad{color:#e08f8f}
+table{border-collapse:collapse;width:100%}th,td{text-align:right;padding:.15rem .4rem;border-bottom:1px solid #3b3025}th:first-child,td:first-child{text-align:left}
+th{color:#a39683;font-weight:normal}tr.now td{background:#3b2f1a;color:#fff;font-weight:bold}]]
 
 local function section(title, body)
   return "<section><h2>" .. server.html(title) .. "</h2>" .. body .. "</section>"
@@ -533,6 +1195,33 @@ server.page("", function()
   else
     parts[#parts + 1] = section("Running now", "<small>No event right now. The next one starts in about " .. h(duration_text(s.next_in or 0)) .. ".</small>")
   end
+  if a and a.reward_odds then
+    local rows_o = { "<table><tr><th>from</th>" }
+    for _, tier in ipairs(TIERS) do rows_o[#rows_o + 1] = "<th>" .. h(tier.name) .. "</th>" end
+    rows_o[#rows_o + 1] = "</tr>"
+    for i, m in ipairs(a.reward_odds) do
+      local chance = {}
+      for _, c in ipairs(m.chances) do chance[c.tier] = c.percent end
+      rows_o[#rows_o + 1] = '<tr' .. (i == a.odds_now and ' class="now"' or "") .. "><td>" .. h(percent_text(m.at)) .. "</td>"
+      for _, tier in ipairs(TIERS) do
+        rows_o[#rows_o + 1] = "<td>" .. (chance[tier.id] and h(percent_text(chance[tier.id])) or "&ndash;") .. "</td>"
+      end
+      rows_o[#rows_o + 1] = "</tr>"
+    end
+    rows_o[#rows_o + 1] = "</table>"
+    for _, line in ipairs(a.reward_rules or {}) do rows_o[#rows_o + 1] = "<br><small>" .. h(line) .. "</small>" end
+    parts[#parts + 1] = section("Reward odds", table.concat(rows_o))
+  elseif a then
+    local lines_o = {}
+    for _, line in ipairs(a.reward_rules or {}) do lines_o[#lines_o + 1] = "<small>" .. h(line) .. "</small>" end
+    if #lines_o > 0 then parts[#parts + 1] = section("Reward", table.concat(lines_o, "<br>")) end
+  end
+  local given = {}
+  for _, e in ipairs(s.rewards or {}) do
+    given[#given + 1] = string.format("<li><b>%s</b> %s <small>%s%s, rolled at %s</small></li>", h(e.name), h(e.tier),
+      e.item and (h(e.item) .. ", ") or "", h(e.event), h(percent_text(e.at)))
+  end
+  parts[#parts + 1] = section("Recent rewards", #given > 0 and ("<ul>" .. table.concat(given) .. "</ul>") or "<small>none yet</small>")
   local rows = {}
   for _, e in ipairs(s.history) do
     rows[#rows + 1] = string.format('<li><b>%s</b> <span class="%s">%s</span> <small>%d/%d, %d heroes%s</small></li>', h(e.title),

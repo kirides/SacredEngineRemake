@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using Lua;
 using Lua.Standard;
 
@@ -8,11 +10,11 @@ namespace Sacred.GameServer.Scripting;
 /// reach Lua. Scripts get <see cref="Character"/> (the host strips the "account." prefix of lobby names) and an opaque per-server
 /// <c>uid</c> derived from <see cref="Key"/>.</remarks>
 public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId, double OnlineSeconds = 0,
-    string? Character = null, int Sector = 0);
+    string? Character = null, int Sector = 0, int X = 0, int Y = 0);
 
 /// <summary>A defeated creature: its object reference, its type (Items.pak type), level and name (the game's text: the creature's own
 /// name, else its type's; null without --game-dir) when the server knows them.</summary>
-public readonly record struct ScriptMonster(uint Reference, uint Type, int Level, string? Name = null);
+public readonly record struct ScriptMonster(uint Reference, uint Type, int Level, string? Name = null, int Sector = 0, int X = 0, int Y = 0);
 
 /// <summary>An item that appeared on the ground (<c>server.on("drop")</c>): reference, type, level, rarity tier (0..15), filled sockets, price,
 /// name (the item's own name, else its type's; null without --game-dir) and where (sector, x, y).</summary>
@@ -46,6 +48,10 @@ public partial interface IScriptServer
     string? CreatureName(uint type) => null;
     /// <summary>The game's (base) name of an item type, null when unknown or the game's tables were not read.</summary>
     string? ItemName(uint type) => null;
+    /// <summary>The sector grid cell (x, y) of a sector id from the game's sector index; null without --game-dir or for an unknown id.</summary>
+    (int X, int Y)? SectorCell(uint id) => null;
+    /// <summary>The sector id at a grid cell, 0 for none (or without --game-dir).</summary>
+    uint SectorAt(int cellX, int cellY) => 0;
     /// <summary>Drops a gold pile of <paramref name="amount"/> (1..<see cref="GoldPile.MaximumAmount"/>) next to the player's hero.</summary>
     ScriptDrop? DropGold(int slot, uint amount, out string? error);
     /// <summary>The server's view of the hero in <paramref name="slot"/> (skills, equipment, quest pairs); null when the server does not keep
@@ -83,6 +89,7 @@ public partial interface IScriptServer
 /// server.top(key, n) -> { { name, value }, ... }   (per-hero numbers of this mod, also offline heroes; names are safe)
 /// server.creature_name(type) / server.item_name(type)  -- the game's names for a type number, or nil
 /// server.hero(player or slot) -> table or nil, message  -- the server's view of a hero: skills, equipment, quest pairs (needs the web UI or --authoritative)
+/// server.sector_cell(id) -> { x, y } / server.sector_at(x, y) -> id  -- the sector grid (needs --game-dir), or nil
 /// server.endpoint(path, fn [, { public = true, description = "..." }])  -- GET /mods/{script}/{path} (ScriptEndpoints.cs)
 /// server.page(path, html or fn [, { public = true, title = "..." }])  -- a sandboxed single-file HTML page at the same address
 /// server.describe(text)  -- the mod's short description for the web UI (default: the first sentence of the file's leading comment)
@@ -150,6 +157,68 @@ public sealed partial class ScriptHost
 
     public ScriptHost(ScriptOptions options, IScriptServer server) { _options = options; _server = server; }
 
+    private static readonly System.Text.RegularExpressions.Regex StoreKey = new("^[a-z0-9_.-]{1,64}$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// The admin's access to a mod's storage (game loop thread). GET: <paramref name="key"/> as JSON. POST (<paramref name="body"/>):
+    /// <c>{"mod":..., "set":{key: value, ...}, "delete":[key, ...]}</c>; each key written gets a companion <c>{key}_rev</c> (previous + 1)
+    /// that a script can poll to notice the change. Keys are 1..64 of <c>a-z 0-9 _ . -</c>; per-hero data (the "@" keys) is out of reach.
+    /// Only a mod (script) that is loaded; the storage limits apply (413).
+    /// </summary>
+    public ScriptResponse StoreRequest(string mod, string? key, string? body)
+    {
+        mod = ScriptEndpoints.ModName(mod);
+        if (!Mods.Any(m => m.Mod == mod)) return new(404, "text/plain; charset=utf-8", "no such mod");
+        var store = StoreOf(mod);
+        if (body is null)
+        {
+            if (key is null || !StoreKey.IsMatch(key)) return new(400, "text/plain; charset=utf-8", "bad key");
+            if (!store.TryGet(key, out var value)) return new(404, "text/plain; charset=utf-8", "no such key");
+            return new(200, "application/json; charset=utf-8", WriteJson(value));
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return new(400, "text/plain; charset=utf-8", "an object is expected");
+            var revisions = new Dictionary<string, double>();
+            var writes = new List<(string Key, JsonElement Value)>();
+            var deletes = new List<string>();
+            if (root.TryGetProperty("set", out var set) && set.ValueKind == JsonValueKind.Object)
+                foreach (var property in set.EnumerateObject())
+                {
+                    if (!StoreKey.IsMatch(property.Name) || property.Name.EndsWith("_rev", StringComparison.Ordinal)) return new(400, "text/plain; charset=utf-8", $"bad key '{property.Name}'");
+                    writes.Add((property.Name, property.Value));
+                }
+            if (root.TryGetProperty("delete", out var delete) && delete.ValueKind == JsonValueKind.Array)
+                foreach (var item in delete.EnumerateArray())
+                {
+                    var name = item.ValueKind == JsonValueKind.String ? item.GetString() ?? "" : "";
+                    if (!StoreKey.IsMatch(name)) return new(400, "text/plain; charset=utf-8", $"bad key '{name}'");
+                    deletes.Add(name);
+                }
+            foreach (var (name, value) in writes)
+            {
+                store.Set(name, ModStore.FromJson(value));
+                var rev = (store.TryGet(name + "_rev", out var old) && old is double d ? d : 0) + 1;
+                store.Set(name + "_rev", rev);
+                revisions[name] = rev;
+            }
+            foreach (var name in deletes) { store.Set(name, null); store.Set(name + "_rev", null); }
+            Log.Info($"SCRIPT: the admin wrote {writes.Count} key(s) and removed {deletes.Count} in the storage of {mod}.");
+            return new(200, "application/json; charset=utf-8", WriteJson(new Dictionary<string, object?> { ["ok"] = true, ["revisions"] = revisions.ToDictionary(p => p.Key, p => (object?)p.Value) }));
+        }
+        catch (JsonException) { return new(400, "text/plain; charset=utf-8", "invalid JSON"); }
+        catch (InvalidOperationException e) { return new(413, "text/plain; charset=utf-8", e.Message); }
+    }
+
+    private static string WriteJson(object? value)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream)) ModStore.Write(writer, value, 0);
+        return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+    }
+
     /// <summary>The storage of <paramref name="mod"/> (script file name without .lua), opened on first use.</summary>
     public ModStore StoreOf(string mod)
     {
@@ -208,10 +277,12 @@ public sealed partial class ScriptHost
     public long Errors { get; private set; }
     public int HandlerCount => _handlers.Values.Sum(h => h.Count);
 
-    /// <summary>(Re)creates the Lua state and runs every script file, then fires "start".</summary>
+    /// <summary>(Re)creates the Lua state and runs every script file, then fires "start". A running state first gets "unload" ("reload").</summary>
     public void Load()
     {
+        if (_state is not null) FireUnloadAll("reload");
         _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear(); _endpoints.Clear(); _descriptions.Clear();
+        lock (_changeLock) { _reloadAll = false; _changedFiles = null; }
         ResetNet();
         _state = CreateState();
         var files = Directory.Exists(_options.Directory)
@@ -219,45 +290,35 @@ public sealed partial class ScriptHost
         foreach (var path in files)
         {
             var name = Path.GetFileName(path);
-            string? error = null;
-            try
-            {
-                var source = File.ReadAllText(path);
-                if (LeadingComment(source) is { } comment) _descriptions[ScriptEndpoints.ModName(name)] = comment;
-                _currentFile = name;
-                Run(() => _state.DoStringAsync(source, name));
-            }
-            catch (Exception e) when (Contained(e)) { error = Describe(e); }
+            var error = RunFile(path);
             _files.Add((name, error));
             Log.Info(error is null ? $"SCRIPT: loaded {name}." : $"SCRIPT: {name} failed to load: {error}");
         }
-        _currentFile = "";
-        Volatile.Write(ref _endpointList, _endpoints.Values.ToArray());
-        Volatile.Write(ref _mods, _files.Select(f => new ModEntry(ScriptEndpoints.ModName(f.File), _descriptions.GetValueOrDefault(ScriptEndpoints.ModName(f.File)), f.Error)).ToArray());
+        Publish();
         Fire("start");
         Log.Info($"SCRIPT: {files.Length} file(s), {HandlerCount} handler(s), {_timers.Count + _newTimers.Count} timer(s).");
     }
 
-    /// <summary>Watches the folder: a changed, added or removed script reloads everything half a second later.</summary>
+    /// <summary>Watches the folder: a changed, added or removed script reloads that mod half a second later (<see cref="ScriptHost.Reload"/>).</summary>
     public void Watch()
     {
         if (_watcher is not null || !Directory.Exists(_options.Directory)) return;
         _watcher = new FileSystemWatcher(_options.Directory, "*.lua") { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size };
-        _watcher.Changed += (_, _) => _changed = true;
-        _watcher.Created += (_, _) => _changed = true;
-        _watcher.Deleted += (_, _) => _changed = true;
-        _watcher.Renamed += (_, _) => _changed = true;
+        _watcher.Changed += (_, e) => Touched(e.Name);
+        _watcher.Created += (_, e) => Touched(e.Name);
+        _watcher.Deleted += (_, e) => Touched(e.Name);
+        _watcher.Renamed += (_, e) => { Touched(e.OldName); Touched(e.Name); };
         _watcher.EnableRaisingEvents = true;
     }
 
-    /// <summary>Requests a reload at the next pump (admin command).</summary>
-    public void RequestReload() => _changed = true;
+    /// <summary>Requests a full reload (every mod, a fresh Lua state) at the next pump.</summary>
+    public void RequestReload() => Touched(null);
 
     /// <summary>Game loop: timers and pending reloads.</summary>
     public void Pump(long nowMs)
     {
         if (_changed) { _changed = false; _reloadDueMs = nowMs + 500; }
-        if (_reloadDueMs != 0 && nowMs >= _reloadDueMs) { _reloadDueMs = 0; Log.Info("SCRIPT: reloading."); Load(); }
+        if (_reloadDueMs != 0 && nowMs >= _reloadDueMs) { _reloadDueMs = 0; ApplyPendingReload(); }
         PumpDurable();                                                      // server.flush callbacks (ScriptHost.Durable.cs)
         if (_newTimers.Count > 0) { _timers.AddRange(_newTimers); _newTimers.Clear(); }
         for (var i = _timers.Count - 1; i >= 0; i--)
@@ -300,8 +361,9 @@ public sealed partial class ScriptHost
     public bool FireKill(ScriptPlayer player, ScriptMonster monster)
     {
         if (!Has("kill")) return false;
-        var table = new LuaTable(0, 4) { ["ref"] = monster.Reference, ["type"] = monster.Type, ["level"] = monster.Level };
+        var table = new LuaTable(0, 7) { ["ref"] = monster.Reference, ["type"] = monster.Type, ["level"] = monster.Level };
         if (monster.Name is { } name) table["name"] = name;
+        if (monster.Sector != 0) { table["sector"] = monster.Sector; table["x"] = monster.X; table["y"] = monster.Y; }
         return Fire("kill", PlayerTable(player), table, 2);
     }
 
@@ -527,6 +589,13 @@ public sealed partial class ScriptHost
             for (var k = 0; k < keys.Count; k++) table[k + 1] = keys[k];
             return c.Return(table);
         });
+        server["sector_cell"] = Fn("sector_cell", c =>
+        {
+            var id = c.GetArgument<double>(0);
+            return id >= 0 && id <= ushort.MaxValue && _server.SectorCell((uint)id) is { } cell ? c.Return(new LuaTable(0, 2) { ["x"] = cell.X, ["y"] = cell.Y }) : c.Return(LuaValue.Nil);
+        });
+        server["sector_at"] = Fn("sector_at", c =>
+            c.Return(_server.SectorAt((int)c.GetArgument<double>(0), (int)c.GetArgument<double>(1)) is var id and not 0 ? (LuaValue)id : LuaValue.Nil));
         server["creature_name"] = Fn("creature_name", c => c.Return(TypeOf(c) is { } t && _server.CreatureName(t) is { } n ? n : LuaValue.Nil));
         server["item_name"] = Fn("item_name", c => c.Return(TypeOf(c) is { } t && _server.ItemName(t) is { } n ? n : LuaValue.Nil));
         server["drop_item"] = Fn("drop_item", c =>
@@ -723,10 +792,12 @@ public sealed partial class ScriptHost
     private LuaTable PlayerTable(ScriptPlayer p)
     {
         var character = ModStore.DisplayName(p.Character ?? p.Name);
-        return new(0, 10)
+        return new(0, 13)
         {
             ["slot"] = p.Slot, ["name"] = character, ["character"] = character, ["uid"] = Uid(p.Key), ["class"] = p.Class, ["level"] = p.Level,
-            ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds, ["sector"] = p.Sector,
+            ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds, ["sector"] = p.Sector, ["x"] = p.X, ["y"] = p.Y,
+            // the lobby account (all heroes of it share it), opaque like uid; absent for players without a lobby identity
+            ["account"] = p.LobbyId is not (0 or -1) ? Uid("acct:" + p.LobbyId) : LuaValue.Nil,
         };
     }
 

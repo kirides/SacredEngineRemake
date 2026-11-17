@@ -9,7 +9,10 @@ namespace Sacred.GameServer.Scripting;
 /// server.authoritative(player)          -- true: the server writes this hero (its saves are the truth, not the client's)
 /// server.hero_item(player, ref)         -- { ref, type, where = "backpack"|"stash"|"equipped"|"world"|"gone", records, age } or nil
 /// server.hero_items(player)             -- the items in the hero's inventories and equipment, same fields
-/// server.claim_item(player, ref)        -- takes a destroyed ("gone") item off the list: true once
+/// server.claim_item(player, ref)        -- takes a destroyed ("gone") item off the list, or consumes the item token a script minted for an item
+///                                          that arrived in the hero (same type and records): true once
+/// server.item_token(player, {data=hex export | type=, records=hex, label=}, ttl_seconds=120) -- id | nil, err: a one-time permission for the
+///                                          player's client to create that item (see --auth-strict-items); revoke_item_token(id)
 /// server.save_hero(player, fn)          -- saves the hero now; fn(ok, err) once the lobby stored it (or refused, or 30 s passed)
 /// server.hero_upload_time(player)       -- unix seconds of the last save sent for this hero (also earlier sessions), or nil
 /// </code>
@@ -56,6 +59,28 @@ public sealed partial class ScriptHost
             var reference = c.HasArgument(1) && c.GetArgument(1).Type == LuaValueType.Number ? c.GetArgument<double>(1) : -1;
             return c.Return(slot > 0 && reference is >= 1 and <= 0x7FFFFFFF && _server.ClaimGoneItem(slot, (uint)reference));
         });
+        server["item_token"] = Fn("item_token", c =>
+        {
+            var slot = SlotOf(c.GetArgument(0));
+            if (slot < 1 || !c.HasArgument(1) || c.GetArgument(1).Type != LuaValueType.Table) return c.Return(LuaValue.Nil, "a player and a table {data=hex export} or {type=, records=hex} are needed");
+            var spec = c.GetArgument<LuaTable>(1);
+            uint type; string records;
+            if (spec["data"].Type == LuaValueType.String)
+            {
+                if (!ExportParts(spec["data"].Read<string>(), out type, out records)) return c.Return(LuaValue.Nil, "the item data is not a Sacred Gear export");
+            }
+            else if (spec["type"].Type == LuaValueType.Number && spec["records"].Type == LuaValueType.String)
+            {
+                type = (uint)spec["type"].Read<double>(); records = spec["records"].Read<string>().ToLowerInvariant();
+            }
+            else return c.Return(LuaValue.Nil, "{data=hex export} or {type=, records=hex} is needed");
+            var ttl = c.HasArgument(2) && c.GetArgument(2).Type == LuaValueType.Number ? c.GetArgument<double>(2) : 120;
+            var label = spec["label"].Type == LuaValueType.String ? spec["label"].Read<string>() : _currentFile;
+            var id = _server.MintItemToken(slot, type, records, ttl, label);
+            return id > 0 ? c.Return((double)id) : c.Return(LuaValue.Nil, "no token (the server does not keep this hero, or bad arguments)");
+        });
+        server["revoke_item_token"] = Fn("revoke_item_token", c =>
+            c.Return(c.HasArgument(0) && c.GetArgument(0).Type == LuaValueType.Number && _server.RevokeItemToken((long)c.GetArgument<double>(0))));
         server["save_hero"] = Fn("save_hero", c =>
         {
             var slot = SlotOf(c.GetArgument(0));
@@ -69,6 +94,20 @@ public sealed partial class ScriptHost
         });
         server["hero_upload_time"] = Fn("hero_upload_time", c =>
             c.Return(SlotOf(c.GetArgument(0)) is var slot and > 0 && _server.HeroUploadTime(slot) is { } t ? t : LuaValue.Nil));
+    }
+
+    /// <summary>Type and value records (hex) of a Sacred Gear export: u32 type, u16 count, count x 130-byte records (260 hex), ...</summary>
+    internal static bool ExportParts(string hex, out uint type, out string records)
+    {
+        type = 0; records = "";
+        if (hex.Length < 12 || hex.Any(ch => !Uri.IsHexDigit(ch))) return false;
+        hex = hex.ToLowerInvariant();
+        var count = Convert.ToInt32(hex.Substring(8, 2), 16) + Convert.ToInt32(hex.Substring(10, 2), 16) * 256;
+        if (count is < 1 or > 9 || hex.Length < 12 + count * 260) return false;
+        type = (uint)(Convert.ToInt32(hex.Substring(0, 2), 16) | Convert.ToInt32(hex.Substring(2, 2), 16) << 8 | Convert.ToInt32(hex.Substring(4, 2), 16) << 16
+            | (long)Convert.ToInt32(hex.Substring(6, 2), 16) << 24);
+        records = hex.Substring(12, count * 260);
+        return true;
     }
 
     private static LuaTable ItemTable(ScriptHeroItem item) => new(0, 5)

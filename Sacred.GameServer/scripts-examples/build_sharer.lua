@@ -305,8 +305,8 @@ q.oninput=f;c.onchange=f;f();]]
 
 local function ago(t)
   local s = math.max(0, server.time() - (t or 0))
-  if s < 90 then return "just now" elseif s < 5400 then return string.format("%d min ago", s / 60)
-  elseif s < 129600 then return string.format("%d h ago", s / 3600) else return string.format("%d days ago", s / 86400) end
+  if s < 90 then return "just now" elseif s < 5400 then return string.format("%d min ago", math.floor(s / 60))
+  elseif s < 129600 then return string.format("%d h ago", math.floor(s / 3600)) else return string.format("%d days ago", math.floor(s / 86400)) end
 end
 
 local function head(title)
