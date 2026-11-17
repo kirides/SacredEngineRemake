@@ -25,6 +25,7 @@ public static class CommandLine
     public static readonly OptionSpec[] Options =
     [
         // ---- the original GameServer.exe's Gameserver.cfg keys, as options ----
+        new("Network", "bind", OptionKind.Text, "bind the TCP and UDP listeners to this address only, e.g. 127.0.0.1 (default: every interface; loopback also turns LAN announce off)", "127.0.0.1", Aliases: ["bind-address", "network-bind"]),
         new("Original Gameserver.cfg keys", "network-port-tcp", OptionKind.Int, "game TCP port (default 2006)", "26006", 0, Port, ["port"]),
         new("Original Gameserver.cfg keys", "network-port-listen", OptionKind.Int, "UDP port the clients listen on for LAN announcements (default 2005)", "26005", 0, Port, ["listen-port"]),
         new("Original Gameserver.cfg keys", "network-password", OptionKind.Text, "game password (empty = none)", "secret", Aliases: ["password"]),
@@ -211,6 +212,9 @@ public static class CommandLine
                 if (spec.WebStyle && value.Equals("true", StringComparison.OrdinalIgnoreCase)) return null;
                 if (spec.WebStyle && value.Equals("false", StringComparison.OrdinalIgnoreCase)) return null;
                 return value is "0" or "1" ? null : $"takes 0 or 1, not '{value}'.";
+            case OptionKind.Text when spec.Name == "bind":
+                if (!hasValue || !System.Net.IPAddress.TryParse(value, out _)) return $"needs an IP address, for example --bind=127.0.0.1, not '{value}'.";
+                return null;
             case OptionKind.Int:
                 if (!hasValue) return "needs a value, for example --" + spec.Name + "=" + spec.Sample + ".";
                 if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number)) return $"needs a number, not '{value}'.";
