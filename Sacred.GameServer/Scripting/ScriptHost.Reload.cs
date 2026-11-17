@@ -10,8 +10,8 @@ namespace Sacred.GameServer.Scripting;
 /// An unload handler runs while the old script is still intact (same instruction budget as any handler) and is the place to save
 /// state: <c>server.save(...)</c>, and <c>server.flush()</c> to put it on the disk. Afterwards everything the script registered
 /// (handlers, timers, endpoints and pages, net handlers) is dropped. The mod's storage survives a reload (it is held by the host), so
-/// the fresh script reads back what the old one saved, the same way a restart would. Callbacks of <c>server.flush</c> and
-/// <c>server.save_hero</c> that were started by the old script are not run after a reload (the writes still finish); at shutdown they are.
+/// the fresh script reads back what the old one saved, the same way a restart would. Writes in flight are drained before the hooks run (their callbacks are answered); callbacks of <c>server.flush</c> and
+/// <c>server.save_hero</c> started by an unload hook of the old script are not run after a reload (the write still finishes before the mod is replaced); at shutdown they are.
 /// <para>A changed, added or removed <c>*.lua</c> file reloads only that mod (the watcher, half a second after the last change);
 /// <see cref="Reload"/> with a mod name does the same on demand, without a name every mod is reloaded in a fresh Lua state (a
 /// full reload also resets global variables). A per-mod reload runs the file again in the shared Lua state: globals the old version
@@ -104,13 +104,16 @@ public sealed partial class ScriptHost
     /// <summary>Runs "unload" handlers of every script, the last loaded first.</summary>
     private void FireUnloadAll(string reason)
     {
+        WaitDurable();                                                      // writes in flight finish and answer their callbacks first
         foreach (var file in _files.Select(f => f.File).Reverse().ToArray()) FireFile("unload", file, One(reason));
     }
 
     /// <summary>The unload hook of one script and then everything it registered.</summary>
     private void UnloadFile(string file, string reason)
     {
+        WaitDurable();
         FireFile("unload", file, One(reason));
+        foreach (var write in _durable.ToArray()) if (write.File == file) { try { write.Task.Wait(); } catch (AggregateException) { } }   // what the hook flushed reaches the disk
         foreach (var list in _handlers.Values) list.RemoveAll(h => h.File == file);
         _timers.RemoveAll(t => t.File == file);
         _newTimers.RemoveAll(t => t.File == file);

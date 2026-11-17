@@ -10,7 +10,7 @@ namespace Sacred.GameServer.Tests;
 /// <summary>scripts-examples/world_events.lua against a fake server: progress, milestones, expiry (also while the server was down), the
 /// reward split, rewards for heroes who are offline, the sector filter, the pushed state and the public endpoint.</summary>
 [TestClass]
-public class WorldEventsScriptTests
+public partial class WorldEventsScriptTests
 {
     private sealed class Folder : IDisposable
     {

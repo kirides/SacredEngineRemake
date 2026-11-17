@@ -177,7 +177,8 @@ internal static class Pages
           .Append("<a href=\"./\"").Append(current == "server" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Server</a>")
           .Append("<a href=\"mods\"").Append(current == "mods" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("users")).Append("Mods <span class=\"count\">")
           .Append(mods).Append("</span></a>")
-          .Append("<a href=\"areas\"").Append(current == "areas" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Areas</a></nav>");
+          .Append("<a href=\"areas\"").Append(current == "areas" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Areas</a>")
+          .Append("<a href=\"events\"").Append(current == "events" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Events</a></nav>");
     }
 
     /// <summary>
@@ -212,6 +213,31 @@ internal static class Pages
           .Append("<p class=\"hint\">Saved areas go into the <code>world_events</code> mod's storage (key <code>areas</code>) and win over an area of the same id in the script file. Events use them by id.</p></section>")
           .Append("</div><div class=\"stage\"><canvas id=\"cv\" aria-label=\"World map with the sector grid\"></canvas><p class=\"status\" id=\"loading\" style=\"position:absolute;top:.6rem;left:.8rem;margin:0;color:#efe6d6\">Loading the map...</p><div class=\"readout\" id=\"readout\"></div></div>")
           .Append("</main></div><script>").Append(AreaEditorAssets.Script).Append("</script></body></html>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// <c>GET /events</c>: manages the world_events mod's events while the server runs: the list (script file and web events), add, edit,
+    /// turn off, delete, start now, cancel the running one. Script and style are in <see cref="EventsPageAssets"/>; data and commands go through
+    /// the mod's <c>events</c> endpoint and <c>POST /api/mod-store</c>.
+    /// </summary>
+    public static string EventsPage(IServerAdmin admin)
+    {
+        var o = admin.Overview();
+        var sb = new StringBuilder(8 * 1024);
+        sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+          .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>Events - ")
+          .Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style).Append(EventsPageAssets.Css).Append("</style></head><body><div class=\"app\">");
+        sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>")
+          .Append(E(o.Name)).Append("</small></div></div>");
+        Tabs(sb, "events", admin.Mods().Count);
+        sb.Append("</header><main class=\"ev\"><section class=\"card\" id=\"missing\" hidden><h2>World events</h2><p>The <code>world_events</code> mod is not loaded (or too old for this page). Copy <code>world_events.lua</code> from <code>scripts-examples</code> into the scripts folder.</p><p class=\"dim small\" id=\"missingwhy\"></p></section>")
+          .Append("<div id=\"main\" class=\"ev\" hidden><section class=\"card\"><h2>Right now</h2><div id=\"runbox\"></div></section>")
+          .Append("<section class=\"card\"><h2>Events</h2><table><thead><tr><th>Event</th><th>Goal</th><th>State</th><th></th></tr></thead><tbody id=\"events\"></tbody></table>")
+          .Append("<div class=\"row\" style=\"margin-top:.8rem\"><button type=\"button\" class=\"primary\" id=\"new\">New event</button><button type=\"button\" class=\"ghost\" id=\"reload\">Refresh</button></div>")
+          .Append("<p class=\"hint dim small\">Changes apply within a couple of seconds, no restart or reload. Events of the script file can be changed or turned off here; the file itself is not touched. A running event keeps the definition it started with.</p>")
+          .Append("<p class=\"status\" id=\"status\" aria-live=\"polite\"></p></section></div><dialog id=\"editor\"></dialog></main></div><script>")
+          .Append(EventsPageAssets.Script).Append("</script></body></html>");
         return sb.ToString();
     }
 

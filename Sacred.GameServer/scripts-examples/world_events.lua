@@ -7,6 +7,15 @@
 --   !area ...                    (admins) record named areas by walking: see "areas" below
 --   /mods/world_events/          the public dashboard page (character names only)
 --   /mods/world_events/state     the same as JSON (public, with WebUi:PublicApi=true also under /public/mods/...)
+--   the web UI's Events page     add, change, disable and remove events while the server runs, start or cancel one (see "web events")
+--
+-- WEB EVENTS: the web UI's Events page keeps events of its own in this mod's storage (key "events", the same fields as EVENTS below, plus
+-- "created" for the order) and a list of switched-off ids (key "events_off"). They are picked up within two seconds, no reload and no
+-- restart: a web event with the id of one in EVENTS replaces it, switching one off takes it out of the rotation (an event that is
+-- running keeps its own copy of the definition, so editing or removing it never changes it midway). The page also starts an event at
+-- once, cancels the running one (no rewards) and moves the next start up (key "control"; each command runs exactly once).
+-- HOT RELOAD: the mod saves everything in its "unload" handler (see ScriptHost.Reload.cs), so editing this file (or the Reload button
+-- of the Mods page) loses nothing: the running event, the contributions and the rewards still waiting carry on in the new version.
 --
 -- Everything is kept in this mod's own storage (script-data/world_events.json): the running event, who contributed what, the last
 -- results and rewards still waiting for heroes who were offline. An event that ran out while the server was down is closed
@@ -238,11 +247,7 @@ local function snapshot(def)
   }
 end
 
-local definitions = {}
-for i, def in ipairs(EVENTS) do
-  if type(def) == "table" and def.id and def.target then definitions[#definitions + 1] = def
-  else server.log("event #" .. i .. " has no id or target: ignored") end
-end
+local definitions = {}          -- the events in the rotation, in order (filled by rebuild_definitions below, rebuilt when the web changes them)
 
 local function unit_of(def)
   if def.unit then return def.unit end
@@ -480,7 +485,7 @@ end
 -- ---- state (kept in this mod's storage) ---------------------------------------------------------------------------------------
 
 local function fresh()
-  return { seq = 0, index = 0, history = {}, next_start = NOW() + CONFIG.first_delay }
+  return { seq = 0, index = 0, history = {}, next_start = NOW() + CONFIG.first_delay, control_rev = (function() local ok, v = pcall(server.load, "control_rev", 0); return ok and tonumber(v) or 0 end)() }
 end
 
 local function load_state()
@@ -509,6 +514,151 @@ local rewardlog = (function()
 end)()
 
 local dirty, pending_dirty, push_due, rewardlog_dirty = false, false, false, false
+
+-- ---- the events: those of this file and those of the web UI ---------------------------------------------------------------------
+
+local function load_key(key, default)
+  local ok, value = pcall(server.load, key, nil)
+  if ok and type(value) == "table" then return value end
+  return default
+end
+
+local function rev_of(key)
+  local ok, value = pcall(server.load, key, 0)
+  return ok and tonumber(value) or 0
+end
+
+local stored_events = load_key("events", {})
+local events_off = load_key("events_off", {})
+local events_rev, events_off_rev = rev_of("events_rev"), rev_of("events_off_rev")
+local def_source, event_errors = {}, {}   -- id -> "file" | "web" | "override"; id -> why a web event is refused
+local all_defs, all_order = {}, {}        -- every known event by id, and the ids in order (switched-off ones too)
+local MAX_WEB_EVENTS = 60
+
+local function text_of(v, limit)
+  return (tostring(v or ""):gsub("[%c\\]", " "):sub(1, limit))
+end
+
+local function words_of(list, convert, limit)
+  if type(list) ~= "table" then return nil end
+  local out = {}
+  for _, v in ipairs(list) do
+    v = convert(v)
+    if v ~= nil and #out < limit then out[#out + 1] = v end
+  end
+  if #out == 0 then return nil end
+  return out
+end
+
+local function int_in(v, low, high)
+  v = tonumber(v)
+  if not v or v ~= v then return nil end
+  v = math.floor(v)
+  if v < low or v > high then return nil end
+  return v
+end
+
+local function item_spec(raw)
+  if type(raw) ~= "table" then return nil end
+  local spec = {}
+  if raw.quality ~= nil then spec.quality = int_in(raw.quality, 0, 14) end
+  if type(raw.category) == "string" and raw.category ~= "" then spec.category = text_of(raw.category, 20):lower() end
+  if raw.level ~= nil then spec.level = int_in(raw.level, 1, 200) end
+  return spec
+end
+
+local function milestones_of(raw)
+  if type(raw) ~= "table" then return nil end
+  local out = {}
+  for _, m in ipairs(raw) do
+    if type(m) == "table" and type(m.weights) == "table" and #out < 12 then
+      local row = { at = tonumber(m.at), weights = {} }
+      for tier, weight in pairs(m.weights) do row.weights[tostring(tier)] = tonumber(weight) end
+      out[#out + 1] = row
+    end
+  end
+  if #out == 0 then return nil end
+  return out
+end
+
+-- A web event checked and cleaned into a definition like the ones of EVENTS, or nil and why not. The odds (milestones) are checked in
+-- full when the event starts or is shown (build_milestones logs refused rows); here only their shape.
+local function sanitize_event(id, raw)
+  if type(raw) ~= "table" then return nil, "not an object" end
+  if type(id) ~= "string" or #id > 40 or not id:match("^[a-z0-9][a-z0-9_%-]*$") then
+    return nil, "the id must be 1-40 characters of a-z 0-9 _ -"
+  end
+  local target = int_in(raw.target, 1, 10000000)
+  if not target then return nil, "the target must be a whole number from 1 to 10,000,000" end
+  local duration = tonumber(raw.duration)
+  if not duration or duration < 60 or duration > 30 * 86400 then return nil, "the duration must be 60 seconds to 30 days" end
+  local reward = type(raw.reward) == "table" and raw.reward or {}
+  local def = {
+    id = id, title = text_of(raw.title ~= nil and raw.title ~= "" and raw.title or id, 60), goal = "kill", target = target, duration = math.floor(duration),
+    created = tonumber(raw.created) or 0,
+    names = words_of(raw.names, function(v) v = tostring(v):gsub("[%c]", " "):lower():sub(1, 40); if v:match("%S") then return v end end, 12),
+    types = words_of(raw.types, function(v) return int_in(v, 0, 4294967295) end, 50),
+    area = type(raw.area) == "string" and raw.area ~= "" and text_of(raw.area, 40) or nil,
+    areas = words_of(raw.areas, function(v) if type(v) == "string" and v ~= "" then return text_of(v, 40) end end, 10),
+    where = (raw.where == "victim" or raw.where == "player" or raw.where == "either") and raw.where or nil,
+    text = type(raw.text) == "string" and raw.text:match("%S") and text_of(raw.text, 200) or nil,
+    unit = type(raw.unit) == "string" and raw.unit:match("%S") and text_of(raw.unit, 30) or nil,
+    min_contribution = int_in(raw.min_contribution, 1, 1000000) or 1,
+    reward = {
+      gold = int_in(reward.gold, 0, 2000000000) or 0, gold_each = int_in(reward.gold_each, 0, 2000000000) or 0,
+      item = item_spec(reward.item), top_item = item_spec(reward.top_item), milestones = milestones_of(reward.milestones),
+      on_fail = reward.on_fail == false and false or nil,
+    },
+  }
+  return def
+end
+
+-- Rebuilds `definitions` (in place: other functions keep their reference) from EVENTS, the web events and the switched-off ids.
+local function rebuild_definitions()
+  for i = #definitions, 1, -1 do definitions[i] = nil end
+  all_defs, all_order, def_source, event_errors = {}, {}, {}, {}
+  for i, def in ipairs(EVENTS) do
+    if type(def) == "table" and def.id and def.target then
+      local id = tostring(def.id)
+      if not all_defs[id] then all_order[#all_order + 1] = id end
+      all_defs[id] = def
+      def_source[id] = "file"
+    else
+      server.log("event #" .. i .. " has no id or target: ignored")
+    end
+  end
+  local web, count = {}, 0
+  for id, raw in pairs(stored_events) do
+    count = count + 1
+    local def, why = sanitize_event(tostring(id), raw)
+    if count > MAX_WEB_EVENTS then def, why = nil, "more than " .. MAX_WEB_EVENTS .. " web events"
+    elseif def then web[#web + 1] = def end
+    if not def then
+      event_errors[tostring(id)] = why
+      server.log("web event " .. tostring(id) .. " refused: " .. why)
+    end
+  end
+  table.sort(web, function(a, b) if a.created ~= b.created then return a.created < b.created end return a.id < b.id end)
+  for _, def in ipairs(web) do
+    if not all_defs[def.id] then all_order[#all_order + 1] = def.id; def_source[def.id] = "web" else def_source[def.id] = "override" end
+    all_defs[def.id] = def
+  end
+  for _, id in ipairs(all_order) do
+    if not events_off[id] then definitions[#definitions + 1] = all_defs[id] end
+  end
+end
+
+rebuild_definitions()
+
+-- Notices a change of the web events (the page writes events and events_off; each write bumps its _rev).
+local function poll_events()
+  local rev, off_rev = rev_of("events_rev"), rev_of("events_off_rev")
+  if rev == events_rev and off_rev == events_off_rev then return end
+  events_rev, events_off_rev = rev, off_rev
+  stored_events, events_off = load_key("events", {}), load_key("events_off", {})
+  rebuild_definitions()
+  server.log("web events changed: " .. #definitions .. " event(s) in the rotation.")
+end
 
 local function save_state()
   local ok, err = pcall(server.save, "state", state)
@@ -565,7 +715,7 @@ local function payload_for(player)
     }
   end
   local last = state.last
-  if last and t - last.finished < CONFIG.result_hold then
+  if last and not last.cancelled and t - last.finished < CONFIG.result_hold then
     return {
       v = 1, st = last.success and "won" or "failed", n = last.n, title = last.title, text = last.text, unit = last.unit, count = last.count,
       target = last.target, hold = math.floor(CONFIG.result_hold - (t - last.finished)), here = in_area(last, player), people = last.people,
@@ -751,6 +901,10 @@ local function next_index()
   local n = #definitions
   if n == 0 then return nil end
   local from = state.index or 0
+  if state.last_id then
+    for i, d in ipairs(definitions) do if tostring(d.id) == state.last_id then from = i; break end end
+  end
+  if from > n then from = 0 end
   if CONFIG.order == "random" and n > 1 then
     for _ = 1, 8 do
       local pick = server.random(n - 1)
@@ -765,11 +919,10 @@ local function next_index()
   return nil
 end
 
-local function start_event(index)
-  local def = definitions[index]
-  if not def then return end
+local function begin_event(def, index)
   state.seq = state.seq + 1
-  state.index = index
+  state.index = index or state.index or 0
+  state.last_id = tostring(def.id)
   local snap, t = snapshot(def), NOW()
   snap.region = region_of(def)
   state.current = { n = state.seq, def = snap, started = t, ends = t + snap.duration, count = 0, players = {}, marks = {} }
@@ -777,6 +930,32 @@ local function start_event(index)
     .. (reward_text(snap) ~= "" and reward_text(snap) or "glory") .. ". Type !event for the progress.")
   save_state()
   push_all()
+end
+
+local function start_event(index)
+  local def = definitions[index]
+  if def then begin_event(def, index) end
+end
+
+-- Ends the running event without rewards (admin): it is recorded as cancelled and the next one starts after the usual cooldown.
+local function cancel_event()
+  local ev = state.current
+  if not ev then return false end
+  state.current = nil
+  local def, top = ev.def, ranked(ev)
+  local record = {
+    n = ev.n, id = def.id, title = def.title, text = goal_text(def), unit = unit_of(def), success = false, cancelled = true, count = ev.count,
+    target = def.target, started = ev.started, finished = NOW(), people = #top, region = def.region, top = {},
+  }
+  state.last = record
+  table.insert(state.history, 1, { n = record.n, title = record.title, success = false, cancelled = true, count = record.count, target = record.target,
+    finished = record.finished, people = record.people })
+  while #state.history > 10 do table.remove(state.history) end
+  state.next_start = NOW() + CONFIG.cooldown
+  say(def.title .. " was cancelled by an admin.")
+  save_state()
+  push_all()
+  return true
 end
 
 -- The rules and odds of the reward of an event definition, as lines of text.
@@ -1047,17 +1226,49 @@ if channel then
   end)
 end
 
+-- Commands of the Events page (key "control", counted by control_rev; the number done is kept in the state, so each runs once).
+local function run_control(cmd)
+  if type(cmd) ~= "table" then return false, "no command" end
+  if cmd.cmd == "start" then
+    local def = all_defs[tostring(cmd.event)]
+    if not def then return false, "no such event" end
+    if state.current then return false, "an event is already running" end
+    if def.area or def.areas or def.sectors then
+      local region = region_of(def)
+      if region_empty(region) then return false, "its area has no sector yet" end
+    end
+    local index = 0
+    for i, d in ipairs(definitions) do if d == def then index = i end end
+    begin_event(def, index > 0 and index or nil)
+    return true, "started " .. tostring(def.title or def.id)
+  elseif cmd.cmd == "cancel" then
+    if not cancel_event() then return false, "no event is running" end
+    return true, "cancelled"
+  elseif cmd.cmd == "next" then
+    if state.current then return false, "an event is running" end
+    state.next_start = NOW()
+    dirty = true
+    return true, "the next event starts within seconds"
+  end
+  return false, "unknown command"
+end
+
+local function poll_control()
+  local rev = rev_of("control_rev")
+  if rev <= (state.control_rev or 0) then return end
+  state.control_rev = rev
+  dirty = true
+  local ok, done, message = pcall(run_control, load_key("control", nil))
+  if not ok then done, message = false, tostring(done) end
+  pcall(server.save, "control_result", { rev = rev, ok = done and true or false, message = message or "", at = NOW() })
+  server.log("web command " .. rev .. ": " .. tostring(message))
+end
+
 local ticks = 0
 local function tick()
   local t = NOW()
   ticks = ticks + 1
-  local ev = state.current
-  if ev and t >= ev.ends then finish(false) end
-  if not state.current and t >= (state.next_start or 0) and #definitions > 0 and #server.players() >= CONFIG.min_players then
-    start_event(next_index())
-  end
-  deliver_pending()
-  if ticks % 5 == 0 then
+  do
     local ok, rev = pcall(server.load, "areas_rev", 0)
     if ok and tonumber(rev) and rev ~= areas_rev then
       areas_rev = rev
@@ -1065,11 +1276,28 @@ local function tick()
       recorded = type(loaded) == "table" and loaded or {}
     end
   end
+  poll_events()
+  poll_control()
+  local ev = state.current
+  if ev and t >= ev.ends then finish(false) end
+  if not state.current and t >= (state.next_start or 0) and #definitions > 0 and #server.players() >= CONFIG.min_players then
+    start_event(next_index())
+  end
+  deliver_pending()
   if dirty or pending_dirty then save_state() end
   if push_due or (state.current and ticks % 3 == 0) then push_all() end
 end
 
 server.every(2, tick)
+
+-- Hot reload and shutdown: everything is written now (and put on the disk), the next version of this script carries on from the storage.
+server.on("unload", function(reason)
+  for slot in pairs(recording) do server.message(slot, "World events were reloaded: your area recording was dropped, !area start again.") end
+  pcall(server.save, "state", state)
+  pcall(server.save, "rewardlog", rewardlog)
+  pcall(server.save, "pending", pending)
+  server.flush()
+end)
 
 -- A server that was down while an event ran out closes it now; a stale schedule is pulled in.
 server.on("start", function()
@@ -1125,7 +1353,7 @@ local function public_state()
   end
   out.last = state.last and {
     n = state.last.n, title = state.last.title, success = state.last.success, count = state.last.count, target = state.last.target,
-    finished = state.last.finished, top = state.last.top,
+    finished = state.last.finished, top = state.last.top, cancelled = state.last.cancelled,
   } or nil
   out.history = state.history
   out.events = {}
@@ -1153,6 +1381,46 @@ server.endpoint("areas", function()
   for i, def in ipairs(definitions) do events[i] = { id = def.id, title = def.title, area = def.area, areas = def.areas } end
   return { areas = out, events = events }
 end, { description = "the named areas (script file and saved), for the area editor" })
+
+-- For the Events page of the web UI (admin only): every event with its editable fields, where it comes from and whether it is in the
+-- rotation, the areas and rarity tiers to pick from, and the state of the running event and of the last command.
+local function editable(def)
+  local reward = def.reward or {}
+  local milestones
+  if type(reward.milestones) == "table" then
+    milestones = {}
+    for i, m in ipairs(reward.milestones) do milestones[i] = { at = m.at, weights = m.weights } end
+  end
+  return {
+    id = tostring(def.id), title = def.title, target = def.target, duration = def.duration, names = def.names, types = def.types,
+    area = def.area, areas = def.areas, where = def.where, text = def.text, unit = def.unit, min_contribution = def.min_contribution,
+    created = def.created,
+    reward = { gold = reward.gold, gold_each = reward.gold_each, item = reward.item, top_item = reward.top_item, milestones = milestones, on_fail = reward.on_fail },
+  }
+end
+
+server.endpoint("events", function()
+  local list = {}
+  for i, id in ipairs(all_order) do
+    local def = all_defs[id]
+    list[i] = { id = id, source = def_source[id], enabled = not events_off[id], def = editable(def),
+      running = state.current ~= nil and state.current.def.id == id, goal = goal_text(def) }
+  end
+  for id, why in pairs(event_errors) do list[#list + 1] = { id = id, source = "web", enabled = false, invalid = why, def = stored_events[id] } end
+  local areas = {}
+  for id, a in pairs(AREAS) do areas[id] = clean_name(a.name or id) end
+  for id, a in pairs(recorded) do if type(a) == "table" then areas[id] = clean_name(a.name or id) end end
+  local tiers = {}
+  for i, tier in ipairs(TIERS) do tiers[i] = { id = tier.id, name = tier.name } end
+  local ev = state.current
+  local running
+  if ev then running = { id = ev.def.id, title = ev.def.title, count = ev.count, target = ev.def.target, left = math.floor(math.max(0, ev.ends - NOW())) } end
+  return {
+    events = list, areas = areas, tiers = tiers, running = running, next_in = not ev and math.floor(math.max(0, (state.next_start or NOW()) - NOW())) or nil,
+    control = load_key("control_result", nil), config = { order = CONFIG.order, cooldown = CONFIG.cooldown, min_players = CONFIG.min_players },
+    max_web_events = MAX_WEB_EVENTS,
+  }
+end, { description = "the events (file and web) with their editable fields, for the Events page" })
 
 server.endpoint("whereabouts", function()
   local list = {}

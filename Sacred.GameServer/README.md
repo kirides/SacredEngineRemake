@@ -127,8 +127,8 @@ online, lobby kick, Closed Net character, lobby shutdown).
 
 Lua scripts run on the server itself, with [LuaCSharp](https://github.com/nuskey8/Lua-CSharp) 0.5.8 (pure managed Lua 5.2:
 no native library, Native AOT clean, one binary). Every `*.lua` file of the scripts folder (`--scripts-dir`, default
-`scripts`) is loaded in name order when the server starts and all of them are reloaded half a second after one changes; no
-restart is needed. Without the folder (or with `--scripts=0`) nothing runs. `scripts-examples/kill_milestones.lua` is a
+`scripts`) is loaded in name order when the server starts; a changed, added or removed file reloads only that mod half a
+second later (see "Hot reload" below); no restart is needed. Without the folder (or with `--scripts=0`) nothing runs. `scripts-examples/kill_milestones.lua` is a
 complete example.
 
 ```lua
@@ -140,7 +140,8 @@ server.on("kill", function(player, monster) end) -- monster = { ref, type, level
 server.on("death", function(player, by) end)     -- a hero died; by = { player } or { ref, type, level }
 server.on("sector", function(player, sector) end) -- the hero moved into another sector (player.sector is the same number)
 server.on("drop", function(item, reporter) end)  -- a new item lies on the ground; item = { ref, type, level, rarity 0..15, sockets, price, name, sector, x, y }
-server.on("start", function() end)               -- after (re)loading
+server.on("start", function() end)               -- after (re)loading (a reloaded mod's own start handlers run again)
+server.on("unload", function(reason) end)        -- before this mod is replaced ("reload") or the server stops ("shutdown"): save state here
 server.every(seconds, fn)  server.after(seconds, fn)
 server.broadcast(text)  server.message(player or slot, text)  server.kick(player or slot, reason)
 server.players()  server.player(slot)  server.time()  server.log(text)  print(...)
@@ -205,9 +206,24 @@ serialized at once on the game loop thread and written on a worker thread after 
 flushed to the disk (`FileStream.Flush(true)`, write-through), moved over the old file. `fn(ok, err)` runs on the game loop at the
 next pump after the write finished, in the order the writes were started; the game loop never waits. While a durable write is out
 (until its callback ran) the regular 10 s flush skips this mod's file, so after a failed write the file still holds the state from
-before it and the script can undo its change in memory first (the next flush writes the undo). Callbacks of scripts that were
-reloaded meanwhile are dropped; their writes still finish. Code: `Scripting/ScriptHost.Durable.cs`, `ModStore.Durable.cs`; tests
+before it and the script can undo its change in memory first (the next flush writes the undo). A reload first drains the writes in
+flight (their callbacks run, the old script is still intact); callbacks of a `server.flush` started by an unload hook are dropped
+after a reload (the write still finishes before the mod is replaced) but answered at shutdown. Code: `Scripting/ScriptHost.Durable.cs`, `ModStore.Durable.cs`; tests
 `ScriptTests.Durable.cs`.
+
+**Hot reload and the `unload` hook.** `server.on("unload", function(reason) ... end)` runs while the old script is still intact
+(same instruction budget as any handler): `reason` is `"reload"` (the mod is replaced) or `"shutdown"` (the server stops; the
+hooks run on the game loop before the stores are flushed, and the durable writes they start are awaited). Save state with
+`server.save(...)` and `server.flush()` there; then everything the script registered (handlers, timers, endpoints and pages, net
+handlers) is dropped and the file runs again. The mod's storage lives in the host and survives a reload, so the new version reads
+back what the old one saved, exactly as after a restart. Order: pending durable writes are drained (callbacks answered), the
+`unload` handlers of the mod run (all mods on a full reload, the last loaded first), the writes they started finish, the
+registrations are dropped, the file(s) load, then `start` fires (for a per-mod reload only that mod's handlers). Reloading:
+the folder watcher reloads only the file that changed (a new file loads, a deleted one unloads); the Mods tab of the web UI has a
+Reload button per mod and "Reload all mods" (`POST /api/reload-mods` with `{"text": "mod"}`, empty text = all); `ScriptHost.Reload(mod|null)`
+from code. A full reload creates a fresh Lua state (global variables reset); a per-mod reload runs the file in the shared state, so
+globals it set earlier stay until overwritten, a reloaded mod's handlers run after the others', and mods that share globals should be
+reloaded together. Code: `Scripting/ScriptHost.Reload.cs`; tests `ScriptTests.Reload.cs`.
 
 **Hero custody (Closed Net, `--authoritative`).** For mods that move items or gold between a hero and their own storage (auction
 house, shared stash) so that killing the client never restores a save with the item twice: the server is the one that writes the
