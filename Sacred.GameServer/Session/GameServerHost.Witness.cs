@@ -193,6 +193,8 @@ public sealed partial class GameServerHost
         var now = _clock.ElapsedMilliseconds;
         var source = Witness!.Classify(s.Slot, facts, content, now);
         if (source == ItemSource.Purchase) Witness.OnPurchase(s.Slot, reference, price, now);
+        else if (source == ItemSource.Unexplained)
+            Log.Info($"AUTH: witness: 0x{reference:X} lies in sector {sector} at {x},{y} (the player stands in sector {s.CurrentSector}, which belongs to #{SectorOwnerOf(s.CurrentSector)}), price {price}, level {data[25]}.");
         return source;
     }
 
@@ -246,4 +248,6 @@ public sealed partial class GameServerHost
         var at = values + GoldCreatureValuesLayout.CompactWord46Offset;
         return at + 4 <= body.Length ? at : -1;
     }
+
+    private byte SectorOwnerOf(ushort sector) => sector < SectorTableSize ? _sectorOwner[sector] : (byte)0;
 }

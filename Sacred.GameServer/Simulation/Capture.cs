@@ -168,7 +168,14 @@ public sealed class CaptureReader
         StartUnixMs = BinaryPrimitives.ReadInt64LittleEndian(data.AsSpan(8));
     }
 
-    public static CaptureReader Open(string path) => new(File.ReadAllBytes(path));
+    /// <summary>Reads the whole file; also one a running server is still writing (shared read/write; a cut last record is skipped).</summary>
+    public static CaptureReader Open(string path)
+    {
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var data = new byte[file.Length];
+        file.ReadExactly(data);
+        return new CaptureReader(data);
+    }
 
     public bool TryRead(out CaptureRecord record)
     {
