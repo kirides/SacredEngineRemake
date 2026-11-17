@@ -146,6 +146,8 @@ server.broadcast(text)  server.message(player or slot, text)  server.kick(player
 server.players()  server.player(slot)  server.time()  server.log(text)  print(...)
 server.save(key, value)  server.load(key [, default])  server.delete(key)  server.keys([prefix])   -- the mod's own storage
 server.flush([fn])                     -- write this mod's storage now, durably; fn(ok, err) afterwards on the game loop
+server.authoritative(player)  server.save_hero(player, fn)  server.hero_upload_time(player)   -- Closed Net hero saves (see "Hero custody")
+server.hero_item(player, ref)  server.hero_items(player)  server.claim_item(player, ref)     -- items in, leaving and arriving in a hero
 server.get(player or nil, key [, default])  server.set(player or nil, key, value)  server.add(player or nil, key [, n])
 server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- item or nil, error
 server.drop_gold(player, amount)       -- { ref, type, amount } or nil, error: a gold pile next to the hero
@@ -203,6 +205,27 @@ next pump after the write finished, in the order the writes were started; the ga
 before it and the script can undo its change in memory first (the next flush writes the undo). Callbacks of scripts that were
 reloaded meanwhile are dropped; their writes still finish. Code: `Scripting/ScriptHost.Durable.cs`, `ModStore.Durable.cs`; tests
 `ScriptTests.Durable.cs`.
+
+**Hero custody (Closed Net, `--authoritative`).** For mods that move items or gold between a hero and their own storage (auction
+house, shared stash) so that killing the client never restores a save with the item twice: the server is the one that writes the
+hero, so a mod accepts a transfer only after the server saw it in its own hero state and the lobby stored the hero.
+`server.authoritative(player)` is true when the server writes this hero (authoritative mode, a Closed Net hero, the lobby online).
+`server.save_hero(player, fn)` saves the hero now from the server's view (as the anti-dupe saves) and calls `fn(ok, err)` on the
+game loop once sacred-lobby answered the upload (message 15 code 12 = stored in one SQLite statement; anything else, a lost
+lobby connection or 30 s without an answer is `ok = false`). `server.hero_upload_time(player)` is the unix time of the last
+hero upload sent for that hero (any reason, also earlier sessions while the server runs), or nil: no save went out since a moment
+means the lobby's hero is still older than it. `server.hero_item(player, ref)` returns `{ ref, type, where, records, age }` for one
+item object of the player: `where` = `backpack` (anchored in the hero's own inventory, 0x122/0x13E/0x13F), `stash` (inventory 17),
+`equipped`, `world` (an object of the player in no inventory) or `gone` (destroyed by its owner with 0x167: the server keeps the
+last 64 per player for 10 minutes, with their records); `records` is the item's value records as hex (one 130-byte block per
+socketed rune/gem, then its own), the same bytes Sacred Gear's `gear.inv.export` carries after its u32 type and u16 count, so a
+mod can check that exported data belongs to that object. An anchored item without a server state has `type` 0 and empty
+`records`. `server.hero_items(player)` lists the items in the inventories and equipment; `server.claim_item(player, ref)` takes a
+`gone` item off the list (true once), so one destroyed item backs one transfer. Hero gold is `server.hero(player).gold`. Code:
+`Session/GameServerHost.ScriptHeroes.cs`, `Scripting/ScriptHost.Heroes.cs`, `Lobby/LobbyClient.Uploads.cs` (upload answers); hooks
+in existing code: one call in `RemoveObject`, three lines in `LobbyClient`. **Unverified with a real client:** that Gear's
+`inv.remove` reaches the server as 0x13E + 0x167 and `inv.add` as 0x16F/0x16C + 0x13F, that the export's records equal the
+server's in order, and how soon a client reports a gold change in its hero state.
 
 * `player` = `{ slot, name, character, uid, class, level, in_game, host, online, sector, x, y }`. **Privacy:** scripts never see lobby ids,
   owner keys or account names. `name` and `character` are the character name (the server strips the `account.` prefix of
