@@ -375,4 +375,21 @@ public class WitnessTests
         var off = new ItemWitness(new WitnessOptions { Sources = WitnessOptions.AllSources & ~ItemSourceSet.Stock });
         Assert.AreEqual(ItemSource.Unexplained, off.Classify(3, Stock(13, 1), c, 0), "AUTH_ITEM_SOURCES without stock");
     }
+
+    [TestMethod]
+    public void AWorldStartItemPutIntoTheHeroWhileTheWindowIsOpenIsTold()
+    {
+        var w = new ItemWitness(new WitnessOptions { WorldStartGraceMs = 1000 });
+        var c = Content(1);
+        w.OnWorldStart(3, 0);
+        Assert.AreEqual(ItemSource.WorldStart, w.Classify(3, Facts(1, c), c, 100));
+        w.OnWorldStartItem(3, 1);
+        Assert.IsFalse(w.WorldStartItemAnchored(3, 2, 200), "not a world start item");
+        Assert.IsFalse(w.WorldStartItemAnchored(4, 1, 200), "another player");
+        Assert.IsTrue(w.WorldStartItemAnchored(3, 1, 200), "put into the hero inside the window");
+        Assert.IsFalse(w.WorldStartItemAnchored(3, 1, 300), "once");
+        w.OnWorldStartItem(3, 5);
+        w.OnWorldEntered(3, 400);
+        Assert.IsFalse(w.WorldStartItemAnchored(3, 5, 2000), "the window is closed (a later pick-up of a ground item is normal)");
+    }
 }
