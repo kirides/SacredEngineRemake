@@ -223,7 +223,7 @@ the folder watcher reloads only the file that changed (a new file loads, a delet
 Reload button per mod and "Reload all mods" (`POST /api/reload-mods` with `{"text": "mod"}`, empty text = all); `ScriptHost.Reload(mod|null)`
 from code. A full reload creates a fresh Lua state (global variables reset); a per-mod reload runs the file in the shared state, so
 globals it set earlier stay until overwritten, a reloaded mod's handlers run after the others', and mods that share globals should be
-reloaded together. Code: `Scripting/ScriptHost.Reload.cs`; tests `ScriptTests.Reload.cs`.
+reloaded together. Code: `Scripting/ScriptHost.Reload.cs`; tests `ScriptTests.Reload.cs`. The example mods are built on it: each saves its in-memory state in an unload handler and keeps its tunables as data in its storage key `config` (defaults in the script seed it, `POST /api/mod-store` edits it live, `/mods/{mod}/config` is the admin overview); see [`docs/mods/README.md`](../docs/mods/README.md#configuration-live-edits-and-hot-reload), tests `ScriptTests.ModConfig.cs`.
 
 **Hero custody (Closed Net, `--authoritative`).** For mods that move items or gold between a hero and their own storage (auction
 house, shared stash) so that killing the client never restores a save with the item twice: the server is the one that writes the

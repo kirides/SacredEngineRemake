@@ -12,14 +12,18 @@ activity, and the most defeated creatures. Storage: `script-data/server_stats.js
 ![Server stats page](img/server-stats.png)
 
 *Demo data: invented numbers and curves. "Online now 0" and "Uptime 0m" are real (the server had just started and nobody was
-connected); "Uptime" counts from when the mod was (re)loaded, so a script change resets it.*
+connected). "Uptime" counts from the start of the mod and survives a hot reload (the start time is stored); a restart begins anew.*
 
-| Setting | Default | Meaning |
+Settings: the `config` data of the mod (defaults at the top of the script seed it; edit with `POST /api/mod-store`, overview on
+`/mods/server_stats/config`, see the [README](README.md#configuration-live-edits-and-hot-reload)). A reload saves the samples,
+hourly buckets, creature counts and the peak at once.
+
+| Field | Default | Meaning |
 |---|---|---|
-| `SAMPLE_SECONDS` | 300 | One players-online sample every 5 minutes |
-| `KEEP_SAMPLES` | 288 | ... for 24 hours |
-| `KEEP_HOURS` | 48 | Hourly activity buckets kept (24 h are shown) |
-| `TOP_CREATURES` | 8 | Rows of "Most defeated creatures" |
+| `sample_seconds` | 300 | One players-online sample every 5 minutes (applies on the next reload) |
+| `keep_samples` | 288 | ... for 24 hours |
+| `keep_hours` | 48 | Hourly activity buckets kept (24 h are shown) |
+| `top_creatures` | 8 | Rows of "Most defeated creatures" |
 
 | Address | What |
 |---|---|
@@ -39,11 +43,15 @@ Storage: `script-data/hall_of_fame.json`.
 Records beaten by another hero are announced to everybody, but only above the minimums below, so a fresh server does not shout.
 A tie keeps the old holder. Level milestones are announced as "the first hero on this server to reach level N".
 
-| Setting | Default | Meaning |
+Settings: the `config` data of the mod (edit with `POST /api/mod-store`, overview on `/mods/hall_of_fame/config`, see the
+[README](README.md#configuration-live-edits-and-hot-reload)). A reload keeps all records and lists.
+
+| Field | Default | Meaning |
 |---|---|---|
 | `milestones` | 10, 25, 50, 100, 150, 200 | Levels announced as "first hero to reach" |
 | `announce_min` | level 30, kills 500, deaths 50, biggest 40 | Records below these are kept, not announced |
 | `keep_first_kills` | 60 | First-kill entries kept (the page shows 20) |
+| `announce` | true | Broadcast records and "first to reach" messages at all |
 
 | Address / chat | What |
 |---|---|
@@ -63,12 +71,18 @@ Storage: `script-data/seasons.json`; per-hero numbers live under keys such as `s
 *Demo data: fictional heroes, invented seasons. The newest past season is shown expanded; on the live page the archive entries
 start collapsed and open with a click.*
 
-| Setting | Default | Meaning |
+Settings: the `config` data of the mod (edit with `POST /api/mod-store`, overview on `/mods/seasons/config`, see the
+[README](README.md#configuration-live-edits-and-hot-reload)). A reload does not touch the season: its number, start and the archive
+are stored (the start is saved at the first run), so the boundary stays where it was; changing `length_days` moves the end of the
+season that is running.
+
+| Field | Default | Meaning |
 |---|---|---|
 | `length_days` | 30 | `0`: a season ends only by hand |
 | `keep_archive` | 24 | Past seasons kept |
 | `top_n` | 10 | Rows per board |
-| `boards` | kills, gain, online | Most creatures defeated; most levels gained (best level minus the level at the first sighting in the season); longest online (hours) |
+| `announce` | true | Tell everybody when a season ends |
+| `boards` | kills, gain, online | A list of `{ id, title, scale, unit }`; `id` is `kills` (creatures defeated), `gain` (levels gained: best level minus the level at the first sighting in the season) or `online` (seconds, shown divided by `scale`, hours by default); drop one from the list to hide it |
 
 | Address / chat | What |
 |---|---|

@@ -31,12 +31,11 @@ Copy `Sacred.GameServer/scripts-examples/quest_helper.lua` into the server's scr
 
 ## The catalog
 
-Two places, merged (the storage entry wins):
-
-1. `CATALOG` at the top of the Lua file (empty on purpose: nothing is guessed). Example from the file, not a real quest:
-   `CATALOG[1234] = { name = "Example quest", area = "Somewhere", hint = "Talk to X.", states = { [1] = "started", [2] = "done" } }`
-2. The storage key `catalog` of the mod (a JSON object keyed by the record key as a string), which can be edited without
-   touching the script.
+The `catalog` field of the mod's `config` (empty on purpose: nothing is guessed): a JSON object keyed by the record key as a
+string. Example, not a real quest:
+`"catalog": { "1234": { "name": "Example quest", "area": "Somewhere", "hint": "Talk to X.", "states": { "1": "started", "2": "done" } } }`.
+Write it with `POST /api/mod-store` (it applies within 2 seconds, no reload). The storage key `catalog` of earlier versions is still
+read and merged (the config entry wins). Entries whose key is not a number are left out and listed on the overview page.
 
 Texts are shortened (name and area 60, hint 400, value labels 60 characters) because players see them.
 
@@ -48,16 +47,22 @@ Texts are shortened (name and area 60, hint 400, value labels 60 characters) bec
 
 A new or changed record also gives a chat line ("Quest record: <name>", with the hint), at most one per hero in 3 s.
 
-## Settings (top of the file)
+## Settings (the `config` data of the mod)
 
-| Name | Default | Meaning |
+Defaults at the top of the script seed the storage key `config` on the first run; edit it with `POST /api/mod-store`, see it on
+`/mods/quest_helper/config` ([README](README.md#configuration-live-edits-and-hot-reload)). A reload keeps the records the server
+knows and, for heroes who are online, the baseline of their records, the panels that are watching and the request budgets, so a
+change right after a reload is still announced.
+
+| Field | Default | Meaning |
 |---|---|---|
-| `POLL_SECONDS` | 5 | How often online heroes in the world are read for changes |
-| `MAX_PAIRS` | 120 | Records sent to a client at once |
-| `MAX_OTHERS` | 6 | Other heroes named per record |
-| `MAX_KNOWN_KEYS` | 400 | Records the server remembers (the page lists 50) |
-| `NOTICE_SECONDS` | 3 | At most one chat notice per hero in this time |
-| `BUCKET_CAPACITY`, `BUCKET_REFILL` | 6, 0.5/s | Request budget of a client |
+| `catalog` | empty | See "The catalog" |
+| `poll_seconds` | 5 | How often online heroes in the world are read for changes (applies on the next reload) |
+| `max_pairs` | 120 | Records sent to a client at once |
+| `max_others` | 6 | Other heroes named per record |
+| `max_known_keys` | 400 | Records the server remembers (the page lists 50) |
+| `notice_seconds` | 3 | At most one chat notice per hero in this time |
+| `bucket_capacity`, `bucket_refill` | 6, 0.5/s | Request budget of a client |
 
 ## Web page and endpoints
 

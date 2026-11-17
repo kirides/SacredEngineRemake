@@ -27,9 +27,13 @@ Needs `--game-dir` for the `names` filters and for item rewards (without it a cr
 New bounties, completions and expiries are announced to everybody (`announce`), and a hero entering the world is told how many
 bounties are open.
 
-## Settings (top of the file)
+## Settings (the `config` data of the mod)
 
-`CONFIG`:
+The tables at the top of the script are the defaults of the first run; the live values are the storage key `config`, edited with
+`POST /api/mod-store` and shown on `/mods/bounty_board/config` (see [README](README.md#configuration-live-edits-and-hot-reload)).
+A reload keeps the board and everybody's progress.
+
+Fields:
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -39,7 +43,7 @@ bounties are open.
 | `history` | 10 | Completions and expiries kept for the dashboard |
 | `max_hunters` | 5000 | Heroes remembered per bounty (more can play, their progress is just not kept) |
 
-`POOL` (the bounties it draws from; never the same entry twice at once):
+`pool` (a list; the bounties it draws from, never the same entry twice at once; at least one entry must be valid):
 
 | Field | Meaning |
 |---|---|
@@ -53,7 +57,8 @@ bounties are open.
 | `reward` | `gold = n` for each hero who finishes, `item = { quality = .., category = .. }` as for `server.drop_item` |
 
 The default pool has orcs, undead, spiders, brigands and dragons (level 20+); a commented example shows a one-region bounty.
-A bounty is a snapshot of its pool entry: editing the pool does not change bounties already posted.
+A bounty is a snapshot of its pool entry: editing the pool does not change bounties already posted. An entry needs an `id`, `names`
+or `types`, and a `target`; entries that miss one are left out and listed on the overview page.
 
 ## Web page and endpoints
 
