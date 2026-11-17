@@ -144,6 +144,7 @@ server.players()  server.player(slot)  server.time()  server.log(text)  print(..
 server.save(key, value)  server.load(key [, default])  server.delete(key)  server.keys([prefix])   -- the mod's own storage
 server.get(player or nil, key [, default])  server.set(player or nil, key, value)  server.add(player or nil, key [, n])
 server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- item or nil, error
+server.drop_gold(player, amount)       -- { ref, type, amount } or nil, error: a gold pile next to the hero
 server.random()  server.random(n)  server.random(m, n)
 server.creature_name(type or monster)  server.item_name(type or item)   -- the game's name, or nil
 server.top(key, n)                     -- { { name, value }, ... }: this mod's per-hero numbers, also offline heroes
@@ -217,7 +218,14 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
 * Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
   kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
   shows the kill ladder in chat. `player.online` is the current session in seconds.
-* Not yet: gold rewards (the money item's amount field is unknown).
+* `drop_gold` drops a gold pile the same way (no `--game-dir` needed). Money is an ordinary item object: resources
+  0x140C..0x140F (Gold client table 0x949920 / test 0x43AF50, GameServer.exe 0x5B0274 / 0x409D30), pile size by amount as the
+  game picks it when gold is dropped (0x4AEC1E: below 50, 350, 1000, else). The amount is the value block's price (+8, cItemBase
+  +0x120, set by 0x5C7D10); the rest is the Weapon.pak "Gold" row's instance values (flags 0x00C01D3F). Pricing keeps a nonzero
+  money price (client 0x5D3AB0, GameServer.exe 0x426D80). Picking it up (client 0x558304) reads the price, removes the object and
+  adds it to the hero's gold (values +0x46, AddGold 0x57FD80, at most 0x7FFFFFFE, the cap `drop_gold` applies). Amounts are
+  whole numbers of at least 1. **Unverified with a real client:** as for `drop_item`, that the owner's pick-up of a
+  server-referenced object runs that path, and that the new gold reaches the server in the hero's values (saves).
 
 ## Player data (web UI)
 

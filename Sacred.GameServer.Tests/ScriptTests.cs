@@ -42,6 +42,12 @@ public class ScriptTests
         }
         public string? CreatureName(uint type) => type == 38 ? "Orc Warrior" : null;
         public string? ItemName(uint type) => type == 2501 ? "Longbow" : null;
+        public readonly List<uint> Gold = new();
+        public ScriptDrop? DropGold(int slot, uint amount, out string? error)
+        {
+            Gold.Add(amount); error = null;
+            return new ScriptDrop(101, GoldPile.ResourceFor(amount), 0, "Gold", "Gold");
+        }
     }
 
     private static (ScriptHost Host, FakeServer Server, ModStore Store) Host(Folder folder, int budget = 1_000_000, string mod = "a")
@@ -581,6 +587,69 @@ public class ScriptTests
                 Assert.AreEqual(0, item.Count);
             }
             Assert.IsFalse(string.IsNullOrEmpty(ChatText(host.WaitFor(0x003).Payload)), "the script told the player the item's name");
+        }
+    }
+
+    [TestMethod]
+    public void DropGoldAmountsReachTheServer()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.on("chat", function(p, text)
+              local pile = server.drop_gold(p, 1234.7)
+              server.message(p, pile.ref .. " " .. pile.type .. " " .. pile.amount)
+              local _, zero = server.drop_gold(p, 0)
+              local _, missing = server.drop_gold(p)
+              local _, nobody = server.drop_gold(9, 10)
+              server.message(p, zero .. "|" .. missing .. "|" .. nobody)
+              server.drop_gold(p, 1e12)
+              return true
+            end)
+            """);
+        var (host, server, _) = Host(folder);
+        Assert.IsTrue(host.FireChat(server.All[0], "!gold"));
+        CollectionAssert.AreEqual(new[] { 1234u, GoldPile.MaximumAmount }, server.Gold, "whole gold, capped at the game's limit");
+        CollectionAssert.AreEqual(new[] { $"101 {0x140F} 1234", "amount must be at least 1|amount must be at least 1|no such player" },
+            server.Told.Select(t => t.Text).ToArray());
+    }
+
+    [TestMethod]
+    public void DroppedGoldAppearsNextToTheHeroForEverybody()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", "server.on('chat', function(p, t) local pile, err = server.drop_gold(p, 777); server.message(p, pile and tostring(pile.amount) or err); return true end)");
+        using var server = new Server(folder);
+        var host = RawClient.Admit(server.Port, "Host", 1);
+        host.Send(0x016, default); host.Send(0x018, Word(0x1964)); host.WaitFor(0x018);
+        var joiner = RawClient.Admit(server.Port, "Joiner", 2);
+        joiner.Send(0x015, default); joiner.Send(0x017, default); joiner.WaitFor(0x017);
+        using (host) using (joiner)
+        {
+            var hero = new byte[24 + 64];
+            BinaryPrimitives.WriteUInt32LittleEndian(hero, host.Slot);
+            BinaryPrimitives.WriteInt32LittleEndian(hero.AsSpan(8), 5000);
+            BinaryPrimitives.WriteInt32LittleEndian(hero.AsSpan(12), 7000);
+            BinaryPrimitives.WriteUInt32LittleEndian(hero.AsSpan(20), 1234);
+            host.Send(0x169, hero);
+            host.Send(0x005, Chat("!gold"));
+            foreach (var client in new[] { joiner, host })
+            {
+                var state = client.WaitFor(0x16F).Payload;
+                Assert.IsTrue(BinaryPrimitives.ReadUInt32LittleEndian(state) >= 0x11, "a server reference");
+                Assert.AreEqual(GoldPile.LargeResource, BinaryPrimitives.ReadUInt32LittleEndian(state.AsSpan(4)), "777 gold is the 350..999 pile");
+                Assert.AreEqual(5000, BinaryPrimitives.ReadInt32LittleEndian(state.AsSpan(8)));
+                Assert.AreEqual(7000, BinaryPrimitives.ReadInt32LittleEndian(state.AsSpan(12)));
+                Assert.AreEqual(1234u, BinaryPrimitives.ReadUInt32LittleEndian(state.AsSpan(20)));
+                var item = Sacred.Network.Gameplay.GoldItemState.FromPayload(state.AsSpan(24));
+                Assert.AreEqual(host.Slot, item.PhysicalState.BaseState.Owner, "the receiving player owns the pile");
+                Assert.AreEqual(GoldPile.LargeResource, item.PhysicalState.BaseState.ObjectType);
+                Assert.AreEqual(GoldPile.LargeResource, item.Instance.ItemType);
+                Assert.AreEqual(777u, item.Instance.Price, "the amount is the value block's price");
+                Assert.AreEqual(0, item.Count);
+                Assert.IsFalse(item.HasWeaponExtension);
+                Assert.AreEqual(0, item.RemainingData.Length);
+            }
+            Assert.AreEqual("777", ChatText(host.WaitFor(0x003).Payload));
         }
     }
 }
