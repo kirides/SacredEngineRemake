@@ -203,7 +203,7 @@ local function payload_for(player)
     local mine = ev.players[player.uid]
     return {
       v = 1, st = "active", n = ev.n, title = def.title, text = goal_text(def), count = ev.count, target = def.target,
-      left = math.max(0, ev.ends - t), dur = def.duration, here = in_area(def, player), mine = mine and mine.n or 0,
+      left = math.floor(math.max(0, ev.ends - t)), dur = def.duration, here = in_area(def, player), mine = mine and mine.n or 0,
       need = def.min_contribution, people = participants(ev), reward = reward_text(def),
     }
   end
@@ -211,10 +211,10 @@ local function payload_for(player)
   if last and t - last.finished < CONFIG.result_hold then
     return {
       v = 1, st = last.success and "won" or "failed", n = last.n, title = last.title, text = last.text, count = last.count,
-      target = last.target, hold = CONFIG.result_hold - (t - last.finished), here = in_area(last, player), people = last.people,
+      target = last.target, hold = math.floor(CONFIG.result_hold - (t - last.finished)), here = in_area(last, player), people = last.people,
     }
   end
-  return { v = 1, st = "idle", next_in = math.max(0, (state.next_start or t) - t), here = false }
+  return { v = 1, st = "idle", next_in = math.floor(math.max(0, (state.next_start or t) - t)), here = false }
 end
 
 local function push(player)
@@ -476,11 +476,11 @@ local function public_state()
     end
     out.active = {
       n = ev.n, id = ev.def.id, title = ev.def.title, text = goal_text(ev.def), count = ev.count, target = ev.def.target,
-      percent = math.min(100, math.floor(ev.count * 100 / ev.def.target)), left = math.max(0, ev.ends - t), ends = ev.ends,
+      percent = math.min(100, math.floor(ev.count * 100 / ev.def.target)), left = math.floor(math.max(0, ev.ends - t)), ends = ev.ends,
       sectors = ev.def.sectors, participants = participants(ev), top = top, reward = reward_text(ev.def),
     }
   else
-    out.next_in = math.max(0, (state.next_start or t) - t)
+    out.next_in = math.floor(math.max(0, (state.next_start or t) - t))
   end
   out.last = state.last and {
     n = state.last.n, title = state.last.title, success = state.last.success, count = state.last.count, target = state.last.target,
@@ -522,7 +522,7 @@ server.page("", function()
     parts[#parts + 1] = section("Running now", table.concat(body))
     local rows = {}
     for _, p in ipairs(a.top) do rows[#rows + 1] = "<li><b>" .. h(p.name) .. "</b> " .. p.kills .. "</li>" end
-    parts[#parts + 1] = section("Top contributors", "<ol>" .. table.concat(rows) .. "</ol>")
+    parts[#parts + 1] = section("Top contributors", #rows > 0 and ("<ol>" .. table.concat(rows) .. "</ol>") or "<small>nobody yet</small>")
   else
     parts[#parts + 1] = section("Running now", "<small>No event right now. The next one starts in about " .. h(duration_text(s.next_in or 0)) .. ".</small>")
   end

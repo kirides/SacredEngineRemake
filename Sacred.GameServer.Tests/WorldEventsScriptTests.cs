@@ -1,5 +1,9 @@
+using System.Buffers.Binary;
+using System.Text;
 using System.Text.Json;
+using Sacred.GameServer.Config;
 using Sacred.GameServer.Scripting;
+using Sacred.GameServer.Session;
 
 namespace Sacred.GameServer.Tests;
 
@@ -322,5 +326,66 @@ public class WorldEventsScriptTests
         StringAssert.Contains(page.Body, "Orc hunt");
         StringAssert.Contains(page.Body, "<b>Alice</b>");
         Assert.AreEqual(0, host.Errors);
+    }
+
+    private sealed class LiveServer : IDisposable
+    {
+        public readonly GameServerHost Host;
+        private readonly Thread _thread;
+        public LiveServer(Folder folder)
+        {
+            var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5 };
+            config.Scripts.Directory = folder.Scripts; config.Scripts.DataDirectory = folder.Data;
+            Host = new GameServerHost(config, new AdmissionRules(null), null);
+            Host.StartScripts();
+            _thread = new Thread(Host.Run) { IsBackground = true };
+            _thread.Start();
+        }
+        public int Port => Host.TcpPort;
+        public void Dispose() { Host.Stop(); _thread.Join(); Host.Dispose(); }
+    }
+
+    private static string ChatText(byte[] payload)
+    {
+        var text = Encoding.Unicode.GetString(payload, 4, payload.Length - 4);
+        var end = text.IndexOf(' ');
+        return end < 0 ? text : text[..end];
+    }
+
+    [TestMethod]
+    public void KillsInASectorCountThroughTheRealGameServer()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", Source(t => t.Replace("names = { \"orc\" },", "sectors = { 2909 },")));
+        using var server = new LiveServer(folder);
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        host.Send(0x016, default);
+        host.Send(0x018, BitConverter.GetBytes(0x1964u)); host.WaitFor(0x018);
+        // the scheduler starts the event on its first tick (every 2 s) and tells everybody
+        var begins = host.WaitFor(0x005, 6000);
+        StringAssert.Contains(ChatText(begins.Payload), "Orc hunt begins");
+
+        void Kill(uint victim)
+        {
+            var death = new byte[8];
+            BinaryPrimitives.WriteUInt32LittleEndian(death, victim);
+            BinaryPrimitives.WriteUInt32LittleEndian(death.AsSpan(4), (uint)host.Slot);
+            host.Send(0x17D, death);
+        }
+        var chat = new byte[4 + "!event".Length * 2 + 2];
+        Encoding.Unicode.GetBytes("!event", chat.AsSpan(4));
+        Kill(9001);                                           // the hero has not entered a sector yet: sector 0, not counted
+        host.Send(0x005, chat);
+        Assert.IsTrue(ChatText(host.WaitFor(0x003).Payload).Contains("0/4 (0%)"), "outside the sector");
+
+        var entry = Convert.FromHexString("5d0b00001f0b200b210b5e0b9d0b9c0b9b0b5c0b5d0b" + new string('0', 36 * 2) + "7c080000");   // sector 0x0B5D = 2909
+        host.Send(0x148, entry);
+        host.WaitFor(0x148);
+        Kill(9002); Kill(9003); Kill(9003);                   // one reported twice
+        host.Send(0x005, chat);
+        var lines = new List<string>();
+        for (var i = 0; i < 2; i++) lines.Add(ChatText(host.WaitFor(0x003).Payload));
+        Assert.IsTrue(lines.Any(l => l.Contains("2/4 (50%)")), string.Join(" | ", lines));
+        Assert.IsTrue(lines.Any(l => l.Contains("Your share: 2")), string.Join(" | ", lines));
     }
 }
