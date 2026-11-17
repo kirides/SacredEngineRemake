@@ -19,14 +19,21 @@ public sealed class ModStore
     public const string UnknownName = "unknown hero";
     private readonly string _path;
     private readonly Dictionary<string, object?> _values = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _sizes = new(StringComparer.Ordinal);
     private bool _dirty;
+    private Task _writing = Task.CompletedTask;
+
+    /// <summary>Serialized size of everything stored (characters, close to the file size); kept up to date per key.</summary>
+    public long Size { get; private set; }
 
     public ModStore(string path) { _path = path; Load(); }
 
     public string Path => _path;
     public int Count => _values.Count;
     /// <summary>Largest file a mod may keep (serialized characters); saves beyond it fail with an error to the script.</summary>
-    public int MaxChars { get; init; } = 16 * 1024 * 1024;
+    public long MaxChars { get; init; } = 8 * 1024 * 1024;
+    /// <summary>Optional check across all mods (the host's total limit): gets the size change, throws to refuse it.</summary>
+    public Action<long>? BeforeGrow { get; init; }
 
     // ---- plain keys --------------------------------------------------------------------------------------------------
 
@@ -34,9 +41,31 @@ public sealed class ModStore
 
     public void Set(string key, object? value)
     {
-        if (value is null) { if (_values.Remove(key)) _dirty = true; return; }
+        if (value is null) { if (_values.Remove(key)) { Account(key, 0); _dirty = true; } return; }
+        Account(key, Measure(key, value), check: true);
         _values[key] = value;
         _dirty = true;
+    }
+
+    /// <summary>Records the new size of <paramref name="key"/>; with <paramref name="check"/> refuses growth past the limits first.</summary>
+    private void Account(string key, long size, bool check = false)
+    {
+        var old = _sizes.GetValueOrDefault(key);
+        if (check && size > old)
+        {
+            if (Size - old + size > MaxChars)
+                throw new InvalidOperationException($"mod storage full: {Size - old + size:N0} of {MaxChars:N0} characters (delete old data or raise --scripts-store-max)");
+            BeforeGrow?.Invoke(size - old);
+        }
+        Size += size - old;
+        if (size == 0) _sizes.Remove(key); else _sizes[key] = size;
+    }
+
+    private static long Measure(string key, object? value)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream)) { writer.WriteStartObject(); writer.WritePropertyName(key); Write(writer, value, 0); writer.WriteEndObject(); }
+        return stream.Length;
     }
 
     public IEnumerable<string> Keys(string prefix) => _values.Keys.Where(k => !k.StartsWith(HeroPrefix, StringComparison.Ordinal) && k.StartsWith(prefix, StringComparison.Ordinal))
@@ -54,8 +83,18 @@ public sealed class ModStore
     {
         if (!_values.TryGetValue(HeroPrefix + owner, out var map) || map is not Dictionary<string, object?> hero)
             _values[HeroPrefix + owner] = hero = new Dictionary<string, object?>(StringComparer.Ordinal);
-        if (character is { Length: > 0 }) hero[NameKey] = DisplayName(character);
+        var name = character is { Length: > 0 } ? DisplayName(character) : null;
+        var previousName = hero.GetValueOrDefault(NameKey);
+        var hadValue = hero.TryGetValue(key, out var previous);
+        if (name is not null) hero[NameKey] = name;
         if (value is null) hero.Remove(key); else hero[key] = value;
+        try { Account(HeroPrefix + owner, Measure(HeroPrefix + owner, hero), check: true); }
+        catch
+        {
+            if (hadValue) hero[key] = previous; else hero.Remove(key);                // refused: leave the hero as it was
+            if (name is not null) { if (previousName is null) hero.Remove(NameKey); else hero[NameKey] = previousName; }
+            throw;
+        }
         _dirty = true;
     }
 
@@ -73,15 +112,11 @@ public sealed class ModStore
         return rows;
     }
 
-    /// <summary>A name that is safe to show anybody: the character part of "account.character", never an owner key.</summary>
-    public static string DisplayName(string name)
-    {
-        if (name.StartsWith("id:", StringComparison.Ordinal) || name.StartsWith("name:", StringComparison.Ordinal) || name.StartsWith(HeroPrefix, StringComparison.Ordinal))
-            return UnknownName;
-        var dot = name.IndexOf('.');
-        var character = dot >= 0 ? name[(dot + 1)..] : name;
-        return character.Length == 0 ? UnknownName : character;
-    }
+    /// <summary>A name that is safe to show: never an owner key. The game server already strips the "account." prefix of lobby
+    /// names (and only of lobby names), so dots in character names stay ("Mr.X").</summary>
+    public static string DisplayName(string name) =>
+        name.Length == 0 || name.StartsWith("id:", StringComparison.Ordinal) || name.StartsWith("name:", StringComparison.Ordinal) ||
+        name.StartsWith(HeroPrefix, StringComparison.Ordinal) ? UnknownName : name;
 
     // ---- file ------------------------------------------------------------------------------------------------------------
 
@@ -92,7 +127,12 @@ public sealed class ModStore
         {
             using var document = JsonDocument.Parse(File.ReadAllBytes(_path), new JsonDocumentOptions { MaxDepth = 64 });
             if (document.RootElement.ValueKind != JsonValueKind.Object) return;
-            foreach (var property in document.RootElement.EnumerateObject()) _values[property.Name] = FromJson(property.Value);
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                var value = FromJson(property.Value);
+                _values[property.Name] = value;
+                Account(property.Name, Measure(property.Name, value));
+            }
         }
         catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException)
         {
@@ -147,19 +187,36 @@ public sealed class ModStore
         }
     }
 
-    public void Flush()
+    /// <summary>Writes the store if it changed: serialized on the calling (game loop) thread, which the size limit keeps short,
+    /// written to disk (temporary file + move) on a worker thread. A write still running skips this flush; the next one catches up.
+    /// <paramref name="wait"/> (shutdown) waits for the write.</summary>
+    public void Flush(bool wait = false)
     {
-        if (!_dirty) return;
+        if (!_writing.IsCompleted) { if (!wait) return; _writing.Wait(); }
+        if (_dirty)
+        {
+            var text = Serialize();
+            _dirty = false;
+            _writing = Task.Run(() => WriteFile(text));
+        }
+        if (wait) _writing.Wait();
+    }
+
+    private void WriteFile(string text)
+    {
         var temporary = _path + ".tmp";
         try
         {
             var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_path));
             if (directory is not null) Directory.CreateDirectory(directory);
-            File.WriteAllText(temporary, Serialize());
+            File.WriteAllText(temporary, text);
             File.Move(temporary, _path, overwrite: true);
-            _dirty = false;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { Log.Info($"SCRIPT: mod data '{_path}' not written: {e.Message}"); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _dirty = true;                                                   // try again at the next flush
+            Log.Info($"SCRIPT: mod data '{_path}' not written: {e.Message}");
+        }
     }
 
     internal static string Format(double value) => value.ToString("R", CultureInfo.InvariantCulture);

@@ -33,7 +33,9 @@ public sealed partial class GameServerHost
     public IReadOnlyList<HeroInfo> Heroes() { lock (_heroGate) return _heroSnapshot; }
 
     /// <summary>The character part of the FIRSTCONTACT name ("account.character" on lobby servers).</summary>
-    private static string CharacterName(string name) => name.IndexOf('.') is var dot and >= 0 && dot + 1 < name.Length ? name[(dot + 1)..] : name;
+    /// <remarks>Only lobby names carry the account prefix; a LAN name is the character name itself, dots included ("Mr.X").</remarks>
+    private static string CharacterName(PlayerSession s) =>
+        s.LobbyIdentity is not (0 or -1) && s.Name.IndexOf('.') is var dot and >= 0 && dot + 1 < s.Name.Length ? s.Name[(dot + 1)..] : s.Name;
 
     /// <summary>Admission done: remember when, tell the scripts. (Mods keep their own data, the server stores nothing for them.)</summary>
     private void OnPlayerJoined(PlayerSession s)
@@ -125,7 +127,7 @@ public sealed partial class GameServerHost
                     ? BinaryPrimitives.ReadUInt32LittleEndian(body[(GoldCreatureStateLayout.EquipmentOffset + i * 4)..]) : 0;
             if (reference != 0 && Item(reference) is { } item) equipment.Add(new EquippedItem(i, item));
         }
-        var character = CharacterName(s.Name);
+        var character = CharacterName(s);
         return new HeroInfo(s.Slot, character, s.Name, s.RosterEntry[RosterClass], level, experience, gold, points, skills.ToArray(), spent, attributes,
             arts.ToArray(), combos, equipment.ToArray(), live is null ? [] : Stored(live.InventoryStream), live is null ? [] : Stored(live.SharedInventoryStream), s.InGame,
             s.JoinedMs == 0 ? 0 : (now - s.JoinedMs) / 1000.0);

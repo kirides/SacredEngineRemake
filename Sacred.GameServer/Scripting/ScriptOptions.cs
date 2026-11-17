@@ -12,7 +12,11 @@ public sealed class ScriptOptions
     /// <summary>Folder for the mods' own storage: one <c>{mod}.json</c> per script (<c>server.save</c>/<c>server.set</c>, ...).</summary>
     public string DataDirectory { get; set; } = "script-data";
     /// <summary>Largest single value a mod may save (serialized characters).</summary>
-    public int MaxStoreChars { get; set; } = 16 * 1024 * 1024;
+    public int MaxStoreChars { get; set; } = 4 * 1024 * 1024;
+    /// <summary>Largest storage of one mod (serialized characters, about the file size); saves beyond it fail with a script error.</summary>
+    public long MaxModStoreChars { get; set; } = 8 * 1024 * 1024;
+    /// <summary>Largest storage of all mods together.</summary>
+    public long MaxTotalStoreChars { get; set; } = 32 * 1024 * 1024;
     /// <summary>Lua instructions one event handler or timer may run before it is stopped (a mistake such as an endless loop
     /// must not freeze the game).</summary>
     public int InstructionBudget { get; set; } = 1_000_000;
@@ -31,6 +35,8 @@ public sealed class ScriptOptions
             case "SCRIPTS": Enabled = Int(value, 1) != 0; return true;
             case "SCRIPTS_DIR" or "SCRIPTS_DIRECTORY": Directory = value; return true;
             case "SCRIPTS_DATA": DataDirectory = value; return true;
+            case "SCRIPTS_STORE_MAX": MaxModStoreChars = Math.Clamp(Int(value, (int)Math.Min(MaxModStoreChars, int.MaxValue)), 64 * 1024, int.MaxValue); return true;
+            case "SCRIPTS_STORE_TOTAL_MAX": MaxTotalStoreChars = Math.Clamp(Int(value, (int)Math.Min(MaxTotalStoreChars, int.MaxValue)), 64 * 1024, int.MaxValue); return true;
             case "SCRIPTS_MAX_RESPONSE": MaxResponseChars = Math.Clamp(Int(value, MaxResponseChars), 1024, 64 * 1024 * 1024); return true;
             case "SCRIPTS_MAX_STRING": MaxStringChars = Math.Clamp(Int(value, MaxStringChars), 1024, 256 * 1024 * 1024); return true;
             case "SCRIPTS_BUDGET": InstructionBudget = Math.Clamp(Int(value, InstructionBudget), 10_000, 100_000_000); return true;

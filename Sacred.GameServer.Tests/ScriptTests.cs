@@ -133,7 +133,7 @@ public class ScriptTests
         }
         Assert.AreEqual(5, server.Told.Count);
         Assert.IsTrue(host.Errors >= 15);
-        store.SetHero("name:Alice", null, "corrupt", "not a number");
+        store.SetHero(host.Uid("name:Alice"), null, "corrupt", "not a number");
         Assert.IsFalse(host.FireChat(server.All[0], "hi"), "a Lua error in a chat handler does not swallow or crash");
         server.BroadcastFails = null;
         host.FirePlayer("join", server.All[0]);
@@ -175,18 +175,18 @@ public class ScriptTests
         Assert.AreEqual((1, "Alice L10 C2"), server.Told.Single());
         host.FireKill(alice, new ScriptMonster(4000, 551, 3));
         host.FireKill(alice, new ScriptMonster(4001, 552, 9));
-        Assert.IsTrue(store.TryGetHero("name:Alice", "kills", out var kills));
+        Assert.IsTrue(store.TryGetHero(host.Uid("name:Alice"), "kills", out var kills));
         Assert.AreEqual(4.0, kills);
-        Assert.IsTrue(store.TryGetHero("name:Alice", "last", out var last));
+        Assert.IsTrue(store.TryGetHero(host.Uid("name:Alice"), "last", out var last));
         Assert.AreEqual(552.0, last);
         CollectionAssert.AreEqual(new[] { 1 }, server.Kicked);
         // Each mod has its own file; values survive a restart (temporary file + move).
-        host.FlushStores();
+        host.FlushStores(wait: true);
         var file = Path.Combine(folder.Data, "a.json");
         Assert.IsTrue(File.Exists(file));
         Assert.IsFalse(File.Exists(file + ".tmp"));
         var reloaded = new ModStore(file);
-        Assert.IsTrue(reloaded.TryGetHero("name:Alice", "kills", out var again));
+        Assert.IsTrue(reloaded.TryGetHero(host.Uid("name:Alice"), "kills", out var again));
         Assert.AreEqual(4.0, again);
     }
 
@@ -214,7 +214,7 @@ public class ScriptTests
         Assert.AreEqual("nil/nil", host.HandleRequest("b", "read", [], false).Body, "mod b cannot see mod a's data");
         Assert.AreEqual(500, host.HandleRequest("b", "bad", [], false).Status, "@ keys belong to the per-hero values");
         Assert.AreEqual("deaths,plain", host.HandleRequest("a", "drop", [], false).Body);
-        host.FlushStores();
+        host.FlushStores(wait: true);
         using var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(folder.Data, "a.json")));
         Assert.AreEqual("shield", json.RootElement.GetProperty("deaths")[0].GetProperty("items")[1].GetString());
         // After a reload (and a restart) the tables come back.
@@ -229,9 +229,9 @@ public class ScriptTests
         folder.Write("ladders.lua", Example("ladders.lua"));
         var (host, server, store) = Host(folder, mod: "ladders");
         // Heroes from earlier sessions, in the mod's own file (names as the mod stores them: character only).
-        store.SetHero("id:1:1", "acct.Bob", "kills", 30.0); store.SetHero("id:1:1", null, "level", 20.0);
-        store.SetHero("id:2:1", "Cara", "kills", 70.0); store.SetHero("id:2:1", null, "level", 5.0);
-        var alice = server.All[0] with { Name = "acct.Alice" };            // level 10
+        store.SetHero(host.Uid("id:1:1"), "Bob", "kills", 30.0); store.SetHero(host.Uid("id:1:1"), null, "level", 20.0);
+        store.SetHero(host.Uid("id:2:1"), "Cara", "kills", 70.0); store.SetHero(host.Uid("id:2:1"), null, "level", 5.0);
+        var alice = server.All[0] with { Name = "acct.Alice", Character = "Alice" };   // level 10
         for (uint i = 0; i < 50; i++) host.FireKill(alice, new ScriptMonster(100 + i, 551, 3));
         for (server.Now = 0; server.Now <= 61_000; server.Now += 1000) host.Pump(server.Now);
         host.FireDeath(alice, null, new ScriptMonster(9000, 38, 12));
@@ -289,7 +289,7 @@ public class ScriptTests
             """);
         var (host, server, store) = Host(folder, mod: "ladders");
         var alice = server.All[0];
-        store.SetHero("id:9:1", "Bob", "level", 3.0);
+        store.SetHero(host.Uid("id:9:1"), "Bob", "level", 3.0);
         for (uint i = 0; i < 3; i++) host.FireKill(alice, new ScriptMonster(100 + i, 551, 3));
         host.FireKill(alice, new ScriptMonster(200, 77, 3));
         var csv = host.HandleRequest("ladders", "by-creature", [], publicOnly: true);
@@ -367,18 +367,78 @@ public class ScriptTests
     }
 
     [TestMethod]
-    public void LaddersNeverShowLobbyIdsOrAccountNames()
+    public void LaddersNeverShowOwnerKeys()
     {
-        // A hero without a stored name and one whose name still has the account part.
         var store = new ModStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"));
-        store.SetHero("id:4711:2", null, "kills", 9.0);
-        store.SetHero("name:acct.Cara", "acct.Cara", "kills", 5.0);
-        store.SetHero("name:x", "id:4711:2", "kills", 1.0);
-        var top = store.Top("kills", 10);
-        CollectionAssert.AreEqual(new[] { ModStore.UnknownName, "Cara", ModStore.UnknownName }, top.Select(t => t.Name).ToArray());
-        Assert.IsFalse(top.Any(t => t.Name.Contains("4711") || t.Name.Contains("acct")));
-        foreach (var (raw, shown) in new[] { ("id:4711:2", ModStore.UnknownName), ("name:acct.Dora", ModStore.UnknownName), ("acct.Erik", "Erik"), ("Finn", "Finn"), ("@id:1:1", ModStore.UnknownName) })
-            Assert.AreEqual(shown, ModStore.DisplayName(raw));
+        store.SetHero("0123abcd", null, "kills", 9.0);
+        store.SetHero("4567ef01", "Cara", "kills", 5.0);
+        store.SetHero("89ab2345", "id:4711:2", "kills", 1.0);
+        CollectionAssert.AreEqual(new[] { ModStore.UnknownName, "Cara", ModStore.UnknownName }, store.Top("kills", 10).Select(t => t.Name).ToArray());
+        foreach (var (raw, shown) in new[] { ("id:4711:2", ModStore.UnknownName), ("name:acct.Dora", ModStore.UnknownName), ("Mr.X", "Mr.X"), ("Finn", "Finn"), ("@x", ModStore.UnknownName) })
+            Assert.AreEqual(shown, ModStore.DisplayName(raw), raw);
+    }
+
+    [TestMethod]
+    public void PlayerTablesHoldNoLobbyIdOwnerKeyOrAccount()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.on("join", function(p)
+              local fields = {}
+              for k, v in pairs(p) do fields[#fields + 1] = k .. "=" .. tostring(v) end
+              table.sort(fields)
+              server.broadcast(table.concat(fields, ";"))
+            end)
+            """);
+        var (host, server, _) = Host(folder);
+        var lobbyPlayer = new ScriptPlayer(3, "secretaccount.Hero", "id:4711:2", 1, 20, true, false, 4711, 12, Character: "Hero");
+        host.FirePlayer("join", lobbyPlayer);
+        var line = server.Said.Single();
+        foreach (var leak in new[] { "4711", "secretaccount", "id:", "name:" })
+            Assert.IsFalse(line.Contains(leak), $"'{leak}' in {line}");
+        Assert.IsFalse(line.Split(';').Any(f => f.StartsWith("id=", StringComparison.Ordinal) || f.StartsWith("key=", StringComparison.Ordinal)), line);
+        StringAssert.Contains(line, "character=Hero");
+        StringAssert.Contains(line, "name=Hero");
+        var uid = host.Uid("id:4711:2");
+        StringAssert.Contains(line, "uid=" + uid);
+        Assert.AreEqual(32, uid.Length);
+        // Stable on this server (the secret is kept in the data folder), different on another one.
+        var again = new ScriptHost(new ScriptOptions { Directory = folder.Scripts, DataDirectory = folder.Data }, server);
+        Assert.AreEqual(uid, again.Uid("id:4711:2"));
+        using var other = new Folder();
+        Assert.AreNotEqual(uid, new ScriptHost(new ScriptOptions { Directory = other.Scripts, DataDirectory = other.Data }, server).Uid("id:4711:2"));
+        // A LAN name keeps its dots.
+        host.FirePlayer("join", new ScriptPlayer(4, "Mr.X", "name:Mr.X", 1, 1, true, false, 0, Character: "Mr.X"));
+        StringAssert.Contains(server.Said[1], "character=Mr.X");
+    }
+
+    [TestMethod]
+    public void ModStorageIsCappedPerModAndInTotal()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.endpoint("save", function(r) server.save(r.query.k, string.rep("x", tonumber(r.query.n))) return "ok" end)
+            server.endpoint("hero", function(r) local p = { uid = "u" .. r.query.k, character = "H" } server.set(p, "v", string.rep("y", tonumber(r.query.n))) return "ok" end)
+            server.endpoint("add", function(r) local p = { uid = "u1", character = "H" } return tostring(server.add(p, "n", 1)) end)
+            """);
+        folder.Write("b.lua", "server.endpoint('save', function(r) server.save(r.query.k, string.rep('z', tonumber(r.query.n))) return 'ok' end)");
+        var options = new ScriptOptions { Directory = folder.Scripts, DataDirectory = folder.Data, MaxModStoreChars = 300_000, MaxTotalStoreChars = 500_000, MaxStoreChars = 1_000_000 };
+        var host = new ScriptHost(options, new FakeServer());
+        host.Load();
+        ScriptResponse Call(string mod, string path, string k, int n) =>
+            host.HandleRequest(mod, path, [KeyValuePair.Create("k", k), KeyValuePair.Create("n", n.ToString(System.Globalization.CultureInfo.InvariantCulture))], false);
+        Assert.AreEqual(200, Call("a", "save", "one", 200_000).Status);
+        Assert.AreEqual(500, Call("a", "save", "two", 200_000).Status, "past the mod's limit");
+        Assert.AreEqual(500, Call("a", "hero", "1", 200_000).Status, "per-hero values count too");
+        Assert.AreEqual(200, Call("a", "save", "one", 100_000).Status, "shrinking is always allowed");
+        Assert.AreEqual(200, Call("b", "save", "one", 250_000).Status);
+        Assert.AreEqual(500, Call("b", "save", "two", 200_000).Status, "past the total of all mods");
+        Assert.IsTrue(host.StoreOf("a").Size < 300_000 && host.StoreOf("b").Size < 300_000);
+        Assert.IsFalse(host.StoreOf("a").TryGet("two", out _), "a refused save changes nothing");
+        Assert.AreEqual("1", host.HandleRequest("a", "add", [], false).Body);
+        // Writing happens off the game loop; at shutdown it is awaited.
+        host.FlushStores(wait: true);
+        Assert.IsTrue(new FileInfo(Path.Combine(folder.Data, "a.json")).Length < 300_000);
     }
 
     [TestMethod]
@@ -387,7 +447,7 @@ public class ScriptTests
         using var folder = new Folder();
         folder.Write("a.lua", "server.on('join', function(p) server.broadcast(p.character) end)");
         var (host, server, _) = Host(folder);
-        host.FirePlayer("join", server.All[0] with { Name = "acct.Alice" });
+        host.FirePlayer("join", server.All[0] with { Name = "acct.Alice", Character = "Alice" });
         CollectionAssert.AreEqual(new[] { "Alice" }, server.Said);
     }
 

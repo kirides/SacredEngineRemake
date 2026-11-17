@@ -55,6 +55,12 @@ if (config.GameDirectory is { } nameDir)
     else if (host.Names is { } names) Log.Info($"Game texts: {names.TypeCount} object types, language '{names.Language}'.");
 }
 
+if (config.Scripts.IsEnabled && config.Scripts.DataDirectory.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+{
+    // Before the mods' own storage, --scripts-data named one file; now it is a folder with one file per mod.
+    Log.Info($"ERROR: --scripts-data is a folder now (one {{mod}}.json per script), not a file: '{config.Scripts.DataDirectory}'. Use e.g. --scripts-data=script-data.");
+    return 2;
+}
 if (config.Scripts.IsEnabled) host.StartScripts();
 
 if (config.UdpPort > 0)

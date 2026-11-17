@@ -4,7 +4,11 @@ using Lua.Standard;
 namespace Sacred.GameServer.Scripting;
 
 /// <summary>A player as scripts see it.</summary>
-public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId, double OnlineSeconds = 0);
+/// <remarks><see cref="Name"/> is the FIRSTCONTACT name and <see cref="Key"/>/<see cref="LobbyId"/> hold lobby identities: they never
+/// reach Lua. Scripts get <see cref="Character"/> (the host strips the "account." prefix of lobby names) and an opaque per-server
+/// <c>uid</c> derived from <see cref="Key"/>.</remarks>
+public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId, double OnlineSeconds = 0,
+    string? Character = null);
 
 /// <summary>A defeated creature: its object reference, its type (Items.pak type), level and name (the game's text: the creature's own
 /// name, else its type's; null without --game-dir) when the server knows them.</summary>
@@ -126,14 +130,23 @@ public sealed class ScriptHost
     {
         mod = ScriptEndpoints.ModName(mod);
         if (!_stores.TryGetValue(mod, out var store))
-            _stores[mod] = store = new ModStore(Path.Combine(_options.DataDirectory, mod + ".json")) { MaxChars = _options.MaxStoreChars };
+            _stores[mod] = store = new ModStore(Path.Combine(_options.DataDirectory, mod + ".json"))
+            {
+                MaxChars = _options.MaxModStoreChars,
+                BeforeGrow = growth =>
+                {
+                    var total = _stores.Values.Sum(s => s.Size) + growth;
+                    if (total > _options.MaxTotalStoreChars)
+                        throw new InvalidOperationException($"all mods' storage full: {total:N0} of {_options.MaxTotalStoreChars:N0} characters");
+                },
+            };
         return store;
     }
 
     private ModStore CurrentStore => _currentFile.Length > 0 ? StoreOf(_currentFile) : throw new InvalidOperationException("storage is only available inside a script");
 
     /// <summary>Writes every changed mod file (temporary file + move).</summary>
-    public void FlushStores() { foreach (var store in _stores.Values) store.Flush(); }
+    public void FlushStores(bool wait = false) { foreach (var store in _stores.Values) store.Flush(wait); }
 
     /// <summary>Loaded files and their load errors (diagnostics, web UI).</summary>
     public IReadOnlyList<(string File, string? Error)> Files => _files;
@@ -521,7 +534,7 @@ public sealed class ScriptHost
 
     /// <summary>The per-hero owner key of a player table, or null for the mod's plain keys.</summary>
     private static string? OwnerOf(LuaValue value) =>
-        value.Type == LuaValueType.Table && value.Read<LuaTable>()["key"] is { Type: LuaValueType.String } key ? key.Read<string>() : null;
+        value.Type == LuaValueType.Table && value.Read<LuaTable>()["uid"] is { Type: LuaValueType.String } uid ? uid.Read<string>() : null;
 
     private static string? CharacterOf(LuaValue value) =>
         value.Type == LuaValueType.Table && value.Read<LuaTable>()["character"] is { Type: LuaValueType.String } name ? name.Read<string>() : null;
@@ -618,11 +631,46 @@ public sealed class ScriptHost
         return File.ReadAllText(path);
     }
 
-    private static LuaTable PlayerTable(ScriptPlayer p) => new(0, 10)
+    /// <summary>A player for Lua: no account name, no lobby id, no owner key. <c>uid</c> is an HMAC of the hero's identity with this
+    /// server's own secret: stable across sessions on this server, useless anywhere else.</summary>
+    private LuaTable PlayerTable(ScriptPlayer p)
     {
-        ["slot"] = p.Slot, ["name"] = p.Name, ["character"] = ModStore.DisplayName(p.Name), ["key"] = p.Key, ["class"] = p.Class, ["level"] = p.Level,
-        ["in_game"] = p.InGame, ["host"] = p.IsHost, ["id"] = p.LobbyId, ["online"] = p.OnlineSeconds,
-    };
+        var character = ModStore.DisplayName(p.Character ?? p.Name);
+        return new(0, 9)
+        {
+            ["slot"] = p.Slot, ["name"] = character, ["character"] = character, ["uid"] = Uid(p.Key), ["class"] = p.Class, ["level"] = p.Level,
+            ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds,
+        };
+    }
+
+    private byte[]? _uidSecret;
+
+    /// <summary>The opaque per-server identity of a hero: HMAC-SHA256(server secret, owner key), 16 bytes as hex. The secret is
+    /// created once in the data folder (<c>.uid-secret</c>), so ids stay stable across restarts of this server.</summary>
+    public string Uid(string key)
+    {
+        _uidSecret ??= LoadSecret();
+        var hash = System.Security.Cryptography.HMACSHA256.HashData(_uidSecret, System.Text.Encoding.UTF8.GetBytes(key));
+        return Convert.ToHexStringLower(hash.AsSpan(0, 16));
+    }
+
+    private byte[] LoadSecret()
+    {
+        var path = Path.Combine(_options.DataDirectory, ".uid-secret");
+        try
+        {
+            if (File.Exists(path) && Convert.FromHexString(File.ReadAllText(path).Trim()) is { Length: >= 32 } existing) return existing;
+            var created = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+            Directory.CreateDirectory(_options.DataDirectory);
+            File.WriteAllText(path, Convert.ToHexString(created));
+            return created;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or FormatException)
+        {
+            Log.Info($"SCRIPT: uid secret not stored ({e.Message}); player uids change at the next start.");
+            return System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        }
+    }
 }
 
 /// <summary>A script call ran out of its instruction budget.</summary>

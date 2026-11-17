@@ -59,7 +59,7 @@ public sealed partial class GameServerHost : IScriptServer
 
     private void StopScripts()
     {
-        _scripts?.Dispose(); _scripts?.FlushStores();
+        _scripts?.Dispose(); _scripts?.FlushStores(wait: true);
         while (_modRequests.TryDequeue(out var pending)) pending.Done.TrySetResult(new Web.ModResponse(503, "text/plain; charset=utf-8", "server stopping"));
     }
 
@@ -165,7 +165,7 @@ public sealed partial class GameServerHost : IScriptServer
         if (_world.TryGet(s.Slot, out var hero)) level = CompactLevel(hero.Payload[(hero.LongPrefix ? 24 : 8)..]);
         var key = s.LobbyIdentity is not (0 or -1) ? $"id:{s.LobbyIdentity}:{s.CharacterBlock}" : "name:" + s.Name;
         return new ScriptPlayer(s.Slot, s.Name, key, s.RosterEntry[RosterClass], level, s.InGame, s.IsHost, s.LobbyIdentity,
-            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0);
+            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0, CharacterName(s));
     }
 
     private void ExecuteScriptKicks()
