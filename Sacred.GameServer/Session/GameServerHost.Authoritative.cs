@@ -134,6 +134,7 @@ public sealed partial class GameServerHost
     private void PumpAuthoritative(long now)
     {
         PumpPurchases(now);
+        if (_tokenPending.Count > 0) PumpTokenPending(now);
         var interval = _config.Auth.SaveIntervalSeconds * 1000L;
         for (var slot = 1; slot <= MaxSlots; slot++)
         {
