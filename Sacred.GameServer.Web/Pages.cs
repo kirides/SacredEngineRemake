@@ -117,8 +117,8 @@ internal static class Pages
     private static void Session(StringBuilder sb, ServerOverview o)
     {
         sb.Append("<section class=\"card\" id=\"session\"><h2>").Append(Icon("pulse")).Append("Session</h2><div class=\"toggles\">");
-        Form(sb, "lock", $"<input type=\"hidden\" name=\"value\" value=\"{(o.Locked ? 0 : 1)}\"><button class=\"tile {(o.Locked ? "active" : "")}\">{Icon(o.Locked ? "lock" : "unlock")}<b>{(o.Locked ? "Locked" : "Open")}</b><small>{(o.Locked ? "Click to let players join" : "Click to stop new players")}</small></button>");
-        Form(sb, "pause", $"<input type=\"hidden\" name=\"value\" value=\"{(o.Paused ? 0 : 1)}\"><button class=\"tile {(o.Paused ? "active" : "")}\">{Icon(o.Paused ? "pause" : "play")}<b>{(o.Paused ? "Paused" : "Running")}</b><small>{(o.Paused ? "Click to continue" : "Click to pause the game")}</small></button>");
+        Tile(sb, "lock", o.Locked, "lock", "unlock", "Locked", "Open", "Click to let players join", "Click to stop new players");
+        Tile(sb, "pause", o.Paused, "pause", "play", "Paused", "Running", "Click to continue", "Click to pause the game");
         sb.Append("</div>");
         sb.Append("<form method=\"post\" action=\"actions/settings\" class=\"settings\">");
         sb.Append($"<label class=\"f\"><span>Server name</span><input name=\"text\" type=\"text\" maxlength=\"60\" value=\"{E(o.Name)}\" required></label>");
@@ -158,6 +158,16 @@ internal static class Pages
     private static void Number(StringBuilder sb, string name, string label, long value, int min) =>
         sb.Append("<label class=\"f\"><span>").Append(label).Append("</span><input name=\"").Append(name).Append("\" type=\"number\" min=\"")
           .Append(min).Append("\" value=\"").Append(value).Append("\"></label>");
+
+    /// <summary>
+    /// A toggle tile. The markup of the other state travels along in <c>data-alt</c> so the page can flip it the moment it is clicked,
+    /// before the game loop has acted: the server's answer then replaces it.
+    /// </summary>
+    private static void Tile(StringBuilder sb, string action, bool on, string onIcon, string offIcon, string onTitle, string offTitle, string onHint, string offHint)
+    {
+        string Inner(bool state) => Icon(state ? onIcon : offIcon) + "<b>" + (state ? onTitle : offTitle) + "</b><small>" + (state ? onHint : offHint) + "</small>";
+        Form(sb, action, $"<input type=\"hidden\" name=\"value\" value=\"{(on ? 0 : 1)}\"><button class=\"tile {(on ? "active" : "")}\" data-alt=\"{E(Inner(!on))}\">{Inner(on)}</button>");
+    }
 
     private static void Bans(StringBuilder sb, IReadOnlyList<BanEntry> bans)
     {
@@ -251,7 +261,7 @@ button.ghost{background:transparent}button.bad{color:var(--bad);border-color:col
 button.icon{padding:.4rem;width:2.1rem;height:2.1rem}
 .toggles{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin-bottom:.9rem}.toggles form{display:block}
 .tile{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:.7rem;text-align:left;width:100%;padding:.75rem .9rem;justify-items:start}.tile .i{grid-row:span 2;align-self:center;width:1.5rem;height:1.5rem;color:var(--ok)}.tile b{line-height:1.2}.tile small{color:var(--dim);font-size:.75rem}
-.tile.active{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--card2))}.tile.active .i{color:var(--warn)}
+.tile.pending{opacity:.7;cursor:progress}.tile:disabled{cursor:progress}.tile.active{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--card2))}.tile.active .i{color:var(--warn)}
 .floodgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(10rem,1fr));gap:.6rem}.settings{display:grid;gap:.8rem}.f{display:grid;gap:.3rem}.f>span{font-size:.8rem;color:var(--dim)}.f.narrow input{max-width:8rem}.ctl{display:flex;gap:.5rem}.ctl select{flex:1}.check{display:flex;align-items:center;gap:.5rem;font-size:.85rem;color:var(--dim)}.check input{min-height:0}.settings .row.end{display:flex;justify-content:flex-end}
 .small{font-size:.85rem}.dim{color:var(--dim)}
 .add{display:flex;gap:.5rem;margin-top:.7rem}.add input{flex:1}
@@ -314,15 +324,31 @@ es.onopen=function(){live.textContent='live';live.className='live on';};es.onerr
 $('chatForm').addEventListener('submit',function(e){e.preventDefault();var f=e.target;
 fetch(f.action,{method:'POST',headers:{'Accept':'application/json'},body:new URLSearchParams(new FormData(f))}).then(function(r){if(r.ok){f.text.value='';f.text.focus();}});});
 
+// Lock/pause flip at once (the markup of the other state is in data-alt), stay disabled until the server confirms, and the page
+// polls every 250 ms meanwhile. The swap leaves #session alone while a flip is unconfirmed (max 5 s, then the server's state wins).
+var fastUntil=0,flips={};
+function fast(){fastUntil=Date.now()+5000;}
+if(t)fast();
+function sessionBusy(src){var busy=false,now=Date.now();Object.keys(flips).forEach(function(a){var f=src.querySelector('form[action="actions/'+a+'"] input[name=value]');
+if(f&&f.value===flips[a].expected){delete flips[a];}else if(now-flips[a].since>5000){delete flips[a];toast('The server did not confirm the change.');}else busy=true;});return busy;}
+function toast(text){var d=document.createElement('div');d.id='toast';d.setAttribute('role','status');d.textContent=text;document.body.append(d);setTimeout(function(){d.remove();},3600);}
+document.addEventListener('submit',function(e){var f=e.target,a=f.getAttribute&&f.getAttribute('action');if(a!=='actions/lock'&&a!=='actions/pause')return;
+e.preventDefault();var b=f.querySelector('button.tile'),h=f.querySelector('input[name=value]');if(b.disabled)return;
+var body=new URLSearchParams(new FormData(f));var alt=b.dataset.alt;b.dataset.alt=b.innerHTML;b.innerHTML=alt;b.classList.toggle('active');b.classList.add('pending');b.disabled=true;
+var key=a.slice(8);h.value=h.value==='1'?'0':'1';flips[key]={expected:h.value,since:Date.now()};
+fetch(a,{method:'POST',headers:{'Accept':'application/json'},body:body}).then(function(r){if(!r.ok)throw new Error(r.status);fast();refresh();}).catch(function(){delete flips[key];toast('The change was refused.');refresh();});});
+
 // swap the live blocks without disturbing an input the user is typing in or a form with unsaved edits
 document.addEventListener('input',function(e){if(e.target.form)e.target.form.dataset.dirty='1';});
-setInterval(function(){if(ask.open)return;fetch('fragment',{cache:'no-store'}).then(function(r){return r.ok?r.text():null;}).then(function(h){if(!h)return;
+function refresh(){if(ask.open)return Promise.resolve();return fetch('fragment',{cache:'no-store'}).then(function(r){return r.ok?r.text():null;}).then(function(h){if(!h)return;
 var doc=new DOMParser().parseFromString(h,'text/html');
-['head','players','session','flood','bans'].forEach(function(id){var cur=$(id),src=doc.getElementById(id);if(!cur||!src||cur.contains(document.activeElement)||cur.querySelector('form[data-dirty]'))return;if(cur.innerHTML!==src.innerHTML)cur.innerHTML=src.innerHTML;});
+['head','players','session','flood','bans'].forEach(function(id){var cur=$(id),src=doc.getElementById(id);if(id==='session'&&src&&sessionBusy(src))return;if(!cur||!src||cur.contains(document.activeElement)||cur.querySelector('form[data-dirty]'))return;if(cur.innerHTML!==src.innerHTML)cur.innerHTML=src.innerHTML;});
 var sel=$('chatTo'),v=sel.value,opts=doc.querySelectorAll('#players [data-msg]');
 var slots=Array.prototype.map.call(opts,function(o){return o.dataset.msg;});var have=Array.prototype.map.call(sel.options,function(o){return o.value;}).slice(1);
 if(slots.join()!==have.join()){while(sel.options.length>1)sel.remove(1);Array.prototype.forEach.call(doc.querySelectorAll('#players .player'),function(p){var s=p.querySelector('[data-msg]').dataset.msg;sel.add(new Option('#'+s+' '+p.querySelector('.who b').textContent,s));});sel.value=slots.indexOf(v)>=0||v==='0'?v:'0';}
-});},3000);
+}).catch(function(){});}
+function tick(){refresh().then(function(){setTimeout(tick,Date.now()<fastUntil?250:3000);});}
+tick();
 })();
 """;
 }

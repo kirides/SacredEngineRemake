@@ -117,14 +117,17 @@ public sealed partial class GameServerHost : IServerAdmin
     /// <summary>Once per tick: run queued commands, refresh the snapshot four times a second.</summary>
     private void PumpAdmin(long now)
     {
+        var ranCommand = false;
         while (_adminCommands.TryDequeue(out var command))
         {
+            ranCommand = true;
             Interlocked.Decrement(ref _adminQueued);
             try { Execute(command); }
             catch (Exception e) when (e is InvalidOperationException or ArgumentException or IndexOutOfRangeException)
             { Log.Info($"web admin: command {command.Kind} failed: {e.Message}"); }
         }
-        if (now < _nextSnapshotMs) return;
+        // A command changes what the page shows: refresh the snapshot in this very tick instead of up to 250 ms later.
+        if (now < _nextSnapshotMs && !ranCommand) return;
         _nextSnapshotMs = now + SnapshotIntervalMs;
         lock (_adminGate)
         {
