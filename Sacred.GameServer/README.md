@@ -148,6 +148,7 @@ server.drop_item(player, { quality = 0..14, category = "ring", level = n, class 
 server.drop_gold(player, amount)       -- { ref, type, amount } or nil, error: a gold pile next to the hero
 server.random()  server.random(n)  server.random(m, n)
 server.creature_name(type or monster)  server.item_name(type or item)   -- the game's name, or nil
+server.hero(player or slot)            -- table, or nil + reason: the server's view of a hero (see "Hero data for scripts")
 server.top(key, n)                     -- { { name, value }, ... }: this mod's per-hero numbers, also offline heroes
 server.endpoint(path, fn [, { public = true, description = "..." }])   -- GET /mods/{script}/{path}
 server.page(path, html or fn [, { public = true, title = "..." }])     -- a single-file HTML page at the same address
@@ -226,6 +227,7 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
 * Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
   kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
   shows the kill ladder in chat. `player.online` is the current session in seconds.
+* Mods built on `server.hero` and `net`: `scripts-examples/build_sharer.lua` (players publish their build, stored per mod, a searchable page, JSON endpoints and a channel for the Sacred Gear panel `buildsharer`) and `scripts-examples/quest_helper.lua` (a hero's quest records with an owner-written catalog of names, areas and hints, change notices, a page; Gear panel `questhelper`). Client halves: sacred-bild `gear/examples/buildsharer` and `gear/examples/questhelper`; docs there in `docs/GearServerMods.md`. `ModScriptTests` cover them.
 * `drop_gold` drops a gold pile the same way (no `--game-dir` needed). Money is an ordinary item object: resources
   0x140C..0x140F (Gold client table 0x949920 / test 0x43AF50, GameServer.exe 0x5B0274 / 0x409D30), pile size by amount as the
   game picks it when gold is dropped (0x4AEC1E: below 50, 350, 1000, else). The amount is the value block's price (+8, cItemBase
@@ -234,6 +236,18 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
   adds it to the hero's gold (values +0x46, AddGold 0x57FD80, at most 0x7FFFFFFE, the cap `drop_gold` applies). Amounts are
   whole numbers of at least 1. **Unverified with a real client:** as for `drop_item`, that the owner's pick-up of a
   server-referenced object runs that path, and that the new gold reaches the server in the hero's values (saves).
+
+### Hero data for scripts (`server.hero`)
+
+`server.hero(player or slot)` returns a fresh read-only table of what the server knows about that hero, or `nil` and a reason. It is the
+data of the web UI's `/api/heroes` (the same code, `HeroOf`), so it exists only while the server keeps hero state (the web UI runs, or
+`--authoritative`) and once the player's client has sent its hero. Fields: `character`, `class`, `level`, `experience`, `gold`,
+`skill_points`, `combos`, `in_game`; `skills` (`id`, `level`, `bonus`, `name`), `attribute_points` (the six spent points), `attributes`
+(six totals, only after a full 0x16B state), `arts` (`kind`, `id`, `rank`, `name`), `equipment` (`slot` 0..18, `type`, `level`, `rarity`
+0..15, `sockets`, `name`), `inventory_items` (a count), `quest_pairs` (`key`, `value`: the `[key][word04]` records of the inventory
+stream, see "Quest pairs"). Names are the game's text and exist only with `--game-dir`. No account, lobby id or owner key. What it does not
+have: the quest journal, active quests and their progress (world state of the game's interpreter, not in a hero file and on no wire message).
+In the five hero saves we have, the quest pairs are empty, so a script cannot rely on them being filled.
 
 ### Custom net messages for scripts (`net`)
 

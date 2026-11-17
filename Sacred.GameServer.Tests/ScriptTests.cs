@@ -155,12 +155,12 @@ public class ScriptTests
         Assert.AreEqual("Own words.", mods["b"].Description);
         Assert.IsNotNull(mods["c"].Error);
         Assert.IsNull(mods["d"].Description);
-        foreach (var example in new[] { "ladders.lua", "kill_milestones.lua", "loot_rewards.lua" })
+        foreach (var example in new[] { "ladders.lua", "kill_milestones.lua", "loot_rewards.lua", "build_sharer.lua", "quest_helper.lua" })
         {
             folder.Write(example, Example(example));
         }
         host.Load();
-        Assert.IsTrue(host.Mods.Where(m => m.Mod is "ladders" or "kill_milestones" or "loot_rewards").All(m => m.Description is { Length: > 10 } && m.Error is null));
+        Assert.IsTrue(host.Mods.Where(m => m.Mod is "ladders" or "kill_milestones" or "loot_rewards" or "build_sharer" or "quest_helper").All(m => m.Description is { Length: > 10 } && m.Error is null));
     }
 
     [TestMethod]
