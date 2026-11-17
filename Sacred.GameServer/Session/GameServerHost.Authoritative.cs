@@ -62,7 +62,7 @@ public sealed partial class GameServerHost
                 return true;
             }
             case 0x198:
-                if (m.Payload.Length < 4 || BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) != s.Slot) { Violation(s, "trade message with a foreign sender"); return false; }
+                // [partner slot][sub command]: the first word names the partner, not the sender (case 0x4C850E)
                 MarkHeroChanged(s);
                 return true;
             case 0x141: case 0x142: case 0x11D: case 0x11E: case 0x13E: case 0x13F: case 0x122:   // pick-up, equipment, inventory

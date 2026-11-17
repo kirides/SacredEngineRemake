@@ -128,23 +128,22 @@ public partial class AuthoritativeTests
     }
 
     [TestMethod]
-    public void SpoofedTradeSenderIsDroppedAndRepeatOffendersAreKicked()
+    public void TradeMessagesNameThePartnerAndAreNotViolations()
     {
+        // 0x198 is [partner slot][sub command]: the first word is the other player, so it is not a "spoofed sender" (case 0x4C850E).
         using var server = new Server(c => c.Auth.MaxViolations = 2);
         var (host, joiner) = Started(server);
         using (host) using (joiner)
         {
-            var spoof = new byte[8];
-            BinaryPrimitives.WriteUInt32LittleEndian(spoof, host.Slot);
-            joiner.Send(0x198, spoof);
-            Assert.IsTrue(host.Silent(0x198));
-            var own = new byte[8];
-            BinaryPrimitives.WriteUInt32LittleEndian(own, joiner.Slot);
-            joiner.Send(0x198, own);
-            Assert.IsTrue(joiner.Silent(0x157));                              // the genuine trade is not a violation
-            joiner.Send(0x198, spoof);                                        // second violation: kicked
-            joiner.WaitFor(0x157);
-            host.WaitFor(0x150);
+            for (var i = 0; i < 4; i++)
+            {
+                var invite = new byte[8];
+                BinaryPrimitives.WriteUInt32LittleEndian(invite, host.Slot);
+                BinaryPrimitives.WriteUInt32LittleEndian(invite.AsSpan(4), i % 2 == 0 ? 0x20u : 0x22u);
+                joiner.Send(0x198, invite);
+                host.WaitFor(0x198);
+            }
+            Assert.IsTrue(joiner.Silent(0x157), "nobody is kicked for trading");
         }
     }
 

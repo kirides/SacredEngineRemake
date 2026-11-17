@@ -83,7 +83,7 @@ public static class Routing
             0x032, 0x034, 0x035, 0x036, 0x037, 0x039, 0x03B, 0x03D, 0x040, 0x101, 0x102, 0x104, 0x105, 0x106, 0x118])
             Internal[opcode] = true;
         // Network effects that need state this server does not model yet (OpcodeTable class Todo): dropped silently.
-        foreach (var opcode in (ReadOnlySpan<ushort>)[0x004, 0x139, 0x180, 0x198]) Pending[opcode] = true;
+        foreach (var opcode in (ReadOnlySpan<ushort>)[0x004, 0x139, 0x180]) Pending[opcode] = true;
     }
 
     private static readonly bool[] Consumed = new bool[OpcodeLimit];

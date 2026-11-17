@@ -215,7 +215,7 @@ public static class OpcodeTable
         new(0x195, 0x4C9942, OpcodeClass.Forward, "mode 2 InGame"),
         new(0x196, 0x4CC582, OpcodeClass.Forward, "mode 2 InGame"),
         new(0x197, 0x4C82C9, OpcodeClass.Consumed, "applied to the server's own state only"),
-        new(0x198, 0x4C850E, OpcodeClass.Todo, "player trade state machine (27 send sites, per-player trade state +0x2D0..): not modelled; the authoritative save hook stays"),
+        new(0x198, 0x4C850E, OpcodeClass.Answered, "OnTrade: trade state machine (pairing, offers, gold, lock-in, cancel); offer validation and the exchange in the object world are TODO"),
         new(0x199, 0x4C84F6, OpcodeClass.Forward, "mode 3 SectorVisible"),
         new(0x19A, 0x4CC5BD, OpcodeClass.NoOp, "no-op case (does nothing)"),
         new(0x19B, 0x4C84DE, OpcodeClass.Forward, "mode 3 SectorVisible"),

@@ -267,7 +267,7 @@ Index table `0x4CC9C4` (opcode - 3), jump table `0x4CC6E0`, 185 distinct cases; 
 | 0x195 | 0x4C9942 | Forward | mode 2 InGame |
 | 0x196 | 0x4CC582 | Forward | mode 2 InGame |
 | 0x197 | 0x4C82C9 | Consumed | applied to the server's own state only |
-| 0x198 | 0x4C850E | Todo | player trade state machine (27 send sites, per-player trade state +0x2D0..): not modelled; the authoritative save hook stays |
+| 0x198 | 0x4C850E | Answered | OnTrade (Session/GameServerHost.Trade.cs): trade state machine; offer validation and the item exchange in the object world are TODO |
 | 0x199 | 0x4C84F6 | Forward | mode 3 SectorVisible |
 | 0x19A | 0x4CC5BD | NoOp | no-op case (does nothing) |
 | 0x19B | 0x4C84DE | Forward | mode 3 SectorVisible |
@@ -319,4 +319,23 @@ Index table `0x4CC9C4` (opcode - 3), jump table `0x4CC6E0`, 185 distinct cases; 
 | 0x1D4 | 0x4C8012 | Forward | mode 2 InGame |
 | 0x1D5 | 0x4C8089 | Forward | mode 2 InGame |
 
-Counts: 229 cases = 60 Forward, 57 ForwardAfterState (state part TODO), 43 Answered, 35 Consumed, 22 Internal, 7 NoOp, 4 Todo (0x004, 0x139, 0x180, 0x198), 1 Admission. Opcodes above 0x1D5 belong to extensions: `GameServerHost.RegisterOpcode(opcode, handler)`; anything else there is still logged once as unhandled.
+Counts: 229 cases = 60 Forward, 57 ForwardAfterState (state part TODO), 44 Answered, 35 Consumed, 22 Internal, 7 NoOp, 3 Todo (0x004, 0x139, 0x180), 1 Admission.
+
+### 0x198 trade (case 0x4C850E)
+
+Client message `[partner slot][sub command][...]`; the server answers with 0x198 `[other slot][code]` (origin = the other player). Per player: state (0 none, 1 invitation sent, 2 locked in, 3 trading, 4 offer rejected), partner, gold, offered references (0x23 words) and their item data (0x1AC bytes). A partner that does not exist, is not connected or not in the world ends the trade: the sender is told `[partner][0x31]` and the partner (if connected) gets the message with first word 0.
+
+| Sub | Precondition | Effect |
+|---|---|---|
+| 0x20 invite | own 0; partner 0 | own 1; message forwarded to the partner with first word = sender. Partner not 0: `[partner][0x24]` back (busy) |
+| 0x21 accept | partner 1 | both 3, offers cleared; both get `[other][0x25]` |
+| 0x22 withdraw | own 1 | own reset; `[partner][0x31]` to the sender, message (first word 0, origin 0) to the partner |
+| 0x23 decline | partner 1 | partner reset; the message (first word 0, origin 0) goes to partner and sender |
+| 0x26 offer | own 3; partner 2/3/4 | offer stored; sender `[partner][0x2A]`, partner `[sender][0x2B]`, message forwarded (offer valid; with an invalid one the original sends 0x2C/0x2D and sets state 4 - needs the object world, TODO) |
+| 0x27 gold | own 3; partner 2/3/4 | gold stored; partner 2 becomes 3 and the sender gets `[partner][0x2A]`; message forwarded |
+| 0x28 lock in | own 3 | own 2; sender `[partner][0x29]`; forwarded; if both are 2: nothing offered -> both `[other][0x31]`, else both get `[other][0x2F][partner gold][own gold][partner item data]`; both trades reset |
+| 0x2A unlock | own 2 | own 3; sender `[partner][0x2B]`; forwarded |
+| 0x2E re-check | own 2/3/4 | state 4 -> 3 when the partner's offer is valid; sender `[partner][0x2B]`, partner `[sender][0x2A]` |
+| 0x30 cancel | own 2/3/4 | both reset; both get `[other][0x31]` |
+
+A leaving player (0x150/0x01C/any removal) ends the trade of its partner with `[leaver][0x31]` (origin = leaver) before its own state is cleared (case 0x4CA4F9).

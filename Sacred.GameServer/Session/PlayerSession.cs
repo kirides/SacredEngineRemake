@@ -33,6 +33,7 @@ public sealed class PlayerSession
     public long JoinedMs;            // server clock at admission (online time)
     public int Violations;           // authoritative mode: rejected client values
     public long HeroSaveDueMs, NextPeriodicSaveMs;   // authoritative mode: debounced / periodic hero save to the lobby (0 = none)
+    public readonly TradeState Trade = new();   // 0x198 trade state (GameServerHost.Trade.cs)
     public bool CharacterReceived;   // +0x8D, Closed Net character delivered
 
     public string Describe() => Slot != 0 ? $"#{Slot} {Name}" : $"{Connection.RemoteEndPoint}";

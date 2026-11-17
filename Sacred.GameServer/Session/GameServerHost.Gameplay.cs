@@ -81,6 +81,7 @@ public sealed partial class GameServerHost
             case 0x043: AnswerProbe(s, m); return;                  // 0x4CC4B9
             case 0x044: case 0x045: ProbeResult(s, m); return;      // 0x4CC4FD / 0x4CC522
             case 0x134: case 0x135: Pause(s, m); return;            // 0x4C4830 / 0x4C47AB
+            case 0x198: OnTrade(s, m); return;                      // 0x4C850E: trade state machine (GameServerHost.Trade.cs)
             case 0x01D: OnGameStart(s); return;                     // 0x4CAD99
             case 0x17D: ForwardKill(s, m); return;                  // 0x4C647E: tails 0x4C97C4 (mode 6) / 0x4C81D1 (mode 8)
             case 0x156: case 0x157: Kick(s, m); return;             // 0x4C4A5B
@@ -339,6 +340,7 @@ public sealed partial class GameServerHost
             SendMessage(s, 0x157, 0, 0, kick);
             s.Connection.Flush();
         }
+        CancelTradeOf(s);
         if (_scripts is not null) ScriptPlayerEvent("leave", s);
         if (_config.Auth.Enabled) AuthoritativeLeave(s);
         else if (TrackHeroes) ForgetHeroState(s.Slot);
