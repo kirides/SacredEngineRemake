@@ -50,6 +50,7 @@ internal static class Pages
         sb.Append("</header><main class=\"grid\"><div class=\"col\">");
         Players(sb, players);
         Session(sb, o);
+        Flood(sb, admin.Flood());
         Bans(sb, admin.Bans());
         sb.Append("</div><section class=\"card chat\" id=\"chatCard\"><h2>").Append(Icon("chat")).Append("Live chat<span class=\"live\" id=\"live\" title=\"connection\">connecting</span></h2>")
           .Append("<div id=\"chat\" aria-live=\"polite\">");
@@ -72,7 +73,7 @@ internal static class Pages
         var o = admin.Overview();
         var sb = new StringBuilder(8 * 1024);
         sb.Append("<header class=\"top\">"); Head(sb, o); sb.Append("</header>");
-        Players(sb, admin.Players()); Session(sb, o); Bans(sb, admin.Bans());
+        Players(sb, admin.Players()); Session(sb, o); Flood(sb, admin.Flood()); Bans(sb, admin.Bans());
         return sb.ToString();
     }
 
@@ -136,6 +137,27 @@ internal static class Pages
         Form(sb, "shutdown", $"<button class=\"bad\">{Icon("power")}Shut down server</button>", "Shut the server down?", "The process exits and does not restart by itself.", false, inline: true);
         sb.Append("</div></details></section>");
     }
+
+    /// <summary>Flood protection limits, changed live (no restart, nobody is kicked by a change).</summary>
+    private static void Flood(StringBuilder sb, FloodSettings f)
+    {
+        sb.Append("<section class=\"card\" id=\"flood\"><h2>").Append(Icon("ban")).Append("Flood protection</h2>");
+        sb.Append("<p class=\"dim small\">").Append(f.Drops).Append(" dropped &middot; ").Append(f.Removed).Append(" removed &middot; ")
+          .Append(f.RefusedConnections).Append(" connections refused. Changes apply at once to everybody's next messages; nobody is kicked by a change.</p>");
+        sb.Append("<form method=\"post\" action=\"actions/flood-form\" class=\"settings\">");
+        sb.Append("<label class=\"check\"><input type=\"hidden\" name=\"enabled\" value=\"0\"><input type=\"checkbox\" name=\"enabled\" value=\"1\"")
+          .Append(f.Enabled ? " checked" : "").Append("> Enabled</label><div class=\"floodgrid\">");
+        Number(sb, "msg", "Messages / s", f.MessagesPerSecond, 1); Number(sb, "msgBurst", "Message burst", f.MessageBurst, 1);
+        Number(sb, "kbps", "Data KB / s", f.BytesPerSecond / 1024, 1); Number(sb, "kbBurst", "Data burst KB", f.ByteBurst / 1024, 1);
+        Number(sb, "chat", "Chat lines / s", f.ChatPerSecond, 1); Number(sb, "chatBurst", "Chat burst", f.ChatBurst, 1);
+        Number(sb, "kick", "Kick after drops (0 = never)", f.KickAfterDrops, 0); Number(sb, "window", "Within seconds", f.StrikeWindowSeconds, 1);
+        Number(sb, "grace", "Upload grace at join (s)", f.UploadGraceSeconds, 0); Number(sb, "perAddress", "Connections per address (0 = any)", f.MaxConnectionsPerAddress, 0);
+        sb.Append("</div><div class=\"row end\"><button class=\"primary\">Apply limits</button></div></form></section>");
+    }
+
+    private static void Number(StringBuilder sb, string name, string label, long value, int min) =>
+        sb.Append("<label class=\"f\"><span>").Append(label).Append("</span><input name=\"").Append(name).Append("\" type=\"number\" min=\"")
+          .Append(min).Append("\" value=\"").Append(value).Append("\"></label>");
 
     private static void Bans(StringBuilder sb, IReadOnlyList<BanEntry> bans)
     {
@@ -230,7 +252,7 @@ button.icon{padding:.4rem;width:2.1rem;height:2.1rem}
 .toggles{display:grid;grid-template-columns:1fr 1fr;gap:.7rem;margin-bottom:.9rem}.toggles form{display:block}
 .tile{display:grid;grid-template-columns:auto 1fr;grid-template-rows:auto auto;column-gap:.7rem;text-align:left;width:100%;padding:.75rem .9rem;justify-items:start}.tile .i{grid-row:span 2;align-self:center;width:1.5rem;height:1.5rem;color:var(--ok)}.tile b{line-height:1.2}.tile small{color:var(--dim);font-size:.75rem}
 .tile.active{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,var(--card2))}.tile.active .i{color:var(--warn)}
-.settings{display:grid;gap:.8rem}.f{display:grid;gap:.3rem}.f>span{font-size:.8rem;color:var(--dim)}.f.narrow input{max-width:8rem}.ctl{display:flex;gap:.5rem}.ctl select{flex:1}.check{display:flex;align-items:center;gap:.5rem;font-size:.85rem;color:var(--dim)}.check input{min-height:0}.settings .row.end{display:flex;justify-content:flex-end}
+.floodgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(10rem,1fr));gap:.6rem}.settings{display:grid;gap:.8rem}.f{display:grid;gap:.3rem}.f>span{font-size:.8rem;color:var(--dim)}.f.narrow input{max-width:8rem}.ctl{display:flex;gap:.5rem}.ctl select{flex:1}.check{display:flex;align-items:center;gap:.5rem;font-size:.85rem;color:var(--dim)}.check input{min-height:0}.settings .row.end{display:flex;justify-content:flex-end}
 .small{font-size:.85rem}.dim{color:var(--dim)}
 .add{display:flex;gap:.5rem;margin-top:.7rem}.add input{flex:1}
 .ban{display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding:.5rem 0;border-top:1px solid var(--line)}.ban small{display:block;color:var(--dim);font-size:.78rem}
@@ -292,10 +314,11 @@ es.onopen=function(){live.textContent='live';live.className='live on';};es.onerr
 $('chatForm').addEventListener('submit',function(e){e.preventDefault();var f=e.target;
 fetch(f.action,{method:'POST',headers:{'Accept':'application/json'},body:new URLSearchParams(new FormData(f))}).then(function(r){if(r.ok){f.text.value='';f.text.focus();}});});
 
-// swap the live blocks without disturbing an input the user is typing in
+// swap the live blocks without disturbing an input the user is typing in or a form with unsaved edits
+document.addEventListener('input',function(e){if(e.target.form)e.target.form.dataset.dirty='1';});
 setInterval(function(){if(ask.open)return;fetch('fragment',{cache:'no-store'}).then(function(r){return r.ok?r.text():null;}).then(function(h){if(!h)return;
 var doc=new DOMParser().parseFromString(h,'text/html');
-['head','players','session','bans'].forEach(function(id){var cur=$(id),src=doc.getElementById(id);if(!cur||!src||cur.contains(document.activeElement))return;if(cur.innerHTML!==src.innerHTML)cur.innerHTML=src.innerHTML;});
+['head','players','session','flood','bans'].forEach(function(id){var cur=$(id),src=doc.getElementById(id);if(!cur||!src||cur.contains(document.activeElement)||cur.querySelector('form[data-dirty]'))return;if(cur.innerHTML!==src.innerHTML)cur.innerHTML=src.innerHTML;});
 var sel=$('chatTo'),v=sel.value,opts=doc.querySelectorAll('#players [data-msg]');
 var slots=Array.prototype.map.call(opts,function(o){return o.dataset.msg;});var have=Array.prototype.map.call(sel.options,function(o){return o.value;}).slice(1);
 if(slots.join()!==have.join()){while(sel.options.length>1)sel.remove(1);Array.prototype.forEach.call(doc.querySelectorAll('#players .player'),function(p){var s=p.querySelector('[data-msg]').dataset.msg;sel.add(new Option('#'+s+' '+p.querySelector('.who b').textContent,s));});sel.value=slots.indexOf(v)>=0||v==='0'?v:'0';}

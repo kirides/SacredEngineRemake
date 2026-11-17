@@ -98,6 +98,7 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/api/overview", (RequestDelegate)(c => Json(c.Response, _admin.Overview(), WebUiJson.Default.ServerOverview)));
         app.MapGet("/api/players", (RequestDelegate)(c => Json(c.Response, _admin.Players().ToArray(), WebUiJson.Default.PlayerInfoArray)));
         app.MapGet("/api/bans", (RequestDelegate)(c => Json(c.Response, _admin.Bans().ToArray(), WebUiJson.Default.BanEntryArray)));
+        app.MapGet("/api/flood", (RequestDelegate)(c => Json(c.Response, _admin.Flood(), WebUiJson.Default.FloodSettings)));
         app.MapGet("/api/chat", (RequestDelegate)ChatPageEndpoint);
         app.MapGet("/api/chat/stream", (RequestDelegate)ChatStreamEndpoint);
         app.MapPost("/api/{command}", (RequestDelegate)ApiCommandEndpoint);
@@ -186,6 +187,7 @@ public sealed class WebUiServer : IAsyncDisposable
         var form = await request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
         var name = (string)context.GetRouteValue("command")!;
         if (name == "settings") { var (saved, problem) = Settings(form); await Respond(context, saved, problem).ConfigureAwait(false); return; }
+        if (name == "flood-form") { var (saved, problem) = FloodForm(form); await Respond(context, saved, problem).ConfigureAwait(false); return; }
         var body = new CommandRequest(Int(form["slot"]), Int(form["value"]), form["text"], form["reason"], form["address"]);
         // The chat box posts "to" (0 = everybody) and the mode form "mode"/"level".
         if (name == "say") { name = Int(form["to"]) is var to and > 0 ? "message" : "broadcast"; body = body with { Slot = Int(form["to"]) }; }
@@ -220,6 +222,37 @@ public sealed class WebUiServer : IAsyncDisposable
         if ((mode != current.Mode || level != current.Level) && !current.WorldAvailable) { Send("mode", new CommandRequest(Value: mode, Slot: level), "game mode", out var e); failure ??= e; }
         if (failure is not null) return (null, failure);
         return (commands.Count == 0 ? "Nothing to change." : "Saved: " + string.Join(", ", commands) + ".", null);
+    }
+
+    /// <summary>The flood protection form: only changed limits are sent (one SetFlood command), applied live by the game loop.</summary>
+    private (string? Notice, string? Error) FloodForm(IFormCollection form)
+    {
+        var current = _admin.Flood();
+        var pairs = new List<string>();
+        var changed = new List<string>();
+        void Field(string field, string key, int value, string label, int scale = 1)
+        {
+            var text = form[field].ToString();
+            if (text.Length == 0 || !int.TryParse(text, out var n) || n < 0 || n > int.MaxValue / scale) return;
+            n *= scale;
+            if (n == value) return;
+            pairs.Add($"{key}={n}"); changed.Add(label);
+        }
+        var enabled = form["enabled"].Contains("1");
+        if (enabled != current.Enabled) { pairs.Add($"FLOOD_PROTECTION={(enabled ? 1 : 0)}"); changed.Add(enabled ? "turned on" : "turned off"); }
+        Field("msg", "FLOOD_MESSAGES_PER_SECOND", current.MessagesPerSecond, "messages/s");
+        Field("msgBurst", "FLOOD_MESSAGE_BURST", current.MessageBurst, "message burst");
+        Field("kbps", "FLOOD_BYTES_PER_SECOND", current.BytesPerSecond, "data rate", 1024);
+        Field("kbBurst", "FLOOD_BYTE_BURST", current.ByteBurst, "data burst", 1024);
+        Field("chat", "FLOOD_CHAT_PER_SECOND", current.ChatPerSecond, "chat/s");
+        Field("chatBurst", "FLOOD_CHAT_BURST", current.ChatBurst, "chat burst");
+        Field("kick", "FLOOD_KICK_AFTER_DROPS", current.KickAfterDrops, "kick threshold");
+        Field("window", "FLOOD_STRIKE_WINDOW", current.StrikeWindowSeconds, "window");
+        Field("grace", "FLOOD_UPLOAD_GRACE", current.UploadGraceSeconds, "upload grace");
+        Field("perAddress", "MAX_CONNECTIONS_PER_ADDRESS", current.MaxConnectionsPerAddress, "connections per address");
+        if (pairs.Count == 0) return ("Nothing to change.", null);
+        var (_, error) = Run("flood", new CommandRequest(Text: string.Join(';', pairs)));
+        return error is null ? ("Flood protection: " + string.Join(", ", changed) + " (applied live).", null) : (null, error);
     }
 
     private async Task Respond(HttpContext context, string? notice, string? error = null)
@@ -355,11 +388,30 @@ public sealed class WebUiServer : IAsyncDisposable
                 return b.Value is >= 0 and <= 4 && b.Slot is >= 0 and <= 5 ? (new(AdminCommandKind.SetMode, b.Slot, b.Value), null) : (default, "value 0..4 and slot (level) 0..5 required");
             case "end-session": return (new(AdminCommandKind.EndSession), null);
             case "shutdown": return (new(AdminCommandKind.Shutdown), null);
+            case "flood": return FloodCommand(b.Text);
         }
         return (default, "unknown command");
     }
 
     private static bool Slot(int slot) => slot is >= 1 and <= 16;
+
+    /// <summary>Validates <c>KEY=VALUE</c> pairs for SetFlood: known keys only, whole numbers &gt;= 0.</summary>
+    private static (AdminCommand, string?) FloodCommand(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text) || text.Length > 1024) return (default, "text with KEY=VALUE pairs required");
+        foreach (var pair in text.Split([';', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var equals = pair.IndexOf('=');
+            var key = equals > 0 ? pair[..equals].Trim().Replace('-', '_').ToUpperInvariant() : "";
+            if (!FloodKeys.Contains(key)) return (default, $"unknown flood setting {(equals > 0 ? pair[..equals] : pair)}");
+            if (!int.TryParse(pair[(equals + 1)..].Trim(), out var value) || value < 0) return (default, $"{key} needs a whole number >= 0");
+        }
+        return (new(AdminCommandKind.SetFlood, Text: text), null);
+    }
+
+    private static readonly HashSet<string> FloodKeys = ["FLOOD_PROTECTION", "FLOOD_MESSAGES_PER_SECOND", "FLOOD_MESSAGE_BURST", "FLOOD_BYTES_PER_SECOND",
+        "FLOOD_BYTE_BURST", "FLOOD_CHAT_PER_SECOND", "FLOOD_CHAT_BURST", "FLOOD_KICK_AFTER_DROPS", "FLOOD_STRIKE_WINDOW", "FLOOD_UPLOAD_GRACE",
+        "MAX_CONNECTIONS_PER_ADDRESS"];
 
     /// <summary>Trims, drops control characters and limits the length; null when nothing is left.</summary>
     private static string? Clean(string? text)

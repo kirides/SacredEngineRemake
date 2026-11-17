@@ -56,6 +56,17 @@ public class FloodTests
     }
 
     [TestMethod]
+    public void LoweredBurstAppliesAtOnce()
+    {
+        var bucket = new RateBucket();
+        Assert.IsTrue(bucket.TryTake(0, 1, 10, 100));            // 99 left
+        Assert.IsTrue(bucket.TryTake(0, 1, 10, 3));              // capped to 3, one taken
+        Assert.IsTrue(bucket.TryTake(0, 1, 10, 3));
+        Assert.IsTrue(bucket.TryTake(0, 1, 10, 3));
+        Assert.IsFalse(bucket.TryTake(0, 1, 10, 3));
+    }
+
+    [TestMethod]
     public void ChatIsMutedOthersStrikeAndKick()
     {
         var options = new FloodOptions { MessagesPerSecond = 1, MessageBurst = 3, ChatPerSecond = 1, ChatBurst = 1, KickAfterDrops = 3 };   // the chat line also uses a message token

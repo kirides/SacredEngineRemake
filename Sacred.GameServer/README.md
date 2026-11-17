@@ -137,6 +137,12 @@ the hooks are one line each in connection set-up, `HandleCustomData` and `Dispat
 | free upload of world/hero states, banks, inventories before entering the world | 60 s after admission | `FLOOD_UPLOAD_GRACE` |
 | open connections per IP address (players behind one NAT share it) | 8 (0 = unlimited) | `MAX_CONNECTIONS_PER_ADDRESS` |
 
+All limits (and the on/off switch) can be changed while the server runs, from the web UI's "Flood protection" card or
+`POST /api/flood {"text":"FLOOD_MESSAGES_PER_SECOND=150;FLOOD_CHAT_PER_SECOND=1"}` (`GET /api/flood` shows the limits and the
+dropped/removed/refused counters). The change runs on the game loop like every admin command and is logged and shown in the live
+log; nobody is kicked by it: lower rates apply to the next messages, a lower burst caps each player's remaining allowance at once,
+a lower connection limit only refuses new connections. Changes are not written back to the config file.
+
 `FloodTests` cover the buckets, mute vs. kick, the upload grace, the connection limit, relay mode staying unlimited and a zero
 allocation check. The defaults are generous guesses; real sessions (sector owners stream many creature updates) should be
 measured before tightening them.

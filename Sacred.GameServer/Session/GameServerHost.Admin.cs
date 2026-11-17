@@ -266,6 +266,7 @@ public sealed partial class GameServerHost : IServerAdmin
                 Log.Info("web admin: session ended.");
                 ShutDownSession();
                 break;
+            case AdminCommandKind.SetFlood when c.Text is { } settings: ApplyFloodSettings(settings); break;
             case AdminCommandKind.Shutdown:
                 Log.Info("web admin: shutting down.");
                 Stop();

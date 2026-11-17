@@ -69,9 +69,10 @@ public struct RateBucket
         var elapsed = nowMs - _lastMs;
         if (elapsed > 0)
         {
-            _milliTokens = Math.Min(capacity, _milliTokens + Math.Min(elapsed * perSecond, capacity));
+            _milliTokens += Math.Min(elapsed * perSecond, capacity);
             _lastMs = nowMs;
         }
+        if (_milliTokens > capacity) _milliTokens = capacity;     // a lowered burst applies at once
         var need = cost * 1000;
         if (_milliTokens < need) return false;
         _milliTokens -= need;
