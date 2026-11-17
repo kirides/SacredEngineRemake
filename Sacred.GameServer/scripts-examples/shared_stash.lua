@@ -146,10 +146,9 @@ local function prune_rids(s, now)
     end
 end
 
--- The join times survive a reload of this script (crash recovery tells "this session" from "an earlier one" by them).
-local function save_sessions()
-    pcall(server.save, "sessions", sessions)
-end
+-- The join times survive a reload of this script (crash recovery tells "this session" from "an earlier one" by them): written by the
+-- unload hook when the reason is a reload, taken (and deleted) by the next load. After a restart or a crash there are none.
+local function save_sessions() end
 
 local function allowed_rate(account)
     if config.rate_per_minute <= 0 then return true end
@@ -490,18 +489,18 @@ server.on("leave", function(player)
 end)
 -- (re)loaded while players are in: they keep the join time stored before (a reload is not a new session)
 do
-    local saved = server.load("sessions")
+    local saved = server.load("reload_sessions")
+    if saved ~= nil then server.delete("reload_sessions") end
     if type(saved) ~= "table" then saved = {} end
     for _, p in ipairs(server.players()) do
         if p.account and not sessions[p.account] then sessions[p.account] = saved[p.account] or math.floor(server.time()) end
     end
-    save_sessions()
 end
 
 -- Hot reload / shutdown: everything is stored at every change already (entries, pending and reserved states, answers by rid); the join
 -- times and any write still in flight are made durable here. Tokens live in the server (C#) and survive a reload; in-flight checks are
 -- resumed by the clients' resends (same rid).
 server.on("unload", function(reason)
-    save_sessions()
+    if reason == "reload" then pcall(server.save, "reload_sessions", sessions) end
     server.flush(function() end)
 end)

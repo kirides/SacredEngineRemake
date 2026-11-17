@@ -357,4 +357,65 @@ public class SharedStashScriptTests
         Assert.AreEqual(0, Entries(host3, server3, server3.Alice).Count, "two now, none before this reservation: it arrived");
         host3.Dispose();
     }
+
+    [TestMethod]
+    public void AReloadMidDepositLosesNothingAndDuplicatesNothing()
+    {
+        using var folder = new Folder();
+        var server = new Fake();
+        var host = Start(folder, server);
+        // the hero save is out (never answered) when the mod is reloaded: the item is gone and claimed, the entry is pending
+        var never = new TaskCompletionSource<string?>();
+        server.Save = _ => never.Task;
+        server.Items[(1, 580)] = new ScriptHeroItem(580, 0x12A, "gone", Record);
+        var rid = Rid();
+        server.Sent.Clear();
+        host.FireNet(Channel, server.Alice, true, JsonSerializer.SerializeToUtf8Bytes(Deposit(rid, 580)));
+        Wait(host, server, () => server.Saves > 0);
+        Assert.AreEqual(1, server.Saves);
+        Assert.IsTrue(host.Reload("shared_stash"));
+        Settle(host, server);
+        Assert.AreEqual(0, Entries(host, server, server.Alice).Count, "not in the stash yet: the save was not confirmed");
+        // the client resends the same request: resumed from the stored pending entry, saved again, now answered
+        server.Save = _ => Task.FromResult<string?>(null);
+        server.Sent.Clear();
+        host.FireNet(Channel, server.Alice, true, JsonSerializer.SerializeToUtf8Bytes(Deposit(rid, 580)));
+        Wait(host, server, () => To(server, 1).Any(a => a.GetProperty("op").GetString() == "result" && Ok(a)));
+        Assert.IsTrue(Ok(Answer(To(server, 1), "result")), string.Join(" ", To(server, 1)));
+        Assert.AreEqual(1, Entries(host, server, server.Alice).Count, "exactly one entry");
+        Assert.AreEqual(1, server.Claimed.Count, "the item was claimed once");
+        // and once more after another reload: the same answer, still one entry
+        Assert.IsTrue(host.Reload("shared_stash"));
+        Settle(host, server);
+        Assert.IsTrue(Ok(Answer(Ask(host, server, server.Alice, Deposit(rid, 580)), "result")));
+        Assert.AreEqual(1, Entries(host, server, server.Alice).Count);
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void AReloadMidWithdrawalKeepsTheReservationAndTheConfirmation()
+    {
+        using var folder = new Folder();
+        var server = new Fake();
+        var host = Start(folder, server);
+        Deposited(host, server, server.Alice, 590);
+        var id = Entries(host, server, server.Alice).Single().GetProperty("id").GetInt32();
+        var rid = Rid();
+        Assert.AreEqual(Item, Answer(Ask(host, server, server.Alice, new { op = "withdraw", rid, id }), "release").GetProperty("data").GetString());
+        Assert.IsTrue(host.Reload("shared_stash"));
+        Settle(host, server);
+        Assert.AreEqual(0, Entries(host, server, server.Carol).Count, "still reserved after the reload (and not a new session: nothing is released)");
+        // the client resends the withdrawal: the same release; then the item arrived and is confirmed
+        Assert.AreEqual(Item, Answer(Ask(host, server, server.Alice, new { op = "withdraw", rid, id }), "release").GetProperty("data").GetString());
+        server.Items[(1, 910)] = new ScriptHeroItem(910, 0x12A, "backpack", Record);
+        var done = Answer(Ask(host, server, server.Alice, new { op = "collected", rid, @ref = 910 }), "collected");
+        if (!Ok(done)) { Wait(host, server, () => Has(server, 1, "collected") && Ok(Answer(To(server, 1), "collected"))); done = Answer(To(server, 1), "collected"); }
+        Assert.IsTrue(Ok(done), done.ToString());
+        Assert.AreEqual(0, Entries(host, server, server.Alice).Count);
+        // a reload between the confirmation and a resend of it: still answered ok
+        Assert.IsTrue(host.Reload("shared_stash"));
+        Settle(host, server);
+        Assert.IsTrue(Ok(Answer(Ask(host, server, server.Alice, new { op = "collected", rid, @ref = 910 }), "collected")));
+        host.Dispose();
+    }
 }
