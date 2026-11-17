@@ -111,6 +111,13 @@ public sealed partial class GameServerHost
             case 0x017 or 0x018:
                 Witness!.OnWorldEntered(s.Slot, now);
                 return;
+            case 0x13F when p.Length >= 12 && BinaryPrimitives.ReadUInt32LittleEndian(p[8..]) == s.Slot:
+            {
+                // an item enters the hero's inventory: trader stock must have been paid for (the gold check removes it otherwise)
+                var reference = BinaryPrimitives.ReadUInt32LittleEndian(p) & 0x7FFFFFFF;
+                if (Witness!.TakeStock(s.Slot, reference, out var price)) Witness.OnPurchase(s.Slot, reference, price, now);
+                return;
+            }
             case 0x145 or (>= 0x1B8 and <= 0x1BE):
                 Witness!.OnQuestEvent(s.Slot, now);                         // a quest event: its reward items may follow (Quest source)
                 return;
@@ -196,6 +203,7 @@ public sealed partial class GameServerHost
         var now = _clock.ElapsedMilliseconds;
         var source = Witness!.Classify(s.Slot, facts, content, now);
         if (source == ItemSource.Purchase) Witness.OnPurchase(s.Slot, reference, price, now);
+        else if (source == ItemSource.Stock) Witness.OnStock(s.Slot, reference, price);
         else if (source == ItemSource.Unexplained)
             Log.Info($"AUTH: witness: 0x{reference:X} lies in sector {sector} at {x},{y} (the player stands in sector {s.CurrentSector}, which belongs to #{SectorOwnerOf(s.CurrentSector)}), price {price}, level {data[25]}.");
         return source;

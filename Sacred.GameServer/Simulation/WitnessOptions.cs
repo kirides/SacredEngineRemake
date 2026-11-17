@@ -30,6 +30,9 @@ public enum ItemSource : byte
     /// <summary>An item created shortly after a quest event of the same player (0x145 quest pair, 0x1B8..0x1BE journal and progress): quest rewards are
     /// created by the client that runs the quest script.</summary>
     Quest,
+    /// <summary>A positionless item no hero holds yet (trader stock the sector owner creates when a hero comes near a merchant). Not judged when
+    /// it is created; judged when it enters a hero (0x13F into the hero's inventory), where a payment must explain it (<see cref="Purchase"/>).</summary>
+    Stock,
 }
 
 /// <summary>
@@ -38,7 +41,7 @@ public enum ItemSource : byte
 /// <list type="bullet">
 /// <item><c>AUTH_STRICT_ITEMS=off|log|on</c> (in <see cref="AuthoritativeOptions"/>): what happens to an item creation nothing explains.</item>
 /// <item><c>AUTH_ITEM_SOURCES</c>: the sources the server accepts as an explanation, comma separated (default all:
-/// <c>token,baseline,kill,container,trade,rebuild,sector,worldstart,purchase,quest</c>). A source left out explains nothing, so its items fall under
+/// <c>token,baseline,kill,container,trade,rebuild,sector,worldstart,purchase,quest,stock</c>). A source left out explains nothing, so its items fall under
 /// <c>AUTH_STRICT_ITEMS</c>.</item>
 /// <item>Windows, ranges and budgets of each source (below).</item>
 /// <item><c>AUTH_STRICT_GOLD=off|log|on</c>: a gold increase of the hero nothing explains (gold piles picked up, trades) is ignored,
@@ -50,7 +53,7 @@ public enum ItemSource : byte
 public sealed class WitnessOptions
 {
     public const ItemSourceSet AllSources = ItemSourceSet.Token | ItemSourceSet.Baseline | ItemSourceSet.Kill | ItemSourceSet.Container
-        | ItemSourceSet.Trade | ItemSourceSet.Rebuild | ItemSourceSet.Sector | ItemSourceSet.WorldStart | ItemSourceSet.Purchase | ItemSourceSet.Quest;
+        | ItemSourceSet.Trade | ItemSourceSet.Rebuild | ItemSourceSet.Sector | ItemSourceSet.WorldStart | ItemSourceSet.Purchase | ItemSourceSet.Quest | ItemSourceSet.Stock;
 
     /// <summary>Sources accepted as an explanation.</summary>
     public ItemSourceSet Sources { get; set; } = AllSources;
@@ -104,6 +107,7 @@ public sealed class WitnessOptions
         ItemSource.WorldStart => (Sources & ItemSourceSet.WorldStart) != 0,
         ItemSource.Purchase => (Sources & ItemSourceSet.Purchase) != 0,
         ItemSource.Quest => (Sources & ItemSourceSet.Quest) != 0,
+        ItemSource.Stock => (Sources & ItemSourceSet.Stock) != 0,
         _ => false,
     };
 
@@ -134,6 +138,7 @@ public sealed class WitnessOptions
                 case "worldstart" or "start": sources |= ItemSourceSet.WorldStart; break;
                 case "purchase" or "merchant" or "buy": sources |= ItemSourceSet.Purchase; break;
                 case "quest": sources |= ItemSourceSet.Quest; break;
+                case "stock" or "trader": sources |= ItemSourceSet.Stock; break;
                 default: return false;
             }
         }
@@ -179,5 +184,5 @@ public sealed class WitnessOptions
 [Flags]
 public enum ItemSourceSet : ushort
 {
-    Token = 1, Baseline = 2, Kill = 4, Container = 8, Trade = 16, Rebuild = 32, Sector = 64, WorldStart = 128, Purchase = 256, Quest = 512,
+    Token = 1, Baseline = 2, Kill = 4, Container = 8, Trade = 16, Rebuild = 32, Sector = 64, WorldStart = 128, Purchase = 256, Quest = 512, Stock = 1024,
 }

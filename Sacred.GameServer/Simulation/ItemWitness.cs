@@ -41,6 +41,10 @@ public sealed class ItemWitness
     private int _lateNext;
     private readonly bool[] _scratchUsed = new bool[PerSlotRing];
     private readonly long[] _worldBegin = new long[MaxSlots + 1], _worldEnd = new long[MaxSlots + 1];
+    public const int StockRing = 256;
+    private struct Stocked { public uint Reference; public uint Price; }
+    private readonly Stocked[][] _stock = new Stocked[MaxSlots + 1][];
+    private readonly int[] _stockNext = new int[MaxSlots + 1];
     private readonly long[] _questAt = new long[MaxSlots + 1];
     private readonly int[] _questLeft = new int[MaxSlots + 1];
     public const int PurchaseRing = 16;
@@ -56,6 +60,7 @@ public sealed class ItemWitness
             _remnants[i] = new Remnant[PerSlotRing];
             _sectors[i] = new SectorGrant[SectorRing];
             _bought[i] = new Bought[PurchaseRing];
+            _stock[i] = new Stocked[StockRing];
         }
     }
 
@@ -133,6 +138,25 @@ public sealed class ItemWitness
         _worldEnd[slot] = now + 1;
     }
 
+    /// <summary>A stock-like item (no position, nobody holds it) was created by the player's client: remembered until it enters a hero.</summary>
+    public void OnStock(byte slot, uint reference, uint price)
+    {
+        if (slot is 0 or > MaxSlots) return;
+        _stock[slot][_stockNext[slot]] = new Stocked { Reference = reference, Price = price };
+        _stockNext[slot] = (_stockNext[slot] + 1) % StockRing;
+    }
+
+    /// <summary>The item entered a hero of this player: true (once) when it was remembered stock; its price is returned for the payment check.</summary>
+    public bool TakeStock(byte slot, uint reference, out uint price)
+    {
+        price = 0;
+        if (slot is 0 or > MaxSlots || reference == 0) return false;
+        var ring = _stock[slot];
+        for (var i = 0; i < StockRing; i++)
+            if (ring[i].Reference == reference) { price = ring[i].Price; ring[i] = default; return true; }
+        return false;
+    }
+
     /// <summary>The player's client reported a quest event (0x145 quest pair, 0x1B8..0x1BE): it may create the quest's reward items now.</summary>
     public void OnQuestEvent(byte slot, long now)
     {
@@ -195,6 +219,7 @@ public sealed class ItemWitness
         _worldBegin[slot] = _worldEnd[slot] = 0;
         Array.Clear(_bought[slot]);
         _questAt[slot] = 0; _questLeft[slot] = 0;
+        Array.Clear(_stock[slot]); _stockNext[slot] = 0;
         _receivedNext[slot] = _remnantNext[slot] = _sectorNext[slot] = 0;
     }
 
@@ -231,6 +256,7 @@ public sealed class ItemWitness
         }
         if (_options.Accepts(ItemSource.WorldStart) && InWorldStart(slot, now)) return ItemSource.WorldStart;
         if (_options.Accepts(ItemSource.Quest) && TakeQuest(slot, now)) return ItemSource.Quest;
+        if (!item.HasPosition && !item.Purchase && _options.Accepts(ItemSource.Stock)) return ItemSource.Stock;     // judged when it enters a hero (TakeStock)
         if (item.Purchase && _options.Accepts(ItemSource.Purchase)) return ItemSource.Purchase;     // paid for later (OnGoldSpent / TakeUnpaid)
         return ItemSource.Unexplained;
     }

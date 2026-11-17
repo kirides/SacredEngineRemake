@@ -61,7 +61,7 @@ public partial class AuthoritativeTests
             Assert.AreEqual("gone", ItemWhere(host, player, 0x5201, not: "world"));
             player.Send(0x16F, ItemState(0x5202, 0x12A, 0x51));              // the same content under a new reference, no position
             Assert.AreEqual("world", ItemWhere(host, player, 0x5202, not: "gone"));
-            player.Send(0x16F, ItemState(0x5203, 0x12A, 0x51));              // and again: nothing left to rebuild it from
+            player.Send(0x16F, Positioned(ItemState(0x5203, 0x12A, 0x51), 30_000, 30_000, 45));   // and again, far from any event: nothing left to rebuild it from (a positionless one would be trader stock)
             Assert.AreEqual("nil", ItemWhere(host, player, 0x5203, not: "world"));
             Assert.AreEqual(1, host.Witness!.Explained[(int)ItemSource.Rebuild]);
             Assert.AreEqual(1, host.StrictItemsRefused);
@@ -250,7 +250,7 @@ public partial class AuthoritativeTests
             Assert.AreEqual("world", ItemWhere(host, player, 0x6001), "world start source");
             Assert.AreEqual(0, host.StrictItemsRefused);
             Thread.Sleep(700);
-            player.Send(0x16F, ItemState(0x6002, 0x12A, 0x42));
+            player.Send(0x16F, Positioned(ItemState(0x6002, 0x12A, 0x42), 30_000, 30_000, 45));
             Assert.AreEqual("nil", ItemWhere(host, player, 0x6002, not: "world"), "the grace is over");
             Assert.AreEqual(1, host.StrictItemsRefused);
 
@@ -287,6 +287,39 @@ public partial class AuthoritativeTests
             player.Send(0x16F, ItemState(0x6102, 0x12A, 0x52));
             Assert.AreEqual("world", ItemWhere(host, player, 0x6102, not: "nil"), "after the quest event");
             Assert.AreEqual(1, host.Witness!.Explained[(int)ItemSource.Quest]);
+        });
+    }
+
+    /// <summary>Trader stock (a positionless 0x16E item nobody holds, created when a hero comes near a merchant: found in a 53-minute real
+    /// capture) is kept when it is created; it is judged when it enters the hero (0x13F into the hero's inventory): without a gold payment the
+    /// server removes it, so it is never saved.</summary>
+    [TestMethod]
+    public void TraderStockIsJudgedWhenItEntersTheHero()
+    {
+        StrictRun(StrictItemsMode.On, (host, player) =>
+        {
+            Thread.Sleep(700);                                  // the world start window of the test run is over
+            var full = ItemState(0x6201, 0x12A, 0x61);
+            var short8 = new byte[8 + full.Length - 24];
+            full.AsSpan(0, 8).CopyTo(short8);
+            full.AsSpan(24).CopyTo(short8.AsSpan(8));
+            player.Send(0x16E, short8);
+            Assert.AreEqual("world", ItemWhere(host, player, 0x6201), "stock is not judged when it is created");
+            Assert.AreEqual(0, host.StrictItemsRefused);
+            var place = new byte[12];
+            BinaryPrimitives.WriteUInt32LittleEndian(place, 0x6201);
+            BinaryPrimitives.WriteUInt32LittleEndian(place.AsSpan(4), 5);
+            BinaryPrimitives.WriteUInt32LittleEndian(place.AsSpan(8), (uint)player.Slot);
+            player.Send(0x13F, place);                          // into the hero's inventory, no gold paid
+            var until = Environment.TickCount64 + 5000;
+            while (Environment.TickCount64 < until && ItemWhere(host, player, 0x6201, not: "x") != "nil") Thread.Sleep(50);
+            Assert.AreEqual("nil", ItemWhere(host, player, 0x6201, not: "world"), "no payment: removed");
+            Assert.AreEqual(1, host.StrictItemsRefused);
+        }, configure: config =>
+        {
+            config.Auth.Witness.Sources = Sacred.GameServer.Simulation.WitnessOptions.AllSources;     // stock on (the other tests leave it out)
+            config.Auth.Witness.WorldStartGraceMs = 300;
+            config.Auth.Witness.PurchaseWindowMs = 800;
         });
     }
 }

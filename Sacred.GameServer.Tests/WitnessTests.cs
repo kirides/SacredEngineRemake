@@ -8,6 +8,8 @@ namespace Sacred.GameServer.Tests;
 [TestClass]
 public class WitnessTests
 {
+    private const ItemSourceSet NoStock = WitnessOptions.AllSources & ~ItemSourceSet.Stock;     // most tests treat a positionless item as unexplained
+
     private static byte[] Content(params byte[] fills)
     {
         var content = new byte[fills.Length * ItemWitness.RecordBytes];
@@ -21,7 +23,7 @@ public class WitnessTests
     [TestMethod]
     public void LootNearAFreshKillIsExplainedWithinItsBudget()
     {
-        var options = new WitnessOptions { LootPerKill = 2, LootRange = 500, LootWindowMs = 1000 };
+        var options = new WitnessOptions { Sources = NoStock, LootPerKill = 2, LootRange = 500, LootWindowMs = 1000 };
         var w = new ItemWitness(options);
         var c = Content(1);
         Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(1, c, 1000, 1000), c, 0), "no kill yet");
@@ -40,7 +42,7 @@ public class WitnessTests
     [TestMethod]
     public void LootLevelMarginIsCheckedWhenSet()
     {
-        var w = new ItemWitness(new WitnessOptions { LootLevelMargin = 3 });
+        var w = new ItemWitness(new WitnessOptions { Sources = NoStock, LootLevelMargin = 3 });
         var c = Content(1);
         w.OnKill(0x7001, 5, 1000, 1000, 10, 0);
         Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(1, c, 1000, 1000, level: 14), c, 10));
@@ -50,7 +52,7 @@ public class WitnessTests
     [TestMethod]
     public void ContainerContentIsExplainedOncePerContainer()
     {
-        var w = new ItemWitness(new WitnessOptions { ContainerPerOpen = 1, ContainerRange = 300 });
+        var w = new ItemWitness(new WitnessOptions { Sources = NoStock, ContainerPerOpen = 1, ContainerRange = 300 });
         var c = Content(2);
         w.OnContainer(0x8001, 2, 7, 5000, 5000, 0);
         Assert.AreEqual(ItemSource.Container, w.Classify(2, Facts(1, c, 5100, 5000), c, 10));
@@ -62,7 +64,7 @@ public class WitnessTests
     [TestMethod]
     public void TradedItemsAreExplainedForTheReceiverOnly()
     {
-        var w = new ItemWitness(new WitnessOptions { TradeWindowMs = 1000 });
+        var w = new ItemWitness(new WitnessOptions { Sources = NoStock, TradeWindowMs = 1000 });
         var c = Content(9, 3);
         w.OnTradeReceive(4, ItemWitness.Fnv(c), 0);
         Assert.AreEqual(ItemSource.Unexplained, w.Classify(5, Facts(1, c), c, 10), "not for another player");
@@ -75,7 +77,7 @@ public class WitnessTests
     [TestMethod]
     public void DestroyedItemsMayComeBackRebuiltButNotTwice()
     {
-        var w = new ItemWitness(new WitnessOptions());
+        var w = new ItemWitness(new WitnessOptions { Sources = NoStock });
         var sword = Content(0x11, 0xA0);             // one value record + data block
         var gem = Content(0x22, 0xB0);
         w.OnDestroyed(1, 0x12A, sword, 0);
@@ -103,7 +105,7 @@ public class WitnessTests
     [TestMethod]
     public void GroundItemsOfASectorTakenOverAreExplainedBriefly()
     {
-        var w = new ItemWitness(new WitnessOptions { SectorWindowMs = 1000 });
+        var w = new ItemWitness(new WitnessOptions { Sources = NoStock, SectorWindowMs = 1000 });
         var c = Content(5);
         w.OnSectorOwned(6, 1234, 0);
         Assert.AreEqual(ItemSource.Sector, w.Classify(6, Facts(1, c, 10, 10, 1234), c, 500));
@@ -114,7 +116,7 @@ public class WitnessTests
     [TestMethod]
     public void SourcesCanBeSwitchedOff()
     {
-        var options = new WitnessOptions();
+        var options = new WitnessOptions { Sources = NoStock };
         Assert.IsTrue(WitnessOptions.TryParseSources("token, baseline,trade", out var sources));
         options.Sources = sources;
         var w = new ItemWitness(options);
@@ -130,7 +132,7 @@ public class WitnessTests
     [TestMethod]
     public void AKillAfterTheItemIsCountedAsLate()
     {
-        var w = new ItemWitness(new WitnessOptions());
+        var w = new ItemWitness(new WitnessOptions { Sources = NoStock });
         var c = Content(1);
         Assert.AreEqual(ItemSource.Unexplained, w.Classify(1, Facts(1, c, 1000, 1000), c, 0));
         w.OnKill(0x7001, 5, 1050, 1000, 10, 40);
@@ -141,7 +143,7 @@ public class WitnessTests
     [TestMethod]
     public void ClassifyingDoesNotAllocate()
     {
-        var w = new ItemWitness(new WitnessOptions());
+        var w = new ItemWitness(new WitnessOptions { Sources = NoStock });
         var c = Content(1, 2);
         var facts = Facts(1, c, 1000, 1000);
         for (var i = 0; i < 10; i++) { w.OnKill((uint)(0x7000 + i), 5, 1000, 1000, 1, i); w.Classify(1, facts, c, i); w.OnDestroyed(1, 0x12A, c, i); }
@@ -162,7 +164,7 @@ public class WitnessTests
     [TestMethod]
     public void GoldIncreasesNeedACredit()
     {
-        var options = new WitnessOptions { StrictGold = StrictItemsMode.On, GoldWindowMs = 1000 };
+        var options = new WitnessOptions { Sources = NoStock, StrictGold = StrictItemsMode.On, GoldWindowMs = 1000 };
         var ledger = new GoldLedger(options);
         Assert.AreEqual(0, ledger.Report(1, 500, 0), "the first report starts the ledger");
         Assert.AreEqual(500, ledger.Allowed(1));
@@ -183,7 +185,7 @@ public class WitnessTests
     [TestMethod]
     public void GoldLogModeAcceptsUnexplainedIncreases()
     {
-        var ledger = new GoldLedger(new WitnessOptions { StrictGold = StrictItemsMode.Log });
+        var ledger = new GoldLedger(new WitnessOptions { Sources = NoStock, StrictGold = StrictItemsMode.Log });
         ledger.Report(2, 0, 0);
         Assert.AreEqual(300, ledger.Report(2, 300, 10));
         Assert.AreEqual(300, ledger.Allowed(2));
@@ -272,7 +274,7 @@ public class WitnessTests
     [TestMethod]
     public void TheWorldAClientBuildsWhileItStartsIsExplainedUntilTheWorldStartPlusGrace()
     {
-        var options = new WitnessOptions { WorldStartGraceMs = 1000, WorldStartMaxMs = 10_000 };
+        var options = new WitnessOptions { Sources = NoStock, WorldStartGraceMs = 1000, WorldStartMaxMs = 10_000 };
         var w = new ItemWitness(options);
         var c = Content(1);
         Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(1, c), c, 0), "before the upload begins");
@@ -292,7 +294,7 @@ public class WitnessTests
         w.Forget(3);
         Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(9, c), c, 20_100), "forgotten with the player");
         // the source can be left out
-        var off = new ItemWitness(new WitnessOptions { Sources = WitnessOptions.AllSources & ~ItemSourceSet.WorldStart });
+        var off = new ItemWitness(new WitnessOptions { Sources = WitnessOptions.AllSources & ~ItemSourceSet.WorldStart & ~ItemSourceSet.Stock });
         off.OnWorldStart(3, 0);
         Assert.AreEqual(ItemSource.Unexplained, off.Classify(3, Facts(10, c), c, 10), "AUTH_ITEM_SOURCES without worldstart");
         Assert.IsTrue(WitnessOptions.TryParseSources("token,worldstart,purchase", out var set));
@@ -302,7 +304,7 @@ public class WitnessTests
     [TestMethod]
     public void AMerchantPurchaseIsAcceptedOnlyWhenTheHeroGoldPaysForIt()
     {
-        var options = new WitnessOptions { PurchaseWindowMs = 1000, PurchasePercent = 50 };
+        var options = new WitnessOptions { Sources = NoStock, PurchaseWindowMs = 1000, PurchasePercent = 50 };
         var w = new ItemWitness(options);
         var c = Content(1);
         ItemFacts Bought(uint reference, uint price) => new(reference, 0x12A, 0, 0, 0, 0, 0, ItemWitness.Fnv(c), Purchase: true, Price: price);
@@ -331,7 +333,7 @@ public class WitnessTests
     [TestMethod]
     public void ARewardIsExplainedByAQuestEventOfTheSamePlayerWithinItsWindowAndBudget()
     {
-        var w = new ItemWitness(new WitnessOptions { QuestWindowMs = 1000, QuestPerEvent = 2 });
+        var w = new ItemWitness(new WitnessOptions { Sources = NoStock, QuestWindowMs = 1000, QuestPerEvent = 2 });
         var c = Content(1);
         Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(1, c), c, 0), "no quest event yet");
         w.OnQuestEvent(3, 100);
@@ -345,5 +347,32 @@ public class WitnessTests
         Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(7, c), c, 5100), "forgotten with the player");
         Assert.IsTrue(WitnessOptions.TryParseSources("quest", out var set));
         Assert.AreEqual(ItemSourceSet.Quest, set);
+    }
+
+    [TestMethod]
+    public void TraderStockIsNotJudgedWhenCreatedButWhenItEntersAHeroAndTheGoldMustPayForIt()
+    {
+        var w = new ItemWitness(new WitnessOptions { PurchaseWindowMs = 1000, PurchasePercent = 50 });
+        var c = Content(1);
+        ItemFacts Stock(uint reference, uint price) => new(reference, 0x12A, 2, 0, 0, 0, 0, ItemWitness.Fnv(c), Purchase: false, Price: price);
+        Assert.AreEqual(ItemSource.Stock, w.Classify(3, Stock(10, 900), c, 0), "positionless, held by nobody");
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(11, c, 500, 500, 7), c, 0), "a ground item is judged by the loot sources");
+        w.OnStock(3, 10, 900);
+        w.OnStock(3, 12, 1500);
+        Assert.IsFalse(w.TakeStock(4, 10, out _), "stock of another player's client");
+        Assert.IsTrue(w.TakeStock(3, 10, out var price));
+        Assert.AreEqual(900u, price);
+        Assert.IsFalse(w.TakeStock(3, 10, out _), "once");
+        // it entered a hero: the payment check
+        w.OnPurchase(3, 10, price, 100);
+        var unpaid = new uint[ItemWitness.PurchaseRing];
+        Assert.AreEqual(1, w.TakeUnpaid(3, 1500, unpaid), "no gold left the hero");
+        Assert.AreEqual(10u, unpaid[0]);
+        Assert.IsTrue(w.TakeStock(3, 12, out price));
+        w.OnPurchase(3, 12, price, 2000);
+        w.OnGoldSpent(3, 800, 2100);                        // 50 % of 1500 is 750
+        Assert.AreEqual(0, w.TakeUnpaid(3, 9000, unpaid), "paid");
+        var off = new ItemWitness(new WitnessOptions { Sources = WitnessOptions.AllSources & ~ItemSourceSet.Stock });
+        Assert.AreEqual(ItemSource.Unexplained, off.Classify(3, Stock(13, 1), c, 0), "AUTH_ITEM_SOURCES without stock");
     }
 }
