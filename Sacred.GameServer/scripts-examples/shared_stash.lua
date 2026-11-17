@@ -28,14 +28,28 @@ local config = {
     retry_seconds = 15,         -- a deposit whose hero save failed is saved again this often
     rid_days = 14,
     rids_max = 300,
+    token_seconds = 300,        -- how long the server's permission for the client to create a withdrawn item lives
+    rate_per_minute = 30,       -- deposits + withdrawals per account per minute (0: no limit)
 }
+-- Tunables are data: an admin can put a table with any of these keys into this mod's storage under "config" (web admin, mod storage) and
+-- it applies within 30 s, without a reload; the values above are the defaults a reload (or a fresh start) begins with.
+local function apply_overrides()
+    local o = server.load("config")
+    if type(o) ~= "table" then return end
+    for key, default in pairs(config) do
+        if type(o[key]) == "number" and o[key] == o[key] and o[key] >= 0 then config[key] = o[key] end
+    end
+end
+apply_overrides()
+server.every(30, apply_overrides)
 
 local CHANNEL = "shared-stash"
 local ch = net.channel(CHANNEL, { server_only = true })
 
 local accounts = {}         -- account -> state (loaded on demand)
 local sessions = {}         -- account -> server time the account joined (this run of the server)
-local pending = {}          -- account .. " " .. rid -> a request waiting for the server to see something
+local pending = {}          -- account .. " " .. rid -> a request waiting for the server to see something (not stored: clients resend)
+local rate = {}             -- account -> { minute, count }
 
 local function copy(v)
     if type(v) ~= "table" then return v end
@@ -130,6 +144,20 @@ local function prune_rids(s, now)
         table.sort(list, function(a, b) return a.t < b.t end)
         for i = 1, n - config.rids_max do s.rids[list[i].rid] = nil end
     end
+end
+
+-- The join times survive a reload of this script (crash recovery tells "this session" from "an earlier one" by them).
+local function save_sessions()
+    pcall(server.save, "sessions", sessions)
+end
+
+local function allowed_rate(account)
+    if config.rate_per_minute <= 0 then return true end
+    local minute = math.floor(server.time() / 60)
+    local r = rate[account]
+    if not r or r.minute ~= minute then r = { minute = minute, count = 0 } rate[account] = r end
+    r.count = r.count + 1
+    return r.count <= config.rate_per_minute
 end
 
 local function find(s, id)
@@ -380,6 +408,9 @@ local function handle(player, msg)
         return send(player.slot, { op = "collected", rid = rid, ok = true, count = ready_count(s) })
     end
     local now = server.time()
+    if (op == "deposit" or op == "withdraw") and not pending[key] and not allowed_rate(account) then
+        return result(player.slot, rid, false, "too many stash operations, wait a moment")
+    end
     if op == "deposit" then
         if pending[key] then return end
         if type(msg.ref) ~= "number" then return result(player.slot, rid, false, "the item's id is needed") end
@@ -414,7 +445,7 @@ local function handle(player, msg)
         end, function(ok, err)
             if not ok then return result(player.slot, rid, false, "the stash could not be written (" .. tostring(err) .. ")") end
             -- the server's permission for the client to create exactly this item (see --auth-strict-items); consumed by claim_item
-            local token = server.item_token(player, { data = data, label = "shared-stash" }, 300)
+            local token = server.item_token(player, { data = data, label = "shared-stash" }, config.token_seconds)
             server.log("shared stash: " .. player.name .. ": withdrawal " .. rid .. " of entry " .. id .. " released" .. (token and (" (token " .. token .. ")") or ""))
             send(player.slot, { op = "release", rid = rid, id = id, data = data })
         end)
@@ -448,14 +479,29 @@ server.every(0.5, function()
 end)
 
 server.on("join", function(player)
-    if player.account then sessions[player.account] = math.floor(server.time()) end
+    if player.account then sessions[player.account] = math.floor(server.time()) save_sessions() end
 end)
 server.on("leave", function(player)
     local account = player.account
     if not account then return end
     sessions[account] = nil
+    save_sessions()
     for key in pairs(pending) do if key:sub(1, #account + 1) == account .. " " then pending[key] = nil end end
 end)
-for _, p in ipairs(server.players()) do
-    if p.account and not sessions[p.account] then sessions[p.account] = math.floor(server.time()) end
+-- (re)loaded while players are in: they keep the join time stored before (a reload is not a new session)
+do
+    local saved = server.load("sessions")
+    if type(saved) ~= "table" then saved = {} end
+    for _, p in ipairs(server.players()) do
+        if p.account and not sessions[p.account] then sessions[p.account] = saved[p.account] or math.floor(server.time()) end
+    end
+    save_sessions()
 end
+
+-- Hot reload / shutdown: everything is stored at every change already (entries, pending and reserved states, answers by rid); the join
+-- times and any write still in flight are made durable here. Tokens live in the server (C#) and survive a reload; in-flight checks are
+-- resumed by the clients' resends (same rid).
+server.on("unload", function(reason)
+    save_sessions()
+    server.flush(function() end)
+end)
