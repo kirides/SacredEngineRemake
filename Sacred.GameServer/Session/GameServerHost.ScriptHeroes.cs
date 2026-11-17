@@ -85,7 +85,7 @@ public sealed partial class GameServerHost
     {
         if (AuthoritativeSession(slot) is not { } s) return false;
         reference &= 0x7FFFFFFF;
-        return GoneList(s).RemoveAll(g => g.Reference == reference) > 0;
+        return GoneList(s).RemoveAll(g => g.Reference == reference) > 0 || ClaimArrivedItem(s, reference);
     }
 
     public Task<string?> SaveHeroNow(int slot)

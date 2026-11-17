@@ -301,4 +301,60 @@ public class SharedStashScriptTests
         Assert.AreEqual(1, Entries(host3, server3, server3.Alice).Count);
         host3.Dispose();
     }
+
+    [TestMethod]
+    public void AnIdenticalItemAlreadyInTheHeroIsNotTheArrival()
+    {
+        using var folder = new Folder();
+        var server = new Fake();
+        var host = Start(folder, server);
+        Deposited(host, server, server.Alice, 560);
+        var id = Entries(host, server, server.Alice).Single().GetProperty("id").GetInt32();
+        server.Items[(1, 800)] = new ScriptHeroItem(800, 0x12A, "backpack", Record);          // the hero already owns an identical item
+        var rid = Rid();
+        server.Saves = 0;
+        Ask(host, server, server.Alice, new { op = "withdraw", rid, id });
+        // the client "reports" the old item as the arrival: refused, and the entry stays reserved
+        var refused = Answer(Ask(host, server, server.Alice, new { op = "collected", rid, @ref = 800 }), "collected");
+        Assert.IsFalse(Ok(refused));
+        StringAssert.Contains(refused.GetProperty("err").GetString(), "before the withdrawal");
+        Assert.AreEqual(0, server.Saves);
+        // the real new item (another id) is accepted
+        server.Items[(1, 801)] = new ScriptHeroItem(801, 0x12A, "backpack", Record);
+        var done = Answer(Ask(host, server, server.Alice, new { op = "collected", rid, @ref = 801 }), "collected");
+        if (!Ok(done)) { Wait(host, server, () => Has(server, 1, "collected") && Ok(Answer(To(server, 1), "collected"))); done = Answer(To(server, 1), "collected"); }
+        Assert.IsTrue(Ok(done), done.ToString());
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void AtARestartIdenticalItemsAreCountedNotJustFound()
+    {
+        using var folder = new Folder();
+        var server = new Fake();
+        var host = Start(folder, server);
+        Deposited(host, server, server.Alice, 570);
+        var id = Entries(host, server, server.Alice).Single().GetProperty("id").GetInt32();
+        server.Items[(1, 810)] = new ScriptHeroItem(810, 0x12A, "backpack", Record);          // one identical item before the withdrawal
+        Ask(host, server, server.Alice, new { op = "withdraw", rid = Rid(), id });
+        host.Dispose();
+
+        // restart: a hero upload went out after the reservation, the saved hero has still ONE identical item: the withdrawal did not reach it
+        Thread.Sleep(1100);
+        var server2 = new Fake { UploadTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 5 };
+        server2.Items[(1, 811)] = new ScriptHeroItem(811, 0x12A, "backpack", Record);
+        var host2 = Start(folder, server2);
+        Assert.AreEqual(1, Entries(host2, server2, server2.Alice).Count, "one identical item was there before: the entry is back");
+        Ask(host2, server2, server2.Alice, new { op = "withdraw", rid = Rid(), id });
+        host2.Dispose();
+
+        // with the hero holding two now (and two before this reservation's count of one) the entry is gone
+        Thread.Sleep(1100);
+        var server3 = new Fake { UploadTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 5 };
+        server3.Items[(1, 812)] = new ScriptHeroItem(812, 0x12A, "backpack", Record);
+        server3.Items[(1, 813)] = new ScriptHeroItem(813, 0x12A, "backpack", Record);
+        var host3 = Start(folder, server3);
+        Assert.AreEqual(0, Entries(host3, server3, server3.Alice).Count, "two now, none before this reservation: it arrived");
+        host3.Dispose();
+    }
 }

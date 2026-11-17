@@ -71,6 +71,11 @@ local function valid_hex(s)
     return type(s) == "string" and #s >= 12 and #s <= config.max_data and #s % 2 == 0 and not s:find("[^0-9a-fA-F]")
 end
 
+local function known_type(data)
+    local ty = type_of(data)
+    return ty ~= nil and ty > 0 and ty < 0x10000
+end
+
 local function in_hero(where) return where == "backpack" or where == "stash" or where == "equipped" end
 
 local function text(v, max)
@@ -185,10 +190,12 @@ local function reconcile(player, account)
         elseif e.state == "reserved" and (e.rt or 0) < joined then
             if uploaded and uploaded >= (e.rt or 0) then
                 items = items or server.hero_items(player)
-                local want = entries_hex(e.data)
+                -- the saved hero has more items with these records than at the reservation: the withdrawn one is in it
+                local want, n = entries_hex(e.data), 0
                 for _, it in ipairs(items) do
-                    if it.records == want then drop = true break end
+                    if it.records == want then n = n + 1 end
                 end
+                if n > (e.pre or 0) then drop = true end
                 if not drop then e.state = "ready" e.rid = nil e.rt = nil end
             else
                 e.state = "ready" e.rid = nil e.rt = nil
@@ -265,6 +272,7 @@ function CHECKS.deposit(e, player, now)
             return result(player.slot, msg.rid, false, "that item was stashed already")
         end
         e.entry = entry.id
+        server.log("shared stash: " .. player.name .. ": deposit " .. msg.rid .. " -> entry " .. entry.id .. " (type " .. tostring(type_of(msg.data)) .. ")")
         e.stage = "writing"
         return change(account, function(st) st.next = st.next + 1 st.items[#st.items + 1] = entry end, function(ok, err)
             e.stage = nil
@@ -290,7 +298,17 @@ function CHECKS.collected(e, player, now)
     local entry = find(s, e.entry)
     if not entry then pending[e.key] = nil return end
     local item = type(msg.ref) == "number" and server.hero_item(player, msg.ref)
+    local old = false
+    for _, ref in ipairs(entry.pre_refs or {}) do if ref == msg.ref then old = true end end
+    if old then
+        pending[e.key] = nil
+        server.log("shared stash: " .. player.name .. ": withdrawal " .. msg.rid .. " claims an item that was in the hero before it")
+        return send(player.slot, { op = "collected", rid = msg.rid, ok = false, err = "that item was in your inventory before the withdrawal" })
+    end
     if item and in_hero(item.where) and item.type == type_of(entry.data) and item.records == entries_hex(entry.data) then
+        if not server.claim_item(player, msg.ref) then
+            server.log("shared stash: " .. player.name .. ": withdrawal " .. msg.rid .. ": no permission token left for the arrived item (expired?), accepted")
+        end
         return after_save(player, account, e, function()
             change(account, function(st)
                 local _, i = find(st, e.entry)
@@ -365,7 +383,10 @@ local function handle(player, msg)
     if op == "deposit" then
         if pending[key] then return end
         if type(msg.ref) ~= "number" then return result(player.slot, rid, false, "the item's id is needed") end
-        if not valid_hex(msg.data) or not entries_hex(msg.data) then return result(player.slot, rid, false, "the item data is not valid") end
+        if not valid_hex(msg.data) or not entries_hex(msg.data) or not known_type(msg.data) then
+            server.log("shared stash: " .. player.name .. ": a deposit with invalid item data was refused")
+            return result(player.slot, rid, false, "the item data is not valid")
+        end
         -- a pending entry of this rid (earlier hero save failed): the request resumes there
         local resume
         for _, e in ipairs(s.items) do if e.state == "pending" and e.rid == rid then resume = e.id end end
@@ -382,11 +403,19 @@ local function handle(player, msg)
             return send(player.slot, { op = "release", rid = rid, id = entry.id, data = entry.data })
         end
         local data = entry.data
+        -- the items of the hero that already look like it: the arrival must be another one (by id), and counted at a restart
+        local want, pre_refs = entries_hex(data), {}
+        for _, it in ipairs(server.hero_items(player)) do
+            if it.records == want then pre_refs[#pre_refs + 1] = it.ref end
+        end
         return change(account, function(st)
             local e = find(st, id)
-            e.state = "reserved" e.rid = rid e.rt = math.floor(now)
+            e.state = "reserved" e.rid = rid e.rt = math.floor(now) e.pre = #pre_refs e.pre_refs = pre_refs
         end, function(ok, err)
             if not ok then return result(player.slot, rid, false, "the stash could not be written (" .. tostring(err) .. ")") end
+            -- the server's permission for the client to create exactly this item (see --auth-strict-items); consumed by claim_item
+            local token = server.item_token(player, { data = data, label = "shared-stash" }, 300)
+            server.log("shared stash: " .. player.name .. ": withdrawal " .. rid .. " of entry " .. id .. " released" .. (token and (" (token " .. token .. ")") or ""))
             send(player.slot, { op = "release", rid = rid, id = id, data = data })
         end)
     elseif op == "collected" then
