@@ -7,7 +7,7 @@ using Sacred.GameServer.Session;
 namespace Sacred.GameServer.Tests;
 
 [TestClass]
-public class AuthoritativeTests
+public partial class AuthoritativeTests
 {
     private sealed class Server : IDisposable
     {
@@ -184,5 +184,75 @@ public class AuthoritativeTests
         player.Dispose();                                                      // disconnect saves again
         fake.WaitFor(LobbyProtocol.ServerDataUpload);
         Assert.IsTrue(server.Host.HeroSaves >= 2);
+    }
+
+    [TestMethod]
+    public void ClosedNetHeroIsSavedFromTheServersOwnView()
+    {
+        var save = HeroWriterTests.Saves().FirstOrDefault();
+        if (save is null) Assert.Inconclusive("no hero saves (set SACRED_HERO_SAVES)");
+        var file = File.ReadAllBytes(save);
+        var baseline = new byte[file.Length + 4096];
+        var baselineLength = Sacred.GameServer.Auth.Hero.HeroFile.WriteBlock(file, new Sacred.GameServer.Wire.ZlibDeflater(), baseline);
+        Assert.IsTrue(baselineLength > 0);
+        using var fake = new LobbyTests.FakeLobby();
+        using var server = new Server(c => { c.Auth.SaveDebounceMilliseconds = 20; c.Auth.SaveIntervalSeconds = 0; }, fake);
+        var player = RawClient.Admit(server.Port, "Hero", 500, block: 2);
+        fake.WaitFor(LobbyProtocol.UserJoinedServer);
+        var push = new byte[18 + baselineLength];
+        BinaryPrimitives.WriteInt32LittleEndian(push, 500);
+        BinaryPrimitives.WriteUInt16LittleEndian(push.AsSpan(4), 2);
+        BinaryPrimitives.WriteInt32LittleEndian(push.AsSpan(6), baselineLength);
+        BinaryPrimitives.WriteInt32LittleEndian(push.AsSpan(14), baselineLength);
+        baseline.AsSpan(0, baselineLength).CopyTo(push.AsSpan(18));
+        fake.SendLobby(LobbyProtocol.PublicData, push);
+        player.WaitFor(0x132);
+        player.Send(0x016, default); player.Send(0x018, Word(0x1964)); player.WaitFor(0x018);
+
+        // The upload, as the client sends it: items, hero, inventories.
+        var decoded = HeroWriterTests.Decode(file);
+        var (live, bodies) = HeroWriterTests.Upload(decoded, player.Slot);
+        byte[] State(uint reference, byte[] body, int prefix)
+        {
+            var payload = new byte[prefix + body.Length];
+            BinaryPrimitives.WriteUInt32LittleEndian(payload, reference);
+            BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(4), BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(8)));
+            body.CopyTo(payload, prefix);
+            return payload;
+        }
+        foreach (var (reference, body) in bodies) player.Send(0x16E, State(reference, body, 8));
+        var hero = live.HeroBody.ToArray();
+        player.Send(0x16E, State(player.Slot, hero, 8));
+        player.Send(0x122, [.. Word(player.Slot), .. live.InventoryStream.ToArray()]);
+        if (!live.SharedInventoryStream.IsEmpty) player.Send(0x122, [.. Word(17), .. live.SharedInventoryStream.ToArray()]);
+        // Later: more gold (compact values in a 0x169), and an attempt to put an object the player does not own into the
+        // inventory (0x13F [ref][cell][inventory]).
+        BinaryPrimitives.WriteUInt32LittleEndian(hero.AsSpan(Sacred.Network.Gameplay.GoldCreatureStateLayout.PrefixSize +
+            Sacred.Network.Gameplay.GoldCreatureValuesLayout.CompactWord46Offset), 777_777);
+        player.Send(0x169, State(player.Slot, hero, 24));
+        var place = new byte[12];
+        BinaryPrimitives.WriteUInt32LittleEndian(place, 0x1F000);
+        BinaryPrimitives.WriteUInt32LittleEndian(place.AsSpan(4), 255);
+        BinaryPrimitives.WriteUInt32LittleEndian(place.AsSpan(8), player.Slot);
+        player.Send(0x13F, place);
+        player.Send(0x14F, new byte[0x2670 + 100]);
+        Thread.Sleep(100);
+        player.Dispose();                                                     // a hard disconnect saves
+
+        var upload = fake.WaitFor(LobbyProtocol.ServerDataUpload).Body;
+        Assert.AreEqual(500, BinaryPrimitives.ReadInt32LittleEndian(upload));
+        Assert.AreEqual(2, BinaryPrimitives.ReadUInt16LittleEndian(upload.AsSpan(4)));
+        var block = upload[18..];
+        var saved = new byte[Sacred.GameServer.Auth.Hero.HeroWriter.MaxFileBytes];
+        var savedLength = Sacred.GameServer.Auth.Hero.HeroFile.ReadBlock(block, new Sacred.GameServer.Wire.ZlibInflater(), saved);
+        Assert.IsTrue(savedLength > 0);
+        var after = HeroWriterTests.Decode(saved[..savedLength]);
+        var values = Sacred.Core.Pax.Hero.Objects.SacredSavedHero.FromPayload(after.Hero, after.Version).Creature.Values;
+        Assert.AreEqual(777_777u, values.Gold);
+        Assert.AreEqual(decoded.Records.Count, after.Records.Count, "the foreign object is not saved, every own item is");
+        var cell = 1036 + 255 * 12;
+        Assert.AreEqual(0u, BinaryPrimitives.ReadUInt32LittleEndian(after.Inventory.AsSpan(cell)));
+        var profile = Sacred.GameServer.Auth.Hero.HeroFile.FindChunk(saved.AsSpan(0, savedLength), 0xC3, out var profileAt, out _);
+        CollectionAssert.AreEqual(saved.AsSpan(profileAt, 556).ToArray(), block[..556], "the preview is the profile chunk");
     }
 }

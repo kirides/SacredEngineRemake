@@ -10,8 +10,12 @@ public interface IServerAdmin
     /// <summary>Entries with an id greater than <paramref name="afterId"/>, oldest first (at most <paramref name="max"/>).</summary>
     IReadOnlyList<ChatEntry> ChatSince(long afterId, int max);
     IReadOnlyList<BanEntry> Bans();
+    /// <summary>Current flood protection limits and counters.</summary>
+    FloodSettings Flood();
     /// <summary>Queues a command for the game loop. False when the queue is full.</summary>
     bool Submit(in AdminCommand command);
+    /// <summary>Cancelled when the server stops: the web UI ends its streaming responses and stops at once (it never waits for browsers).</summary>
+    CancellationToken StopRequested { get; }
 }
 
 public sealed record ServerOverview(
@@ -57,6 +61,13 @@ public enum AdminCommandKind
     /// <summary>Kick everybody and reset the session.</summary>
     EndSession,
     Shutdown,
+    /// <summary>Text = <c>KEY=VALUE</c> pairs separated by ';' or new lines (FLOOD_* keys, MAX_CONNECTIONS_PER_ADDRESS); applied live.</summary>
+    SetFlood,
 }
+
+/// <summary>Flood protection as the game loop uses it right now (see Sacred.GameServer README "Flood protection").</summary>
+public sealed record FloodSettings(
+    bool Enabled, bool Explicit, int MessagesPerSecond, int MessageBurst, int BytesPerSecond, int ByteBurst, int ChatPerSecond, int ChatBurst,
+    int KickAfterDrops, int StrikeWindowSeconds, int UploadGraceSeconds, int MaxConnectionsPerAddress, long Drops, long Removed, long RefusedConnections);
 
 public readonly record struct AdminCommand(AdminCommandKind Kind, int Slot = 0, int Value = 0, string? Text = null);

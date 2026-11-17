@@ -198,7 +198,9 @@ public class WebAdminTests
         public long ChatHead => Chat.Count;
         public IReadOnlyList<ChatEntry> ChatSince(long afterId, int max) => Chat.Where(c => c.Id > afterId).Take(max).ToList();
         public IReadOnlyList<BanEntry> Bans() => [];
+        public FloodSettings Flood() => new(true, false, 600, 3000, 2 * 1024 * 1024, 8 * 1024 * 1024, 3, 8, 500, 10, 60, 8, 42, 1, 2);
         public bool Submit(in AdminCommand command) { Commands.Add(command); return true; }
+        public CancellationToken StopRequested => default;
     }
 
     private static async Task<(WebUiServer Server, HttpClient Client, FakeAdmin Admin)> StartWeb(WebUiOptions options)
@@ -326,6 +328,63 @@ public class WebAdminTests
             StringAssert.Contains(await refused.Content.ReadAsStringAsync(), "evil.example");
             Assert.AreEqual(HttpStatusCode.Forbidden, (await client.SendAsync(Post("https://gs.example", ("Sec-Fetch-Site", "cross-site")))).StatusCode);
         }
+    }
+
+    [TestMethod]
+    public async Task FloodLimitsAreShownAndChangedLive()
+    {
+        var (server, _, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = new Uri($"http://127.0.0.1:{server.Ports[0]}") };
+        await using (server)
+        {
+            using var flood = JsonDocument.Parse(await client.GetStringAsync("/api/flood"));
+            Assert.AreEqual(600, flood.RootElement.GetProperty("messagesPerSecond").GetInt32());
+            Assert.AreEqual(42, flood.RootElement.GetProperty("drops").GetInt64());
+            var page = await client.GetStringAsync("/");
+            StringAssert.Contains(page, "id=\"flood\"");
+            StringAssert.Contains(page, "42 dropped");
+            static FormUrlEncodedContent Form(params (string, string)[] pairs) => new(pairs.Select(p => KeyValuePair.Create(p.Item1, p.Item2)));
+            // Unchanged values: no command.
+            var same = await client.PostAsync("/actions/flood-form", Form(("enabled", "0"), ("enabled", "1"), ("msg", "600"), ("kbps", "2048"), ("chat", "3")));
+            StringAssert.Contains(Uri.UnescapeDataString(same.Headers.Location!.ToString()), "Nothing to change");
+            Assert.AreEqual(0, admin.Commands.Count);
+            // Harden: fewer messages, less data, less chat; only those keys are sent, in one command.
+            var hard = await client.PostAsync("/actions/flood-form", Form(("enabled", "0"), ("enabled", "1"), ("msg", "100"), ("kbps", "512"), ("chat", "1"), ("kick", "500")));
+            Assert.AreEqual(HttpStatusCode.SeeOther, hard.StatusCode);
+            StringAssert.Contains(Uri.UnescapeDataString(hard.Headers.Location!.ToString()), "applied live");
+            Assert.AreEqual(new AdminCommand(AdminCommandKind.SetFlood, Text: "FLOOD_MESSAGES_PER_SECOND=100;FLOOD_BYTES_PER_SECOND=524288;FLOOD_CHAT_PER_SECOND=1"), admin.Commands[0]);
+            // Unchecked box (only the hidden 0): turn it off.
+            await client.PostAsync("/actions/flood-form", Form(("enabled", "0")));
+            Assert.AreEqual("FLOOD_PROTECTION=0", admin.Commands[1].Text);
+            // JSON API: validated keys and values.
+            Assert.AreEqual(HttpStatusCode.OK, (await client.PostAsync("/api/flood", Json("""{"text":"FLOOD_CHAT_BURST=2;max-connections-per-address=3"}"""))).StatusCode);
+            Assert.AreEqual(HttpStatusCode.BadRequest, (await client.PostAsync("/api/flood", Json("""{"text":"PASSWORD=1"}"""))).StatusCode);
+            Assert.AreEqual(HttpStatusCode.BadRequest, (await client.PostAsync("/api/flood", Json("""{"text":"FLOOD_CHAT_BURST=-1"}"""))).StatusCode);
+            Assert.AreEqual(3, admin.Commands.Count);
+        }
+    }
+
+    [TestMethod]
+    public void FloodChangesApplyToTheRunningServerWithoutKicking()
+    {
+        using var server = new Server();
+        using var a = RawClient.Admit(server.Port, "Alice", 1);
+        using var b = RawClient.Admit(server.Port, "Bob", 2);
+        Assert.IsFalse(server.Host.Flood().Enabled);
+        Assert.IsTrue(server.Host.Submit(new AdminCommand(AdminCommandKind.SetFlood, Text: "FLOOD_PROTECTION=1;FLOOD_CHAT_PER_SECOND=1;FLOOD_CHAT_BURST=2;FLOOD_KICK_AFTER_DROPS=0")));
+        var flood = Eventually(() => server.Host.Flood(), f => f.Enabled);
+        Assert.IsTrue(flood.Enabled);
+        Assert.AreEqual(2, flood.ChatBurst);
+        Assert.AreEqual(2, Eventually(() => server.Host.Players(), p => p.Count == 2).Count, "nobody is kicked by a change");
+        for (var i = 0; i < 10; i++) a.Send(0x005, Text("spam"));
+        var received = 0;
+        var deadline = Environment.TickCount64 + 600;
+        while (Environment.TickCount64 < deadline)
+            if (b.TryReceive((int)Math.Max(1, deadline - Environment.TickCount64)) is { Opcode: 0x005 }) received++;
+        Assert.AreEqual(2, received, "the new chat limit applies at once");
+        Assert.IsTrue(server.Host.ChatSince(0, 100).Any(e => e.Kind == ChatKind.System && e.Text.StartsWith("Flood protection on", StringComparison.Ordinal)));
+        Assert.IsTrue(server.Host.Submit(new AdminCommand(AdminCommandKind.SetFlood, Text: "FLOOD_PROTECTION=0")));
+        Assert.IsFalse(Eventually(() => server.Host.Flood(), f => !f.Enabled).Enabled);
     }
 
     [TestMethod]

@@ -18,6 +18,8 @@ namespace Sacred.GameServer.Session;
 /// </summary>
 public sealed partial class GameServerHost : IServerAdmin
 {
+    CancellationToken IServerAdmin.StopRequested => _stopCts.Token;
+
     private const int SnapshotIntervalMs = 250, ChatRingSize = 512, ChatTextChars = 128, ChatNameChars = 32, AdminQueueLimit = 256;
 
     private sealed class ChatSlot
@@ -266,6 +268,7 @@ public sealed partial class GameServerHost : IServerAdmin
                 Log.Info("web admin: session ended.");
                 ShutDownSession();
                 break;
+            case AdminCommandKind.SetFlood when c.Text is { } settings: ApplyFloodSettings(settings); break;
             case AdminCommandKind.Shutdown:
                 Log.Info("web admin: shutting down.");
                 Stop();
