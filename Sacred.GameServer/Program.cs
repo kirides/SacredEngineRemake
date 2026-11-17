@@ -60,9 +60,8 @@ if (config.LobbyHost is { } lobbyHost)
 {
     var publicIp = advertised.Equals(IPAddress.Loopback) ? 0u : System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(advertised.MapToIPv4().GetAddressBytes());
     var record = host.LobbyRecord(announcedVersion, publicIp);
-    lobby = new LobbyClient(lobbyHost, config.LobbyPort > 0 ? config.LobbyPort : 7066, record);
+    lobby = new LobbyClient(lobbyHost, config.LobbyPort > 0 ? config.LobbyPort : 7066, record, host.StopToken);   // ends on the host's stop token
     host.AttachLobby(lobby, record);
-    host.StopToken.Register(lobby.RequestStop);           // the lobby stops the moment the server stops
     lobby.Start();
 }
 
