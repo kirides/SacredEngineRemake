@@ -122,6 +122,7 @@ public sealed partial class GameServerHost : IDisposable
         var created = new PlayerSession { Connection = connection, LastReceiveMs = _clock.ElapsedMilliseconds, LastKeepAliveMs = _clock.ElapsedMilliseconds };
         connection.Session = created;
         _sessions.Add(created);
+        if (FloodOn && !AdmitConnection(connection)) connection.Close();
         return created;
     }
 
@@ -166,6 +167,7 @@ public sealed partial class GameServerHost : IDisposable
 
     private void HandleCustomData(PlayerSession s, ReadOnlySpan<byte> payload, long now)
     {
+        if (FloodOn && !FloodFrame(s, payload.Length, now)) return;
         if (payload.Length < 4 + GoldWire.EnvelopeHeaderBytes || BinaryPrimitives.ReadUInt16LittleEndian(payload) != TinCatWire.GameModule ||
             BinaryPrimitives.ReadUInt16LittleEndian(payload[2..]) != 0) { Drop(s, "bad TinCat module"); return; }
         var envelope = payload[4..];
@@ -186,6 +188,7 @@ public sealed partial class GameServerHost : IDisposable
     private void Dispatch(PlayerSession s, in GoldMessageView m)
     {
         if (Log.TraceEnabled) Log.Trace("RX", s.Slot, m.Opcode, m.Sender, m.Origin, m.Payload);
+        if (FloodOn && !FloodMessage(s, m)) return;
         switch (m.Opcode)
         {
             case 0x10: OnFirstContact(s, m); return;

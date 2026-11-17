@@ -122,6 +122,25 @@ online, lobby kick, Closed Net character, lobby shutdown).
    not full parity with the client API).
 6. Ladder export (`LADDER_EXPORT`).
 
+## Flood protection (`--flood-protection`, on with `--authoritative`)
+
+GameServer.exe has none, so plain relay games stay unlimited unless `FLOOD_PROTECTION=1` is set; `--authoritative` turns it on
+(`FLOOD_PROTECTION=0` turns it off again). Code: `Session/FloodGuard.cs` (pure checks) and `Session/GameServerHost.Flood.cs`;
+the hooks are one line each in connection set-up, `HandleCustomData` and `Dispatch`. No allocations per message.
+
+| Limit | Default | Key |
+| --- | --- | --- |
+| received bytes (TinCat payloads as received) | 2 MB/s, burst 8 MB | `FLOOD_BYTES_PER_SECOND`, `FLOOD_BYTE_BURST` |
+| messages | 600/s, burst 3000 | `FLOOD_MESSAGES_PER_SECOND`, `FLOOD_MESSAGE_BURST` |
+| chat lines 0x003/0x004/0x005 (also count as messages) | 3/s, burst 8; excess is muted, never kicked | `FLOOD_CHAT_PER_SECOND`, `FLOOD_CHAT_BURST` |
+| kick (reason 8) after dropped messages/frames | 500 within 10 s (0 = never) | `FLOOD_KICK_AFTER_DROPS`, `FLOOD_STRIKE_WINDOW` |
+| free upload of world/hero states, banks, inventories before entering the world | 60 s after admission | `FLOOD_UPLOAD_GRACE` |
+| open connections per IP address (players behind one NAT share it) | 8 (0 = unlimited) | `MAX_CONNECTIONS_PER_ADDRESS` |
+
+`FloodTests` cover the buckets, mute vs. kick, the upload grace, the connection limit, relay mode staying unlimited and a zero
+allocation check. The defaults are generous guesses; real sessions (sector owners stream many creature updates) should be
+measured before tightening them.
+
 ## Authoritative mode (optional, `--authoritative`)
 
 Off by default: normal relay games behave like the original. Code lives in `Auth/` and `Session/GameServerHost.Authoritative.cs`; the only
