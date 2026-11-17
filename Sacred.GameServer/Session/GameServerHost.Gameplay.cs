@@ -42,7 +42,6 @@ public sealed partial class GameServerHost
     /// <summary>Gameplay routing (after admission and password).</summary>
     private void Route(PlayerSession s, in GoldMessageView m)
     {
-        CaptureMessage(s, m);                                            // --capture (GameServerHost.Witness.cs)
         if (_config.Auth.Enabled) { if (!AuthoritativeFilter(s, m)) return; }
         else if (TrackHeroes) CaptureHeroState(s, m);
         if (_scripts is not null && ScriptMessage(s, m)) return;

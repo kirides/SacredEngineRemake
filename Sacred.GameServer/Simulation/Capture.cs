@@ -5,19 +5,21 @@ using System.Collections.Concurrent;
 namespace Sacred.GameServer.Simulation;
 
 /// <summary>
-/// Session capture (docs/authoritative-world-plan.md, M0): every message a player sends, after admission, with its time and slot,
-/// so real sessions with stock clients become replayable test inputs. <c>--capture=&lt;folder&gt;</c> writes one file per server run,
+/// Session capture (docs/authoritative-world-plan.md, M0): every TinCat frame a client sends (login, keep-alives, the game data with
+/// admission and every message, the disconnect), with its time and connection number, so real sessions with stock clients can be
+/// replayed through the server exactly (<see cref="CaptureReplay"/>). <c>--capture=&lt;folder&gt;</c> writes one file per server run,
 /// <c>capture-yyyyMMdd-HHmmss.sgcap</c>. The game loop appends into a pooled buffer; a worker thread writes full buffers, so the
 /// loop never touches the disk and allocates nothing in steady state.
-/// <para>File: <c>"SGSCAP01"</c>, u64 unix milliseconds of the start, then records
-/// <c>[u32 size of the rest][u32 ms since start][u8 slot][u8 direction 0 = from the player][u16 opcode][payload]</c>.</para>
+/// <para>File: <c>"SGSCAP02"</c>, u64 unix milliseconds of the start, then records
+/// <c>[u32 size of the rest][u32 ms since start][u16 connection][u16 0][u32 TinCat frame type][u32 TinCat sender][payload]</c>;
+/// frame type <c>0xFFFFFFFF</c> is the disconnect.</para>
 /// <para>Privacy: captures hold everything players send, chat and character names included. They stay on the server; the folder gets
 /// a <c>.gitignore</c> of <c>*</c>.</para>
 /// </summary>
 public sealed class CaptureWriter : IDisposable
 {
-    public const ulong Magic = 0x3130504143534753;        // "SGSCAP01"
-    public const int HeaderBytes = 16, RecordHeaderBytes = 12;
+    public const ulong Magic = 0x3230504143534753;        // "SGSCAP02"
+    public const int HeaderBytes = 16, RecordHeaderBytes = 20;
     private const int BufferBytes = 1 << 20;
 
     private readonly FileStream _file;
@@ -60,7 +62,7 @@ public sealed class CaptureWriter : IDisposable
             var path = System.IO.Path.Combine(folder, $"capture-{DateTime.UtcNow:yyyyMMdd-HHmmss}.sgcap");
             for (var i = 1; File.Exists(path); i++) path = System.IO.Path.Combine(folder, $"capture-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{i}.sgcap");
             var writer = new CaptureWriter(path, nowMs);
-            Log.Info($"Capture: writing every player message to {path}.");
+            Log.Info($"Capture: writing every client frame to {path}.");
             return writer;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
@@ -70,8 +72,8 @@ public sealed class CaptureWriter : IDisposable
         }
     }
 
-    /// <summary>Game loop: one message from a player.</summary>
-    public void Append(long nowMs, byte slot, ushort opcode, ReadOnlySpan<byte> payload)
+    /// <summary>Game loop: one frame from a client.</summary>
+    public void Append(long nowMs, ushort connection, uint type, uint sender, ReadOnlySpan<byte> payload)
     {
         var size = RecordHeaderBytes + payload.Length;
         if (_length + size > _buffer.Length) Hand();
@@ -85,9 +87,10 @@ public sealed class CaptureWriter : IDisposable
         var record = target.AsSpan(at, size);
         BinaryPrimitives.WriteInt32LittleEndian(record, size - 4);
         BinaryPrimitives.WriteUInt32LittleEndian(record[4..], (uint)Math.Max(0, nowMs - _startMs));
-        record[8] = slot;
-        record[9] = 0;
-        BinaryPrimitives.WriteUInt16LittleEndian(record[10..], opcode);
+        BinaryPrimitives.WriteUInt16LittleEndian(record[8..], connection);
+        BinaryPrimitives.WriteUInt16LittleEndian(record[10..], 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(record[12..], type);
+        BinaryPrimitives.WriteUInt32LittleEndian(record[16..], sender);
         payload.CopyTo(record[RecordHeaderBytes..]);
         Records++;
         Bytes += size;
@@ -138,12 +141,14 @@ public sealed class CaptureWriter : IDisposable
     }
 }
 
-/// <summary>One captured message.</summary>
-public readonly ref struct CaptureRecord(uint atMs, byte slot, ushort opcode, ReadOnlySpan<byte> payload)
+/// <summary>One captured frame.</summary>
+public readonly ref struct CaptureRecord(uint atMs, ushort connection, uint type, uint sender, ReadOnlySpan<byte> payload)
 {
     public uint AtMs { get; } = atMs;
-    public byte Slot { get; } = slot;
-    public ushort Opcode { get; } = opcode;
+    public ushort Connection { get; } = connection;
+    /// <summary>TinCat frame type (Net/TinCatWire); <see cref="Net.InboundFrame.Disconnected"/> for the disconnect.</summary>
+    public uint Type { get; } = type;
+    public uint Sender { get; } = sender;
     public ReadOnlySpan<byte> Payload { get; } = payload;
 }
 
@@ -172,7 +177,8 @@ public sealed class CaptureReader
         var size = BinaryPrimitives.ReadInt32LittleEndian(_data.AsSpan(_at)) + 4;
         if (size < CaptureWriter.RecordHeaderBytes || _at + size > _data.Length) return false;
         var r = _data.AsSpan(_at, size);
-        record = new CaptureRecord(BinaryPrimitives.ReadUInt32LittleEndian(r[4..]), r[8], BinaryPrimitives.ReadUInt16LittleEndian(r[10..]), r[CaptureWriter.RecordHeaderBytes..]);
+        record = new CaptureRecord(BinaryPrimitives.ReadUInt32LittleEndian(r[4..]), BinaryPrimitives.ReadUInt16LittleEndian(r[8..]),
+            BinaryPrimitives.ReadUInt32LittleEndian(r[12..]), BinaryPrimitives.ReadUInt32LittleEndian(r[16..]), r[CaptureWriter.RecordHeaderBytes..]);
         _at += size;
         return true;
     }

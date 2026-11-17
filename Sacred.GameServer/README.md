@@ -465,9 +465,25 @@ bounds outcomes (where, when, how many) but cannot reproduce them; merchant sale
 `AUTH_STRICT_GOLD=on` also keeps legitimately earned merchant gold out of the save); none of the source rules is verified with a real client yet,
 which is why everything defaults to off.
 
-**Captures (`--capture=<folder>`, key `CAPTURE`).** Every message an admitted player sends goes into `capture-<time>.sgcap` in that folder (format in
-`Simulation/Capture.cs`, reader `CaptureReader`): real sessions with stock clients as replayable test input. The game loop only copies into a
-pooled buffer, a worker thread writes. The files hold everything players send (chat, names); the folder gets a `.gitignore` of `*`.
+**Captures (`--capture=<folder>`, key `CAPTURE`) and replays (`--replay=<file>`).** Every TinCat frame a client sends (login, keep-alives, game data
+with admission and every message, the disconnect) goes into `capture-<time>.sgcap` in that folder with its time and connection number (format in
+`Simulation/Capture.cs`). The game loop only copies into a pooled buffer, a worker thread writes. The files hold everything players send (chat,
+names); the folder gets a `.gitignore` of `*`. `--replay=capture-....sgcap` runs that session through the server again (`Simulation/CaptureReplay.cs`:
+in-memory links, the server's clock set to the captured times, nothing bound, no lobby; every admitted hero counts as kept by the server) and prints
+what the authoritative checks decide **with the settings given on that command line**, so the strictness can be tuned on real sessions before it is
+switched on:
+
+```
+SacredGameServer --replay=captures/capture-20261117-180000.sgcap --auth-item-sources=token,trade,rebuild,kill --auth-loot-range=1000
+```
+
+Checks that are off are replayed in `log` mode. Pass the session's `--network-password` if it had one. Without the lobby the hero's baseline block is
+unknown, so items the hero brought along count as unexplained unless another source covers them.
+
+**Current positions (plan M4, authoritative mode).** 0x165 position updates `[ref][x][y][surface][sector][facing]` from an object's owner are applied
+to the server's world in place (the 24-byte prefix and the object's base block, `ObjectMirror.ApplyPosition`), so streamed states, `player.x/y`,
+a kill's position and the witness's loot range use where the object is now, not where it was first seen. Relay mode (no `--authoritative`) is
+unchanged.
 
 **Shared stash (Closed Net).** `scripts-examples/shared_stash.lua` keeps the stash of the Sacred Gear mod shared-stash per `player.account` on channel `shared-stash`, with the hero custody checks above (deposits count after the item left the hero and the hero was saved; withdrawals are removed after the item arrived and the hero was saved). Outside `--authoritative` it offers nothing. Hot reload: everything is stored at every change; the join times go through the unload hook (reason reload), tokens live in the C# host, in-flight checks are resumed by the clients' resends (same rid). Tunables (`max_items`, `max_data`, `verify_seconds`, `retry_seconds`, `token_seconds`, `rate_per_minute`, ...) can be overridden at run time by a table under the key `config` in the mod's storage (applies within 30 s). Tests: `SharedStashScriptTests.cs`.
 

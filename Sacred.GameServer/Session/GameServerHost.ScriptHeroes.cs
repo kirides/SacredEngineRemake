@@ -50,7 +50,11 @@ public sealed partial class GameServerHost
     private PlayerSession? AuthoritativeSession(int slot) =>
         _config.Auth.Enabled && slot is >= 1 and <= MaxSlots && _slots[slot] is { State: not SessionState.Closed } s ? s : null;
 
+    /// <summary>Capture replays (Simulation/CaptureReplay.cs): every admitted hero counts as kept by the server, there is no lobby.</summary>
+    public bool AssumeHeroCustody { get; init; }
+
     public bool HeroSavedByServer(int slot) =>
+        AssumeHeroCustody ? AuthoritativeSession(slot) is { State: >= SessionState.SlotAssigned } :
         AuthoritativeSession(slot) is { } s && Lobby is { IsOnline: true } && s.LobbyIdentity is not (0 or -1)
         && s.CharacterBlock is >= 1 and <= 8 && s.CharacterReceived;
 

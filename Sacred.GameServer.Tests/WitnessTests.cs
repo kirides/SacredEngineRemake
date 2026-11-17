@@ -233,13 +233,13 @@ public class WitnessTests
             var writer = CaptureWriter.Open(folder, 1000)!;
             Assert.IsNotNull(writer);
             var payload = new byte[300];
-            for (var i = 0; i < 20; i++) writer.Append(1000 + i, 1, 0x165, payload);
+            for (var i = 0; i < 20; i++) writer.Append(1000 + i, 1, 7, 0x10, payload);
             var before = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < 5000; i++) { payload[0] = (byte)i; writer.Append(1100 + i, (byte)(1 + i % 3), (ushort)(0x160 + i % 16), payload.AsSpan(0, i % 300)); }
+            for (var i = 0; i < 5000; i++) { payload[0] = (byte)i; writer.Append(1100 + i, (ushort)(1 + i % 3), (uint)(0x160 + i % 16), 42, payload.AsSpan(0, i % 300)); }
             var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
             var big = new byte[3 << 20];                                    // larger than one buffer
             big[^1] = 0x5A;
-            writer.Append(9000, 2, 0x1B2, big);
+            writer.Append(9000, 2, 0x1B2, 43, big);
             writer.Dispose();
             Assert.IsTrue(File.Exists(Path.Combine(folder, ".gitignore")));
             Assert.IsTrue(allocated < 1024, $"the capture allocated {allocated} bytes");
@@ -247,8 +247,8 @@ public class WitnessTests
             var count = 0; var sawBig = false;
             while (reader.TryRead(out var record))
             {
-                if (count == 20) { Assert.AreEqual(100u, record.AtMs); Assert.AreEqual(1, record.Slot); Assert.AreEqual(0x160, record.Opcode); Assert.AreEqual(0, record.Payload.Length); }
-                if (record.Opcode == 0x1B2) { sawBig = true; Assert.AreEqual(big.Length, record.Payload.Length); Assert.AreEqual(0x5A, record.Payload[^1]); }
+                if (count == 20) { Assert.AreEqual(100u, record.AtMs); Assert.AreEqual(1, record.Connection); Assert.AreEqual(0x160u, record.Type); Assert.AreEqual(42u, record.Sender); Assert.AreEqual(0, record.Payload.Length); }
+                if (record.Type == 0x1B2) { sawBig = true; Assert.AreEqual(big.Length, record.Payload.Length); Assert.AreEqual(0x5A, record.Payload[^1]); }
                 count++;
             }
             Assert.AreEqual(20 + 5000 + 1, count);

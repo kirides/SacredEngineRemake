@@ -50,7 +50,7 @@ public sealed partial class GameServerHost : IDisposable
     private readonly bool[] _seenUnhandled = new bool[4096];
     private readonly Dictionary<ushort, MessageHandler> _extensions = new();
     private readonly LanAnnouncer? _lan;
-    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private readonly Simulation.HostClock _clock;
     private uint _nextTinCatId = 0x100;
     private long _nextLanMs;
     private volatile bool _stop;
@@ -61,9 +61,9 @@ public sealed partial class GameServerHost : IDisposable
     /// <summary>Hook for gameplay modules (world simulation) invoked once per tick after packets were processed.</summary>
     public Action<long>? OnTick;
 
-    public GameServerHost(GameServerConfig config, AdmissionRules rules, LanAnnouncer? lan)
+    public GameServerHost(GameServerConfig config, AdmissionRules rules, LanAnnouncer? lan, Simulation.HostClock? clock = null)
     {
-        _config = config; _rules = rules; _lan = lan;
+        _config = config; _rules = rules; _lan = lan; _clock = clock ?? new Simulation.HostClock();
         _acceptor = new TcpAcceptor(config.TcpPort, _inbox, config.BindAddress);
         _listeners.Add(_acceptor);
         InitializeSession();
@@ -188,6 +188,7 @@ public sealed partial class GameServerHost : IDisposable
     private void Handle(in InboundFrame frame, long now)
     {
         var s = Session(frame.Connection);
+        if (_config.CaptureDirectory is not null) CaptureFrame(s, frame, now);   // --capture (GameServerHost.Witness.cs)
         if (frame.Type == InboundFrame.Disconnected) { Retire(s, now); return; }
         if (s.State == SessionState.Closed) return;
         s.LastReceiveMs = now;

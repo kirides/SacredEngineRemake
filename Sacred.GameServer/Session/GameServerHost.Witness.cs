@@ -10,7 +10,7 @@ namespace Sacred.GameServer.Session;
 /// <summary>
 /// Host side of the witness (docs/authoritative-world-plan.md, M0..M2): feeds <see cref="ItemWitness"/>, <see cref="GoldLedger"/>,
 /// <see cref="OpcodeTrail"/> and the capture with what players send. Hooks in existing code, each one call: <c>Route</c> (capture),
-/// <c>AuthoritativeFilter</c> (events), <c>RememberRemovedItem</c> (destroyed items, gold piles), <c>CompleteTrade</c>, the two 0x020
+/// <c>Handle</c> (capture), <c>AuthoritativeFilter</c> (events), <c>RememberRemovedItem</c> (destroyed items, gold piles), <c>CompleteTrade</c>, the two 0x020
 /// grants of the sector code, <c>CaptureHeroState</c> (gold) and <c>AuthoritativeLeave</c>; the strict item gate
 /// (GameServerHost.ItemTokens.cs) asks <see cref="ExplainCreation"/>.
 /// </summary>
@@ -34,18 +34,20 @@ public sealed partial class GameServerHost
     /// <summary>Gold increases that were not saved (AUTH_STRICT_GOLD=on).</summary>
     public int GoldClamped { get; private set; }
 
-    /// <summary>Route: every message of an admitted player goes into the capture.</summary>
-    private void CaptureMessage(PlayerSession s, in GoldMessageView m)
+    private ushort _nextCaptureLink;
+
+    /// <summary>Handle: every frame a client sends goes into the capture (its connection numbered on the first frame).</summary>
+    private void CaptureFrame(PlayerSession s, in Net.InboundFrame frame, long now)
     {
-        if (_config.CaptureDirectory is null) return;
         if (_capture is null)
         {
             if (_captureTried) return;
             _captureTried = true;
-            _capture = CaptureWriter.Open(_config.CaptureDirectory, _clock.ElapsedMilliseconds);
+            _capture = CaptureWriter.Open(_config.CaptureDirectory!, now);
             if (_capture is null) return;
         }
-        _capture.Append(_clock.ElapsedMilliseconds, s.Slot, m.Opcode, m.Payload);
+        if (s.CaptureLink == 0) s.CaptureLink = ++_nextCaptureLink == 0 ? ++_nextCaptureLink : _nextCaptureLink;
+        _capture.Append(now, s.CaptureLink, frame.Type, frame.Sender, frame.Type == Net.InboundFrame.Disconnected ? default : frame.Span);
     }
 
     private void PumpCapture(long now) => _capture?.Pump(now);

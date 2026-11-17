@@ -1,6 +1,6 @@
 # Plan: a server that simulates the Sacred world (authoritative mode, stage 2+)
 
-Status (2026-11-17, branch `feature/gs-sim`): first round implemented, see "Progress" at the end. Plan written on `feature/headless-game-server`.
+Status (2026-11-17, branch `feature/gs-sim`): rounds 1 and 2 implemented, see "Progress" at the end. Plan written on `feature/headless-game-server`.
 
 ## 1. Goal
 
@@ -308,3 +308,13 @@ new project would need an entry in the upstream solution file) plus `Session/Gam
   towards the kick limit.
 
 Next round: M0 replay harness and real-client captures (answers Q1..Q8 and calibrates the windows), then M4 (real object world), then M3/M5.
+
+### Round 2 (2026-11-17)
+
+* **M0:** captures are now at the TinCat frame level (logins, admission, keep-alives, disconnects: format `SGSCAP02`), and `--replay=<file>`
+  (`Simulation/CaptureReplay.cs`) runs a capture through a real `GameServerHost` with a manual clock (`Simulation/HostClock.cs`, injected through
+  the host's constructor) and in-memory links, then prints the witness report under the given settings. Test: a live session and its replay make
+  the same decisions, and a stricter source list on the same capture refuses more. Still open: real-client captures (stock client on loopback,
+  Closed Net with the local test lobby), which are John's runs or need the game on this machine.
+* **M4, first step:** 0x165 position updates applied to the server's world (authoritative mode only). Next: HP 0x128, compact values 0x169/0x16C
+  merged instead of replaced, inventory membership, exact forwarding filters for modes 3..8.

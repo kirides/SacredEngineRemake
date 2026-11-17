@@ -140,23 +140,65 @@ public partial class AuthoritativeTests
     }
 
     [TestMethod]
-    public void CaptureRecordsTheSession()
+    public void ACaptureReplaysToTheSameDecisions()
     {
         var folder = Directory.CreateTempSubdirectory("cap-").FullName;
         try
         {
-            StrictRun(StrictItemsMode.Off, (host, player) =>
+            int[]? live = null;
+            StrictRun(StrictItemsMode.On, (host, player) =>
             {
-                player.Send(0x17D, Kill(0x7777, player.Slot));
-                player.Send(0x005, ChatLine("!item 1"));
-                StoredOf(host, "strict", "item");
+                player.Send(0x16F, CreatureState(0x7101, 0x200, 10_000, 10_000, 44));
+                player.Send(0x17D, Kill(0x7101, player.Slot));
+                player.Send(0x16F, Positioned(ItemState(0x5601, 0x12A, 0x41), 10_300, 10_100, 44));
+                Assert.AreEqual("world", ItemWhere(host, player, 0x5601));
+                player.Send(0x16F, Positioned(ItemState(0x5602, 0x12A, 0x42), 30_000, 30_000, 45));
+                Assert.AreEqual("nil", ItemWhere(host, player, 0x5602, not: "world"));
+                live = (int[])host.Witness!.Explained.Clone();
             }, configure: c => c.CaptureDirectory = folder);
             var file = Directory.GetFiles(folder, "*.sgcap").Single();
+            var types = new HashSet<uint>();
             var reader = CaptureReader.Open(file);
-            var opcodes = new List<ushort>();
-            while (reader.TryRead(out var record)) opcodes.Add(record.Opcode);
-            CollectionAssert.IsSubsetOf(new ushort[] { 0x018, 0x17D, 0x005 }, opcodes);
+            while (reader.TryRead(out var record)) types.Add(record.Type);
+            Assert.IsTrue(types.Contains(Sacred.GameServer.Wire.TinCatWire.LoginRequest), "the login is in the capture");
+
+            var config = new Sacred.GameServer.Config.GameServerConfig { TickMilliseconds = 5 };
+            config.Auth.StrictItems = StrictItemsMode.On;
+            config.Flood.Enabled = false;
+            var report = CaptureReplay.Run(config, CaptureReader.Open(file));
+            Console.WriteLine(report.Describe());
+            Assert.AreEqual(1, report.Connections);
+            Assert.AreEqual(live![(int)ItemSource.Kill], report.Explained[(int)ItemSource.Kill]);
+            Assert.AreEqual(1, report.Explained[(int)ItemSource.Kill]);
+            Assert.AreEqual(1, report.Refused);
+
+            // other strictness, same session: kills explain nothing
+            var strict = new Sacred.GameServer.Config.GameServerConfig { TickMilliseconds = 5 };
+            strict.Auth.StrictItems = StrictItemsMode.On;
+            strict.Flood.Enabled = false;
+            strict.ApplyLine("AUTH_ITEM_SOURCES=token,baseline,trade,rebuild");
+            Assert.AreEqual(2, CaptureReplay.Run(strict, CaptureReader.Open(file)).Refused);
         }
         finally { Directory.Delete(folder, true); }
+    }
+
+    [TestMethod]
+    public void PositionUpdatesMoveObjectsInTheServersWorld()
+    {
+        StrictRun(StrictItemsMode.On, (host, player) =>
+        {
+            player.Send(0x16F, CreatureState(0x7201, 0x200, 10_000, 10_000, 44));
+            var move = new byte[24];
+            BinaryPrimitives.WriteUInt32LittleEndian(move, 0x7201);
+            BinaryPrimitives.WriteInt32LittleEndian(move.AsSpan(4), 40_000);
+            BinaryPrimitives.WriteInt32LittleEndian(move.AsSpan(8), 40_000);
+            BinaryPrimitives.WriteUInt32LittleEndian(move.AsSpan(16), 47);
+            player.Send(0x165, move);
+            player.Send(0x17D, Kill(0x7201, player.Slot));
+            player.Send(0x16F, Positioned(ItemState(0x5701, 0x12A, 0x41), 40_200, 40_000, 47));
+            Assert.AreEqual("world", ItemWhere(host, player, 0x5701), "loot where the creature died, not where it was first seen");
+            player.Send(0x16F, Positioned(ItemState(0x5702, 0x12A, 0x42), 10_100, 10_000, 44));
+            Assert.AreEqual("nil", ItemWhere(host, player, 0x5702, not: "world"), "nothing died at the first position");
+        });
     }
 }

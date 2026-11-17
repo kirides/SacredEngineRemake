@@ -56,6 +56,7 @@ public static class CommandLine
         new("Networking", "max-password-tries", OptionKind.Int, "wrong passwords before a player is kicked, 1..100 (default 3)", "3", 1, 100),
         new("Networking", "max-connections-per-address", OptionKind.Int, "simultaneous connections per client address, 0 = no limit (default 8)", "8", 0),
         new("Networking", "capture", OptionKind.Path, "write every player message to a capture file in this folder (replayable test input; holds chat and names)", "captures"),
+        new("Networking", "replay", OptionKind.Path, "replay a capture file through the server (no sockets, no lobby) and print what the authoritative checks decide with the given settings, then exit", "captures/capture-20261117-180000.sgcap"),
         new("Networking", "trace", OptionKind.Flag, "log every received and sent message (opcode, sender, origin, first 32 bytes)", "1"),
 
         // ---- lobby ----

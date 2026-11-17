@@ -69,6 +69,46 @@ public sealed class ObjectMirror
 
     public bool TryGet(uint reference, out Entry entry) => _objects.TryGetValue(reference, out entry!);
 
+    /// <summary>
+    /// 0x165 position update [ref][x][y][surface][sector][facing] (Gold 0x4969D0/0x46D760) applied in place: the 24-byte prefix
+    /// ([ref][type][x][y][surface][sector]) and the object's base block (sector u16 +16, x +18, y +22, surface byte +26), so a
+    /// streamed or inspected state carries the current position (plan M4). Only from the object's owner. False when unknown.
+    /// </summary>
+    public bool ApplyPosition(byte sender, ReadOnlySpan<byte> update)
+    {
+        if (update.Length < 20) return false;
+        var reference = BinaryPrimitives.ReadUInt32LittleEndian(update) & ReferenceMask;
+        if (!_objects.TryGetValue(reference, out var entry) || entry.Owner != sender) return false;
+        var x = BinaryPrimitives.ReadInt32LittleEndian(update[4..]);
+        var y = BinaryPrimitives.ReadInt32LittleEndian(update[8..]);
+        var surface = BinaryPrimitives.ReadUInt32LittleEndian(update[12..]);
+        var sector = BinaryPrimitives.ReadUInt32LittleEndian(update[16..]);
+        var p = entry.Buffer.AsSpan(0, entry.Length);
+        var prefix = entry.LongPrefix ? 24 : 8;
+        if (entry.LongPrefix)
+        {
+            BinaryPrimitives.WriteInt32LittleEndian(p[8..], x);
+            BinaryPrimitives.WriteInt32LittleEndian(p[12..], y);
+            BinaryPrimitives.WriteUInt32LittleEndian(p[16..], surface);
+            BinaryPrimitives.WriteUInt32LittleEndian(p[20..], sector);
+        }
+        var body = p[prefix..];
+        if (body.Length >= BaseBlockBytes && BinaryPrimitives.ReadUInt32LittleEndian(body) == BaseMarker)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(body[16..], (ushort)sector);
+            BinaryPrimitives.WriteInt32LittleEndian(body[18..], x);
+            BinaryPrimitives.WriteInt32LittleEndian(body[22..], y);
+            body[26] = (byte)surface;
+        }
+        Positions++;
+        return true;
+    }
+
+    /// <summary>Position updates applied (diagnostics).</summary>
+    public long Positions { get; private set; }
+    private const int BaseBlockBytes = 41;
+    private const uint BaseMarker = 0xFEEDF00D;
+
     public int CopyReferences(Span<uint> destination)
     {
         var n = 0;
