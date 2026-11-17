@@ -131,7 +131,9 @@ public class WorldEventsScriptTests
 
         // Alice alone qualifies: the whole pool plus gold_each; a common item for everybody and the top prize for the best.
         CollectionAssert.AreEqual(new[] { (1, 50500u) }, server.Gold);
-        CollectionAssert.AreEqual(new (int, uint?)[] { (1, 3), (1, 9) }, server.Items);
+        Assert.AreEqual(2, server.Items.Count, "the rolled item and the prize");
+        Assert.AreEqual(1, server.Items.Count(i => i.Quality == 9), "the best contributor's prize");
+        Assert.IsTrue(server.Items.Any(i => i.Quality is 0 or 4 or 8 or 11 or 14), "a rolled item of one of the tiers");
         Assert.IsTrue(server.Told.Any(t => t.Slot == 1 && t.Text.Contains("50500 gold")));
 
         // The finished event is the last result; the cooldown applies; the next one is another one in the rotation.
@@ -157,7 +159,7 @@ public class WorldEventsScriptTests
         host.FireKill(server.Alice, Orc(1)); host.FireKill(server.Bob, Orc(2)); host.FireKill(server.Alice, Orc(3)); host.FireKill(server.Alice, Orc(4));
         // pool 50000: Alice 3/4, Bob 1/4; each gets 500 on top
         CollectionAssert.AreEquivalent(new[] { (1, 38000u), (2, 13000u) }, server.Gold);
-        Assert.AreEqual(3, server.Items.Count(i => i.Quality == 3) + server.Items.Count(i => i.Quality == 9), "two plain items and one prize");
+        Assert.AreEqual(3, server.Items.Count, "two rolled items and one prize");
         Assert.AreEqual(1, server.Items.Count(i => i.Slot == 1 && i.Quality == 9));
         Assert.AreEqual(0, server.Items.Count(i => i.Slot == 2 && i.Quality == 9));
     }
@@ -593,5 +595,172 @@ public class WorldEventsScriptTests
         Assert.IsTrue(host.FireChat(alice, "!area drop silver_creek"));
         Assert.IsTrue(host.FireChat(alice, "!area list"));
         Assert.IsFalse(server.Told.Last().Text.Contains("silver_creek*"));
+    }
+
+    // ---- reward odds ------------------------------------------------------------------------------------------------------
+
+    private static string WithMilestones(string rows, Func<string, string>? more = null) =>
+        Source(t =>
+        {
+            t = System.Text.RegularExpressions.Regex.Replace(t, @"      milestones = \{.*?\n      \} \} \},",
+                "      milestones = {\n" + rows + "\n      } } },", System.Text.RegularExpressions.RegexOptions.Singleline);
+            return more is null ? t : more(t);
+        });
+
+    private static readonly string FourRows = @"
+        { at = 1,  weights = { common = 100 } },
+        { at = 10, weights = { common = 75, magic = 25 } },
+        { at = 30, weights = { common = 50, magic = 30, rare = 20 } },
+        { at = 80, weights = { common = 35, magic = 30, rare = 25, epic = 8, legendary = 2 } },";
+
+    [TestMethod]
+    public void OddsAreNormalisedAndABadRowIsRefusedNotTheEvent()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", WithMilestones(@"
+            { at = 1, weights = { legendary = 100 } },
+            { at = 2, weights = { common = 0, magic = 0 } },
+            { at = 3, weights = { flaming = 5, common = 5 } },
+            { at = 4, weights = { common = -1, magic = 5 } },
+            { at = 150, weights = { common = 5 } },
+            { at = 10, weights = { common = 70, magic = 30 } },
+            { at = 90, weights = { common = 1, magic = 1, rare = 1, epic = 1, legendary = 1 } },"));
+        var (host, server) = Start(folder);
+        server.Tick(host);
+        var odds = State(host).GetProperty("active").GetProperty("reward_odds");
+        Assert.AreEqual(2, odds.GetArrayLength(), "only the two valid rows are kept");
+        foreach (var row in odds.EnumerateArray())
+        {
+            double sum = 0, top = 0;
+            foreach (var c in row.GetProperty("chances").EnumerateArray())
+            {
+                sum += c.GetProperty("percent").GetDouble();
+                if (c.GetProperty("tier").GetString() == "legendary") top = c.GetProperty("percent").GetDouble();
+            }
+            Assert.AreEqual(100.0, sum, 1e-9);
+            Assert.IsTrue(top < 100);
+        }
+        var first = odds[0].GetProperty("chances");
+        Assert.AreEqual("common", first[0].GetProperty("tier").GetString());
+        Assert.AreEqual(70.0, first[0].GetProperty("percent").GetDouble(), 1e-9);
+        Assert.AreEqual(30.0, first[1].GetProperty("percent").GetDouble(), 1e-9);
+        Assert.AreEqual(20.0, odds[1].GetProperty("chances")[4].GetProperty("percent").GetDouble(), 1e-9, "five equal weights: 20 % each");
+    }
+
+    [TestMethod]
+    public void ReachingAMilestoneAnnouncesTheNewOddsAndTheCommandShowsThemAll()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", WithMilestones(FourRows, t => t.Replace("target = 4, duration = 3600", "target = 20, duration = 3600")));
+        var (host, server) = Start(folder);
+        server.Tick(host);
+        host.FireKill(server.Alice, Orc(1));                                // 5 %: the first milestone (1 %)
+        Assert.IsTrue(server.Said.Any(s => s.Contains("Orc hunt 1%: reward odds now: Common 100%")), string.Join(" | ", server.Said));
+        for (uint i = 2; i <= 6; i++) host.FireKill(server.Alice, Orc(i));  // 30 %
+        Assert.IsTrue(server.Said.Any(s => s.Contains("Orc hunt 30%: reward odds now: Rare 20%, Magic 30%, Common 50%")), string.Join(" | ", server.Said));
+        Assert.IsTrue(host.FireChat(server.Alice, "!event rewards"));
+        var told = string.Join("\n", server.Told.Select(t => t.Text));
+        StringAssert.Contains(told, "from 1%: Common 100%");
+        StringAssert.Contains(told, "from 80%: Magic 30%, Common 35%".Replace("Magic 30%, Common 35%", "Legendary 2%, Epic 8%, Rare 25%, Magic 30%, Common 35%"));
+        StringAssert.Contains(told, "Only heroes with at least 2 kills take part. Nothing else changes the odds.");
+        StringAssert.Contains(told, "Now (30% done): Rare 20%, Magic 30%, Common 50%");
+        // the dashboard shows the table with the current row marked, and the JSON has all of it
+        var page = host.HandleRequest("world_events", "", [], publicOnly: true).Body;
+        StringAssert.Contains(page, "Reward odds");
+        StringAssert.Contains(page, "<tr class=\"now\"><td>30%</td><td>50%</td><td>30%</td><td>20%</td><td>&ndash;</td><td>&ndash;</td></tr>");
+        var active = State(host).GetProperty("active");
+        Assert.AreEqual(3, active.GetProperty("odds_now").GetInt32());
+        Assert.IsTrue(active.GetProperty("reward_rules").GetArrayLength() >= 4);
+    }
+
+    [TestMethod]
+    public void TheRollsUseTheOddsOfTheHighestMilestoneAndAreLoggedPublicly()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", WithMilestones(@"
+            { at = 1,  weights = { common = 100 } },
+            { at = 50, weights = { rare = 100 } },
+            { at = 99, weights = { legendary = 1, epic = 99 } },", t => t.Replace("min_contribution = 2,", "min_contribution = 1,")));
+        var (host, server) = Start(folder);
+        server.Tick(host);
+        for (uint i = 1; i <= 4; i++) host.FireKill(server.Alice, Orc(i));     // 100 %: the last row: epic 99 %, legendary 1 %
+        Assert.AreEqual(2, server.Items.Count, "one rolled item and the prize");
+        Assert.IsTrue(server.Items.Any(i => i.Quality == 11 || i.Quality == 14), "an epic or a legendary item");
+        Assert.AreEqual(1, server.Items.Count(i => i.Quality == 9), "the best contributor's prize is not rolled");
+        var rewards = State(host).GetProperty("rewards");
+        Assert.AreEqual(1, rewards.GetArrayLength());
+        Assert.AreEqual("Alice", rewards[0].GetProperty("name").GetString());
+        Assert.AreEqual("Test ring", rewards[0].GetProperty("item").GetString());
+        Assert.AreEqual(99.0, rewards[0].GetProperty("at").GetDouble());
+        var json = host.HandleRequest("world_events", "state", [], publicOnly: true).Body;
+        Assert.IsFalse(json.Contains("uid") || json.Contains("name:Alice"), json);
+        StringAssert.Contains(host.HandleRequest("world_events", "", [], publicOnly: true).Body, "<b>Alice</b>");
+    }
+
+    [TestMethod]
+    public void AnEventThatRunsOutStillRollsWithTheOddsItReachedAndPaysNoGold()
+    {
+        foreach (var onFail in new[] { true, false })
+        {
+            using var folder = new Folder();
+            folder.Write("world_events.lua", WithMilestones(@"
+                { at = 1,  weights = { common = 100 } },
+                { at = 30, weights = { rare = 100 } },
+                { at = 90, weights = { magic = 100 } },", t => t.Replace("target = 4, duration = 3600", "target = 10, duration = 1")
+                    .Replace("min_contribution = 2,", "min_contribution = 1,")
+                    .Replace("      milestones = {", (onFail ? "" : "      on_fail = false,\n") + "      milestones = {")));
+            var (host, server) = Start(folder);
+            server.Tick(host);
+            for (uint i = 1; i <= 4; i++) host.FireKill(server.Alice, Orc(i));     // 40 %: the 30 % row, the rare one
+            Thread.Sleep(1200);
+            server.Tick(host);
+            StringAssert.Contains(server.Said.Last(), "has failed: 4/10");
+            Assert.AreEqual(0, server.Gold.Count, "no gold without the goal");
+            if (onFail)
+            {
+                CollectionAssert.AreEqual(new (int, uint?)[] { (1, 8) }, server.Items, "a rare item, no prize");
+                StringAssert.Contains(server.Said.Last(), "30% odds: Rare 100%");
+            }
+            else Assert.AreEqual(0, server.Items.Count);
+        }
+    }
+
+    [TestMethod]
+    public void TheRollIsFairOverManyHeroes()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", WithMilestones(@"
+            { at = 1, weights = { common = 70, magic = 30 } },", t => t.Replace("target = 4, duration = 3600", "target = 150, duration = 3600")
+                .Replace("min_contribution = 2,", "min_contribution = 1,").Replace("top_item = { quality = 9 }", "top_item = nil")));
+        var server = new Fake();
+        server.All.Clear();
+        for (var slot = 1; slot <= 150; slot++) server.All.Add(new ScriptPlayer(slot, "Hero" + slot, "name:Hero" + slot, 1, 10, true, slot == 1, 0));
+        var (host, _) = Start(folder, server);
+        server.Tick(host);
+        for (var i = 0; i < 150; i++) host.FireKill(server.All[i], Orc((uint)(100 + i)));
+        Assert.AreEqual(150, server.Items.Count);
+        var magic = server.Items.Count(i => i.Quality == 4);
+        Assert.AreEqual(150, magic + server.Items.Count(i => i.Quality == 0), "only the two tiers with a weight");
+        Assert.IsTrue(magic is > 20 and < 70, $"30 % of 150 is 45, got {magic}");
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
+    public void ThePushedStateCarriesTheCurrentAndTheNextOdds()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", WithMilestones(FourRows, t => t.Replace("target = 4, duration = 3600", "target = 20, duration = 3600")));
+        var server = new Fake();
+        server.NetPlayers.Add(1);
+        var (host, _) = Start(folder, server);
+        server.Tick(host);
+        for (uint i = 1; i <= 2; i++) host.FireKill(server.Alice, Orc(i));       // 10 %
+        server.Pushed.Clear();
+        server.Tick(host);
+        var payload = server.Pushed.Single(p => p.Slot == 1).Payload;
+        Assert.AreEqual("Magic 25%, Common 75%", payload.GetProperty("odds").GetString());
+        Assert.AreEqual(10, payload.GetProperty("odds_at").GetInt32());
+        Assert.AreEqual("Rare 20%, Magic 30%, Common 50%", payload.GetProperty("odds_next").GetString());
+        Assert.AreEqual(30, payload.GetProperty("odds_next_at").GetInt32());
     }
 }

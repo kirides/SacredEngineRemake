@@ -67,11 +67,39 @@ local AREAS = {
 --   min_contribution  kills a hero needs to share the reward (default 1)
 --   reward         gold = pool shared by contribution, gold_each = gold for everyone who qualifies,
 --                  item = {quality=.., category=.., level=..} (as server.drop_item) one for everyone who qualifies,
---                  top_item = the same for the best contributor only
+--                  top_item = the same for the best contributor only,
+--                  milestones = rarity ODDS that improve with the event's progress (below); then `item` only says which kind of
+--                  item (category, level) and its quality is rolled from the odds,
+--                  on_fail = false: no item rolls when the time runs out (default: a failed event still rolls, with the odds of the
+--                  highest milestone it reached; gold and the top prize are paid only for a completed event)
+--
+-- REWARD ODDS (milestones). `milestones = { { at = 1, weights = { common = 100 } }, { at = 10, weights = { common = 70, magic = 30 } }, ... }`:
+-- `at` is the percent of the target the realm has reached, `weights` are relative weights per rarity tier (TIERS below); a tier's chance
+-- is its weight divided by the sum of the weights, so the chances always add up to 100 %. Rule, checked when the script loads: every
+-- weight is >= 0, at least one is > 0, and the best tier (legendary) may never be the only one with weight: its chance stays
+-- below 100 % (a milestone that breaks the rule is refused with a log line). When the event ends (completed or out of time) every
+-- hero with at least `min_contribution` kills gets ONE item rolled with server.random using the odds of the HIGHEST milestone the event
+-- reached (an event that ended at 35 % uses the 30 % row). Nothing else changes the roll: not level, class, luck or magic find, not how
+-- many kills beyond the minimum. All odds are shown: the dashboard page, /mods/world_events/state, !event rewards, the announcement
+-- when a milestone is reached and the tooltip of the Sacred Gear mod. What was rolled for whom goes to the public "recent rewards".
+-- The rarity tiers and the game's generation quality (0..14, higher is rarer) they force in server.drop_item:
+local TIERS = {
+  { id = "common", name = "Common", quality = 0 },
+  { id = "magic", name = "Magic", quality = 4 },
+  { id = "rare", name = "Rare", quality = 8 },
+  { id = "epic", name = "Epic", quality = 11 },
+  { id = "legendary", name = "Legendary", quality = 14 },
+}
 local EVENTS = {
   { id = "orc-hunt", title = "Orc hunt", goal = "kill", target = 1000, duration = 2 * 3600, names = { "orc" },
     text = "Slay 1000 orcs", min_contribution = 10,
-    reward = { gold = 50000, gold_each = 500, item = { quality = 3 }, top_item = { quality = 9 } } },
+    reward = { gold = 50000, gold_each = 500, item = {}, top_item = { quality = 9 },
+      milestones = {
+        { at = 1,  weights = { common = 100 } },
+        { at = 10, weights = { common = 75, magic = 25 } },
+        { at = 30, weights = { common = 50, magic = 30, rare = 20 } },
+        { at = 80, weights = { common = 35, magic = 30, rare = 25, epic = 8, legendary = 2 } },
+      } } },
   { id = "great-cull", title = "The great cull", goal = "kill", target = 3000, duration = 3 * 3600,
     text = "Defeat 3000 creatures of any kind", min_contribution = 20,
     reward = { gold = 150000, gold_each = 1000, item = { quality = 6 }, top_item = { quality = 10 } } },
@@ -110,6 +138,90 @@ end
 local function number_of(v) return tonumber(v) end
 local function lower_of(v) return type(v) == "string" and v ~= "" and v:lower() or nil end
 
+-- ---- reward odds ---------------------------------------------------------------------------------------------------------
+
+local tier_index = {}
+table.sort(TIERS, function(a, b) return a.quality < b.quality end)
+for i, tier in ipairs(TIERS) do tier_index[tier.id] = i end
+local TOP_TIER = TIERS[#TIERS]
+
+local function percent_text(value)
+  local text = string.format("%.1f", value):gsub("%.0$", "")
+  return text .. "%"
+end
+
+-- A milestone from its config: { at, odds = { { id, name, quality, weight, percent }, ... } } (tiers with a weight, worst first), or
+-- nil and the reason. The chances are the weights divided by their sum, so they add up to 100 %.
+local function make_milestone(m)
+  if type(m) ~= "table" or type(m.weights) ~= "table" then return nil, "no weights" end
+  local at = tonumber(m.at)
+  if not at or at < 0 or at > 100 then return nil, "'at' must be a percent from 0 to 100" end
+  local total, entries = 0, {}
+  for id, weight in pairs(m.weights) do
+    local i = tier_index[id]
+    if not i then return nil, "unknown tier '" .. tostring(id) .. "'" end
+    weight = tonumber(weight)
+    if not weight or weight < 0 then return nil, "the weight of '" .. id .. "' must be a number >= 0" end
+    if weight > 0 then total = total + weight; entries[#entries + 1] = { i = i, weight = weight } end
+  end
+  if total <= 0 then return nil, "no tier has a weight" end
+  table.sort(entries, function(a, b) return a.i < b.i end)
+  local odds, top = {}, 0
+  for _, e in ipairs(entries) do
+    local tier = TIERS[e.i]
+    local percent = e.weight * 100 / total
+    odds[#odds + 1] = { id = tier.id, name = tier.name, quality = tier.quality, weight = e.weight, percent = percent }
+    if tier.id == TOP_TIER.id then top = percent end
+  end
+  if top >= 100 then return nil, "the best tier (" .. TOP_TIER.id .. ") would be 100 %: give another tier a weight" end
+  return { at = at, odds = odds }
+end
+
+local milestone_cache = setmetatable({}, { __mode = "k" })
+
+-- The validated milestones of a reward config (sorted by `at`), nil when there are none. Refused rows are logged once.
+local function build_milestones(reward, event_id)
+  if type(reward) ~= "table" or type(reward.milestones) ~= "table" then return nil end
+  if milestone_cache[reward] ~= nil then return milestone_cache[reward] or nil end
+  local list = {}
+  for i, m in ipairs(reward.milestones) do
+    local milestone, why = make_milestone(m)
+    if milestone then list[#list + 1] = milestone
+    else server.log("event " .. tostring(event_id) .. ": reward milestone #" .. i .. " refused: " .. why) end
+  end
+  table.sort(list, function(a, b) return a.at < b.at end)
+  milestone_cache[reward] = #list > 0 and list or false
+  return #list > 0 and list or nil
+end
+
+local function odds_text(milestone)
+  local parts = {}
+  for i = #milestone.odds, 1, -1 do
+    parts[#parts + 1] = milestone.odds[i].name .. " " .. percent_text(milestone.odds[i].percent)
+  end
+  return table.concat(parts, ", ")
+end
+
+-- The highest milestone with at <= percent (index), and the next one (index), either may be nil.
+local function milestone_at(milestones, percent)
+  local current, nextm
+  for i, m in ipairs(milestones or {}) do
+    if m.at <= percent then current = i elseif not nextm then nextm = i end
+  end
+  return current, nextm
+end
+
+local function roll_tier(milestone)
+  local total = 0
+  for _, o in ipairs(milestone.odds) do total = total + o.weight end
+  local pick = server.random() * total
+  for _, o in ipairs(milestone.odds) do
+    pick = pick - o.weight
+    if pick < 0 then return o end
+  end
+  return milestone.odds[#milestone.odds]
+end
+
 -- A definition as it is stored with a running event (so editing this file does not change an event in progress).
 local function snapshot(def)
   local reward = type(def.reward) == "table" and def.reward or {}
@@ -121,6 +233,7 @@ local function snapshot(def)
     reward = {
       gold = math.max(0, math.floor(tonumber(reward.gold) or 0)), gold_each = math.max(0, math.floor(tonumber(reward.gold_each) or 0)),
       item = type(reward.item) == "table" and reward.item or nil, top_item = type(reward.top_item) == "table" and reward.top_item or nil,
+      milestones = build_milestones(reward, def.id), on_fail = reward.on_fail,
     },
   }
 end
@@ -390,11 +503,20 @@ local pending = (function()
   return ok and type(value) == "table" and value or {}
 end)()
 
-local dirty, pending_dirty, push_due = false, false, false
+local rewardlog = (function()
+  local ok, value = pcall(server.load, "rewardlog", nil)
+  return ok and type(value) == "table" and value or {}
+end)()
+
+local dirty, pending_dirty, push_due, rewardlog_dirty = false, false, false, false
 
 local function save_state()
   local ok, err = pcall(server.save, "state", state)
   if ok then dirty = false else server.log("cannot save the state: " .. tostring(err)) end
+  if rewardlog_dirty then
+    local ok3, err3 = pcall(server.save, "rewardlog", rewardlog)
+    if ok3 then rewardlog_dirty = false else server.log("cannot save the reward log: " .. tostring(err3)) end
+  end
   if pending_dirty then
     local ok2, err2 = pcall(server.save, "pending", pending)
     if ok2 then pending_dirty = false else server.log("cannot save pending rewards: " .. tostring(err2)) end
@@ -428,10 +550,18 @@ local function payload_for(player)
   if ev then
     local def = ev.def
     local mine = ev.players[player.uid]
+    local odds_now, odds_at, odds_next, odds_next_at
+    local milestones = def.reward.milestones
+    if milestones then
+      local current, nextm = milestone_at(milestones, math.min(100, ev.count * 100 / def.target))
+      if current then odds_now, odds_at = odds_text(milestones[current]), milestones[current].at end
+      if nextm then odds_next, odds_next_at = odds_text(milestones[nextm]), milestones[nextm].at end
+    end
     return {
       v = 1, st = "active", n = ev.n, title = def.title, text = goal_text(def), unit = unit_of(def), count = ev.count, target = def.target,
       left = math.floor(math.max(0, ev.ends - t)), dur = def.duration, here = in_area(def, player), mine = mine and mine.n or 0,
       need = def.min_contribution, people = participants(ev), reward = reward_text(def), area = def.region and def.region.name or nil,
+      odds = odds_now, odds_at = odds_at, odds_next = odds_next, odds_next_at = odds_next_at,
     }
   end
   local last = state.last
@@ -467,9 +597,17 @@ local function give(player, entry, why)
     if ok and pile then given[#given + 1] = entry.gold .. " gold"
     else server.log("no gold for " .. player.name .. ": " .. tostring(ok and err or pile)) end
   end
-  for _, spec in ipairs(entry.items or {}) do
+  for _, wrapped in ipairs(entry.items or {}) do
+    local spec, roll = wrapped.spec or wrapped, wrapped.roll
     local ok, item, err = pcall(server.drop_item, player, spec)
-    if ok and item then given[#given + 1] = (item.name and item.name ~= "") and item.name or "an item"
+    if ok and item then
+      local name = (item.name and item.name ~= "") and item.name or "an item"
+      given[#given + 1] = name
+      if roll then
+        for _, logged in ipairs(rewardlog) do
+          if logged.id == roll then logged.item = name; rewardlog_dirty = true; break end
+        end
+      end
     else server.log("no item for " .. player.name .. ": " .. tostring(ok and err or item)) end
   end
   if #given > 0 then server.message(player, PREFIX .. why .. ": " .. table.concat(given, ", ") .. " dropped for you.") end
@@ -509,20 +647,44 @@ local function deliver_pending()
   end
 end
 
--- Splits the reward of a won event: who qualifies, how much gold, who gets the prize.
-local function reward_plan(ev)
+-- Splits the reward of an event: who qualifies, how much gold (a completed event), who gets the prize (a completed event) and which
+-- item each rolls: with milestones from the odds of the highest milestone reached (`percent`), else the fixed `item`.
+local function reward_plan(ev, success, percent)
   local def, plan, total = ev.def, {}, 0
   local list = {}
+  local milestones = def.reward.milestones
+  local reached = milestones and milestone_at(milestones, percent)
+  if not success and not (reached and def.reward.on_fail ~= false) then return plan end
   for _, p in ipairs(ranked(ev)) do
     if p.n >= def.min_contribution then list[#list + 1] = p; total = total + p.n end
   end
   for i, p in ipairs(list) do
-    local entry = { uid = p.uid, name = p.name, n = p.n, gold = def.reward.gold_each, items = {} }
-    if def.reward.gold > 0 and total > 0 then entry.gold = entry.gold + math.floor(def.reward.gold * p.n / total) end
-    if def.reward.item then entry.items[#entry.items + 1] = def.reward.item end
-    if i == 1 and def.reward.top_item then entry.items[#entry.items + 1] = def.reward.top_item end
+    local entry = { uid = p.uid, name = p.name, n = p.n, gold = 0, items = {} }
+    if success then
+      entry.gold = def.reward.gold_each
+      if def.reward.gold > 0 and total > 0 then entry.gold = entry.gold + math.floor(def.reward.gold * p.n / total) end
+    end
+    if milestones then
+      if reached then
+        local milestone = milestones[reached]
+        local tier = roll_tier(milestone)
+        state.roll_seq = (state.roll_seq or 0) + 1
+        local spec = {}
+        for k, v in pairs(def.reward.item or {}) do spec[k] = v end
+        spec.quality = tier.quality
+        table.insert(rewardlog, 1, { id = state.roll_seq, time = NOW(), event = def.title, name = p.name, tier = tier.name, at = milestone.at,
+          chance = tier.percent, odds = odds_text(milestone) })
+        entry.items[#entry.items + 1] = { spec = spec, roll = state.roll_seq }
+        entry.roll_note = tier.name
+      end
+    elseif success and def.reward.item then
+      entry.items[#entry.items + 1] = def.reward.item
+    end
+    if success and i == 1 and def.reward.top_item then entry.items[#entry.items + 1] = def.reward.top_item end
     plan[#plan + 1] = entry
   end
+  while #rewardlog > 100 do table.remove(rewardlog) end
+  rewardlog_dirty = true
   return plan
 end
 
@@ -544,23 +706,30 @@ local function finish(success)
   while #state.history > 10 do table.remove(state.history) end
   state.next_start = NOW() + CONFIG.cooldown
 
-  if success then
-    local ok, plan = pcall(reward_plan, ev)
-    if ok then
-      for _, entry in ipairs(plan) do
-        local granted, err = pcall(grant, entry.uid, entry.name, entry, "Your reward for '" .. def.title .. "'")
-        if not granted then server.log("reward failed for " .. entry.name .. ": " .. tostring(err)) end
-      end
-      record.rewarded = #plan
-    else
-      server.log("reward plan failed: " .. tostring(plan))
+  local percent = math.min(100, ev.count * 100 / def.target)
+  local milestones = def.reward.milestones
+  local reached_index = milestones and milestone_at(milestones, percent)
+  record.reached = reached_index and milestones[reached_index].at or nil
+  local ok, plan = pcall(reward_plan, ev, success, percent)
+  if ok then
+    for _, entry in ipairs(plan) do
+      local granted, err = pcall(grant, entry.uid, entry.name, entry, "Your reward for '" .. def.title .. "'")
+      if not granted then server.log("reward failed for " .. entry.name .. ": " .. tostring(err)) end
     end
+    record.rewarded = #plan
+  else
+    server.log("reward plan failed: " .. tostring(plan))
+  end
+  local odds_note = reached_index and (" Rewards were rolled with the " .. percent_text(milestones[reached_index].at) .. " odds: "
+    .. odds_text(milestones[reached_index]) .. ".") or ""
+  if success then
     local names = {}
     for i = 1, math.min(3, #top) do names[i] = top[i].name .. " (" .. top[i].n .. ")" end
     say(def.title .. " is complete! " .. ev.count .. "/" .. def.target .. " in " .. duration_text(NOW() - ev.started)
-      .. ". " .. (record.rewarded or 0) .. " heroes share the reward." .. (#names > 0 and (" Best: " .. table.concat(names, ", ") .. ".") or ""))
+      .. ". " .. (record.rewarded or 0) .. " heroes share the reward." .. (#names > 0 and (" Best: " .. table.concat(names, ", ") .. ".") or "") .. odds_note)
   else
-    say(def.title .. " has failed: " .. ev.count .. "/" .. def.target .. " when the time ran out.")
+    say(def.title .. " has failed: " .. ev.count .. "/" .. def.target .. " when the time ran out."
+      .. ((record.rewarded or 0) > 0 and (" " .. record.rewarded .. " heroes get an item for what the realm reached." .. odds_note) or ""))
   end
   save_state()
   push_all()
@@ -610,6 +779,26 @@ local function start_event(index)
   push_all()
 end
 
+-- The rules and odds of the reward of an event definition, as lines of text.
+local function reward_lines(def)
+  local lines, r = {}, def.reward or {}
+  local milestones = r.milestones
+  if milestones then
+    lines[#lines + 1] = "Item odds by progress (rolled once when the event ends, with the highest milestone reached):"
+    for _, m in ipairs(milestones) do lines[#lines + 1] = "  from " .. percent_text(m.at) .. ": " .. odds_text(m) end
+    lines[#lines + 1] = "Only heroes with at least " .. def.min_contribution .. " kills take part. Nothing else changes the odds."
+      .. (r.on_fail == false and "" or " An event that runs out of time still rolls items with the odds it reached.")
+  elseif r.item then
+    lines[#lines + 1] = "Everyone with at least " .. def.min_contribution .. " kills gets an item"
+      .. (r.item.quality and (" of generation quality " .. r.item.quality) or " of the game's usual rarity") .. "."
+  end
+  if (r.gold or 0) > 0 or (r.gold_each or 0) > 0 then
+    lines[#lines + 1] = "Gold (completed event only): " .. (r.gold_each or 0) .. " each plus " .. (r.gold or 0) .. " shared by kills."
+  end
+  if r.top_item then lines[#lines + 1] = "The best contributor gets a prize item of generation quality " .. tostring(r.top_item.quality or "?") .. " (completed event only)." end
+  return lines
+end
+
 local function status_lines(player)
   local t, lines = NOW(), {}
   local ev = state.current
@@ -654,6 +843,14 @@ server.on("kill", function(player, monster)
     if percent >= mark and ev.count < ev.def.target and not ev.marks[tostring(mark)] then
       ev.marks[tostring(mark)] = true
       say(ev.def.title .. ": " .. mark .. "% (" .. ev.count .. "/" .. ev.def.target .. "), " .. duration_text(ev.ends - NOW()) .. " left.")
+    end
+  end
+  local milestones = ev.def.reward.milestones
+  if milestones then
+    local index = milestone_at(milestones, math.min(100, percent))
+    if index and not ev.marks["r" .. index] then
+      ev.marks["r" .. index] = true
+      say(ev.def.title .. " " .. percent_text(milestones[index].at) .. ": reward odds now: " .. odds_text(milestones[index]) .. ".")
     end
   end
   if ev.count >= ev.def.target then finish(true) end
@@ -819,6 +1016,17 @@ server.on("chat", function(player, text)
   if text == "!event" then
     for _, line in ipairs(status_lines(player)) do server.message(player, PREFIX .. line) end
     return true
+  elseif text == "!event rewards" or text == "!event odds" then
+    local ev = state.current
+    if not ev then server.message(player, PREFIX .. "No world event is running."); return true end
+    for _, line in ipairs(reward_lines(ev.def)) do server.message(player, PREFIX .. line) end
+    local milestones = ev.def.reward.milestones
+    if milestones then
+      local index = milestone_at(milestones, math.min(100, ev.count * 100 / ev.def.target))
+      server.message(player, PREFIX .. (index and ("Now (" .. percent_text(ev.count * 100 / ev.def.target) .. " done): " .. odds_text(milestones[index]))
+        or "Not at the first milestone yet."))
+    end
+    return true
   elseif text == "!sector" or text == "!here" then
     server.message(player, where_text(player))
     return true
@@ -891,13 +1099,40 @@ local function public_state()
   else
     out.next_in = math.floor(math.max(0, (state.next_start or t) - t))
   end
+  local function odds_json(def)
+    local milestones = def.reward and def.reward.milestones
+    if not milestones then return nil end
+    local list = {}
+    for i, m in ipairs(milestones) do
+      local chances = {}
+      for j, o in ipairs(m.odds) do chances[j] = { tier = o.id, name = o.name, quality = o.quality, weight = o.weight, percent = o.percent } end
+      list[i] = { at = m.at, chances = chances }
+    end
+    return list
+  end
+  if out.active then
+    out.active.reward_odds = odds_json(ev.def)
+    out.active.reward_rules = reward_lines(ev.def)
+    out.active.odds_now = (function()
+      local m = ev.def.reward.milestones
+      return m and milestone_at(m, math.min(100, ev.count * 100 / ev.def.target)) or nil
+    end)()
+  end
+  out.rewards = {}
+  for i = 1, math.min(20, #rewardlog) do
+    local e = rewardlog[i]
+    out.rewards[i] = { time = e.time, event = e.event, name = e.name, tier = e.tier, item = e.item, at = e.at, chance = e.chance }
+  end
   out.last = state.last and {
     n = state.last.n, title = state.last.title, success = state.last.success, count = state.last.count, target = state.last.target,
     finished = state.last.finished, top = state.last.top,
   } or nil
   out.history = state.history
   out.events = {}
-  for i, def in ipairs(definitions) do out.events[i] = { id = def.id, title = def.title, text = goal_text(snapshot(def)), duration = def.duration } end
+  for i, def in ipairs(definitions) do
+    local snap = snapshot(def)
+    out.events[i] = { id = def.id, title = def.title, text = goal_text(snap), duration = def.duration, reward_odds = odds_json(snap) }
+  end
   return out
 end
 
@@ -910,7 +1145,9 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(19rem,1fr));gap:
 section{background:#241d16;border:1px solid #3b3025;border-radius:10px;padding:.8rem 1rem}h2{margin:0 0 .5rem;font-size:1rem;color:#f2c36b}
 ol,ul{margin:0;padding-left:1.3rem}li{margin:.15rem 0}b{color:#fff}small{color:#a39683}
 .bar{height:1.2rem;background:#0e0b08;border:1px solid #5a4a36;border-radius:6px;overflow:hidden;margin:.4rem 0}
-.bar i{display:block;height:100%;background:linear-gradient(#e8b84a,#b07a1e)}.ok{color:#8fd08f}.bad{color:#e08f8f}]]
+.bar i{display:block;height:100%;background:linear-gradient(#e8b84a,#b07a1e)}.ok{color:#8fd08f}.bad{color:#e08f8f}
+table{border-collapse:collapse;width:100%}th,td{text-align:right;padding:.15rem .4rem;border-bottom:1px solid #3b3025}th:first-child,td:first-child{text-align:left}
+th{color:#a39683;font-weight:normal}tr.now td{background:#3b2f1a;color:#fff;font-weight:bold}]]
 
 local function section(title, body)
   return "<section><h2>" .. server.html(title) .. "</h2>" .. body .. "</section>"
@@ -935,6 +1172,33 @@ server.page("", function()
   else
     parts[#parts + 1] = section("Running now", "<small>No event right now. The next one starts in about " .. h(duration_text(s.next_in or 0)) .. ".</small>")
   end
+  if a and a.reward_odds then
+    local rows_o = { "<table><tr><th>from</th>" }
+    for _, tier in ipairs(TIERS) do rows_o[#rows_o + 1] = "<th>" .. h(tier.name) .. "</th>" end
+    rows_o[#rows_o + 1] = "</tr>"
+    for i, m in ipairs(a.reward_odds) do
+      local chance = {}
+      for _, c in ipairs(m.chances) do chance[c.tier] = c.percent end
+      rows_o[#rows_o + 1] = '<tr' .. (i == a.odds_now and ' class="now"' or "") .. "><td>" .. h(percent_text(m.at)) .. "</td>"
+      for _, tier in ipairs(TIERS) do
+        rows_o[#rows_o + 1] = "<td>" .. (chance[tier.id] and h(percent_text(chance[tier.id])) or "&ndash;") .. "</td>"
+      end
+      rows_o[#rows_o + 1] = "</tr>"
+    end
+    rows_o[#rows_o + 1] = "</table>"
+    for _, line in ipairs(a.reward_rules or {}) do rows_o[#rows_o + 1] = "<br><small>" .. h(line) .. "</small>" end
+    parts[#parts + 1] = section("Reward odds", table.concat(rows_o))
+  elseif a then
+    local lines_o = {}
+    for _, line in ipairs(a.reward_rules or {}) do lines_o[#lines_o + 1] = "<small>" .. h(line) .. "</small>" end
+    if #lines_o > 0 then parts[#parts + 1] = section("Reward", table.concat(lines_o, "<br>")) end
+  end
+  local given = {}
+  for _, e in ipairs(s.rewards or {}) do
+    given[#given + 1] = string.format("<li><b>%s</b> %s <small>%s%s, rolled at %s</small></li>", h(e.name), h(e.tier),
+      e.item and (h(e.item) .. ", ") or "", h(e.event), h(percent_text(e.at)))
+  end
+  parts[#parts + 1] = section("Recent rewards", #given > 0 and ("<ul>" .. table.concat(given) .. "</ul>") or "<small>none yet</small>")
   local rows = {}
   for _, e in ipairs(s.history) do
     rows[#rows + 1] = string.format('<li><b>%s</b> <span class="%s">%s</span> <small>%d/%d, %d heroes%s</small></li>', h(e.title),
