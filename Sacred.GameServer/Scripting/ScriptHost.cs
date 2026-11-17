@@ -792,10 +792,12 @@ public sealed partial class ScriptHost
     private LuaTable PlayerTable(ScriptPlayer p)
     {
         var character = ModStore.DisplayName(p.Character ?? p.Name);
-        return new(0, 12)
+        return new(0, 13)
         {
             ["slot"] = p.Slot, ["name"] = character, ["character"] = character, ["uid"] = Uid(p.Key), ["class"] = p.Class, ["level"] = p.Level,
             ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds, ["sector"] = p.Sector, ["x"] = p.X, ["y"] = p.Y,
+            // the lobby account (all heroes of it share it), opaque like uid; absent for players without a lobby identity
+            ["account"] = p.LobbyId is not (0 or -1) ? Uid("acct:" + p.LobbyId) : LuaValue.Nil,
         };
     }
 
