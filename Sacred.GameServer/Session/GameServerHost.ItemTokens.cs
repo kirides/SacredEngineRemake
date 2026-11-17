@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using Sacred.GameServer.Auth;
 using Sacred.GameServer.Auth.Hero;
+using Sacred.GameServer.Simulation;
 using Sacred.Network.Gameplay;
 
 namespace Sacred.GameServer.Session;
@@ -71,25 +72,36 @@ public sealed partial class GameServerHost
         return true;
     }
 
-    /// <summary>The gate: true when the item state is refused (log mode: only counted and logged, so false).</summary>
-    private bool StrictRefuses(PlayerSession s, uint reference, ReadOnlySpan<byte> body)
+    /// <summary>The gate: true when the item state is refused (log mode: only counted and logged, so false). Order: a script token, an item of
+    /// the hero's baseline block, then the witness (GameServerHost.Witness.cs: trade, rebuilt from destroyed items, loot of a kill, a container's
+    /// content, a sector the player took over). Each source can be switched off with AUTH_ITEM_SOURCES.</summary>
+    private bool StrictRefuses(PlayerSession s, uint reference, ReadOnlySpan<byte> body, ReadOnlySpan<byte> payload, int prefix, bool purchase = false)
     {
         var mode = _config.Auth.StrictItems;
         if (mode == StrictItemsMode.Off || !HeroSavedByServer(s.Slot) || _world.TryGet(reference, out _)) return false;
         if (!SavedObjects.ReadLiveItem(body, out var records, out _)) return false;
         var type = BinaryPrimitives.ReadUInt32LittleEndian(body[GoldObjectStateLayout.TypeOffset..]);
+        var witness = WitnessConfig;
         var content = Convert.ToHexStringLower(SavedObjects.LiveContent(body, records));
-        if (FindToken(s, type, content) is not null) return false;
-        if (_baselineItems[s.Slot] is not { } held || !ReferenceEquals(held.Owner, s))
+        if (witness.Accepts(ItemSource.Token) && FindToken(s, type, content) is not null) { Witness!.Explained[(int)ItemSource.Token]++; return false; }
+        if (witness.Accepts(ItemSource.Baseline))
         {
-            var counts = new Dictionary<string, int>();
-            if (_heroBaseline[s.Slot] is { } block) (_heroWriter ??= new HeroWriter()).BaselineItemContents(block, counts);
-            held = (s, counts);
-            _baselineItems[s.Slot] = held;
+            if (_baselineItems[s.Slot] is not { } held || !ReferenceEquals(held.Owner, s))
+            {
+                var counts = new Dictionary<string, int>();
+                if (_heroBaseline[s.Slot] is { } block) (_heroWriter ??= new HeroWriter()).BaselineItemContents(block, counts);
+                held = (s, counts);
+                _baselineItems[s.Slot] = held;
+            }
+            if (held.Counts.TryGetValue(content, out var left) && left > 0) { held.Counts[content] = left - 1; Witness!.Explained[(int)ItemSource.Baseline]++; return false; }
         }
-        if (held.Counts.TryGetValue(content, out var left) && left > 0) { held.Counts[content] = left - 1; return false; }
+        var source = ExplainCreation(s, reference, type, payload, prefix, body, records, purchase);
+        if (source != ItemSource.Unexplained) return false;
         StrictItemsRefused++;
-        Log.Info($"AUTH: strict items: {s.Describe()}: item 0x{reference:X} (type 0x{type:X}) created by the client (content {content[..16]}..{content.Length}, {_tokens.Count} tokens: {string.Join(",", _tokens.Select(k => k.Type + ":" + k.Records.Length + ":" + k.Records[..16]))}) is covered by no token and no baseline item" + (mode == StrictItemsMode.On ? ", refused." : " (log mode, accepted)."));
+        Log.Info($"AUTH: strict items: {s.Describe()}: item 0x{reference:X} (type 0x{type:X}, {records} records) created by the client is explained by nothing "
+            + $"(no token, baseline item, trade, destroyed item, kill, container, new sector, world start or paid purchase; last messages: {Trail(s)})"
+            + (mode == StrictItemsMode.On ? ", refused." : " (log mode, accepted)."));
+        if (mode == StrictItemsMode.On && witness.CountViolations) Violation(s, $"item 0x{reference:X} without a source");
         return mode == StrictItemsMode.On;
     }
 }

@@ -26,6 +26,15 @@ if (config.Demo)
     config.AcceptAnyData = true; config.Auth.Enabled = false;
     args = [.. args, "--webui-enabled", "--webui-hostname=127.0.0.1"];   // last wins: the web UI is on and on loopback
 }
+if (config.ReplayFile is { } replayFile)
+{
+    // --replay: the capture through the server's own decisions, nothing bound, then exit (Simulation/CaptureReplay.cs)
+    Log.TraceEnabled = config.Trace;
+    if (config.Auth.StrictItems == Sacred.GameServer.Auth.StrictItemsMode.Off) config.Auth.StrictItems = Sacred.GameServer.Auth.StrictItemsMode.Log;
+    if (config.Auth.Witness.StrictGold == Sacred.GameServer.Auth.StrictItemsMode.Off) config.Auth.Witness.StrictGold = Sacred.GameServer.Auth.StrictItemsMode.Log;
+    try { Console.Write(Sacred.GameServer.Simulation.CaptureReplay.Run(config, Sacred.GameServer.Simulation.CaptureReader.Open(replayFile)).Describe()); return 0; }
+    catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException) { Console.Error.WriteLine($"ERROR: cannot replay '{replayFile}': {e.Message}"); return 2; }
+}
 if (config.ParentWindow != 0) Log.Info($"Started by the game (window 0x{config.ParentWindow:X}).");
 GameStatus.Notifier = GameStatus.ForWindow(config.ParentWindow);   // Windows only: PostMessage(hwnd, 0x410, code, value) like the original
 GameStatus.Post(GameStatus.Started);
