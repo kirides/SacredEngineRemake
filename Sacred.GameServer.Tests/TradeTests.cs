@@ -144,3 +144,71 @@ public class TradeTests
         Assert.AreEqual(0x20u, W(t.A.WaitFor(0x198), 1));
     }
 }
+
+/// <summary>0x180 (directed relay), 0x004 (message to a named player) and 0x139 (statistics request) in relay mode.</summary>
+[TestClass]
+public class DirectedMessageTests
+{
+    private static byte[] Words(params uint[] values) { var b = new byte[values.Length * 4]; for (var i = 0; i < values.Length; i++) BinaryPrimitives.WriteUInt32LittleEndian(b.AsSpan(i * 4), values[i]); return b; }
+
+    private static (GameServerHost, Thread, RawClient, RawClient) Start()
+    {
+        var host = new GameServerHost(new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5 }, new AdmissionRules(null), null);
+        var thread = new Thread(host.Run) { IsBackground = true };
+        thread.Start();
+        var a = RawClient.Admit(host.TcpPort, "Alice", 1);
+        a.Send(0x016, default); a.Send(0x018, Words(0x1964)); a.WaitFor(0x018);
+        var b = RawClient.Admit(host.TcpPort, "Bob", 2);
+        b.Send(0x017, default); b.WaitFor(0x017);
+        return (host, thread, a, b);
+    }
+
+    [TestMethod]
+    public void DirectedRelayGoesToTheNamedSlotOnly()
+    {
+        var (host, thread, a, b) = Start();
+        try
+        {
+            a.Send(0x180, Words(b.Slot, 7, 8));
+            var got = b.WaitFor(0x180);
+            Assert.AreEqual(a.Slot, got.Origin);
+            CollectionAssert.AreEqual(Words(b.Slot, 7, 8), got.Payload);
+            a.Send(0x180, Words(99, 1));                               // no such slot
+            a.Send(0x180, Words(0, 1));
+            Assert.IsTrue(a.Silent(0x180, 200));
+            Assert.IsTrue(b.Silent(0x180, 100));
+        }
+        finally { a.Dispose(); b.Dispose(); host.Stop(); thread.Join(); host.Dispose(); }
+    }
+
+    [TestMethod]
+    public void MessageToANamedPlayerBySlotOrLobbyId()
+    {
+        var (host, thread, a, b) = Start();
+        try
+        {
+            a.Send(0x004, Words(b.Slot, 42));
+            var bySlot = b.WaitFor(0x004);
+            Assert.AreEqual(a.Slot, bySlot.Origin);
+            CollectionAssert.AreEqual(Words(b.Slot, 42), bySlot.Payload);
+            a.Send(0x004, Words(a.Slot, 1));                           // oneself: nothing comes back
+            a.Send(0x004, Words(0xDEAD0001, 1));                       // unknown lobby id
+            Assert.IsTrue(a.Silent(0x004, 200));
+        }
+        finally { a.Dispose(); b.Dispose(); host.Stop(); thread.Join(); host.Dispose(); }
+    }
+
+    [TestMethod]
+    public void StatisticsRequestIsAnsweredToTheRequester()
+    {
+        var (host, thread, a, b) = Start();
+        try
+        {
+            a.Send(0x139, Words(b.Slot));
+            var echo = a.WaitFor(0x139);
+            Assert.AreEqual(b.Slot, echo.Origin);
+            Assert.IsTrue(b.Silent(0x139, 100));
+        }
+        finally { a.Dispose(); b.Dispose(); host.Stop(); thread.Join(); host.Dispose(); }
+    }
+}

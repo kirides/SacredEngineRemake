@@ -38,7 +38,7 @@ public static class OpcodeTable
     public static readonly OpcodeEntry[] Entries =
     [
         new(0x003, 0x4CA8AA, OpcodeClass.Answered, "PrivateChat"),
-        new(0x004, 0x4CA9A5, OpcodeClass.Todo, "relays a message to the player named by payload[0] (slot or lobby id) with FUN_004EA5F0; group/recipient state not modelled"),
+        new(0x004, 0x4CA9A5, OpcodeClass.Answered, "OnGroupMessage: relayed to the named player; the group members of the original (statistics manager) are TODO"),
         new(0x005, 0x4CA771, OpcodeClass.Answered, "PublicChat"),
         new(0x006, 0x4CAB98, OpcodeClass.Consumed, "clears bit (payload-1) of the sender's flag mask (+0x94), UI refresh only"),
         new(0x007, 0x4CAACD, OpcodeClass.Consumed, "sets bit (payload-1) of the sender's flag mask (+0x94), UI refresh only"),
@@ -131,7 +131,7 @@ public static class OpcodeTable
         new(0x134, 0x4C4830, OpcodeClass.Answered, "Pause"),
         new(0x135, 0x4C47AB, OpcodeClass.Answered, "Pause"),
         new(0x138, 0x4C6D0B, OpcodeClass.Forward, "mode 1 Connected"),
-        new(0x139, 0x4C6C60, OpcodeClass.Todo, "answers with two messages built from the server's object world (0x13A, 72 bytes); object world not modelled"),
+        new(0x139, 0x4C6C60, OpcodeClass.Answered, "OnStatisticsRequest: first answer (request echoed, origin = asked player); the 0x13A of 0x48 bytes from the statistics manager is TODO"),
         new(0x13B, 0x4C6DCE, OpcodeClass.Forward, "mode 1 Connected"),
         new(0x13C, 0x4C67DB, OpcodeClass.ForwardAfterState, "mode 8 SectorAndObject; the server-world update is TODO"),
         new(0x13E, 0x4C6A07, OpcodeClass.Consumed, "applied to the server's own state only"),
@@ -192,7 +192,7 @@ public static class OpcodeTable
         new(0x17C, 0x4C61AB, OpcodeClass.ForwardAfterState, "mode 8 SectorAndObject; the server-world update is TODO"),
         new(0x17D, 0x4C647E, OpcodeClass.ForwardAfterState, "kill report: applies native event 0x208, XP/loot (state not modelled), then forwards: mode 6 when the killer word is a player slot, else mode 8"),
         new(0x17F, 0x4C61C7, OpcodeClass.Consumed, "applied to the server's own state only"),
-        new(0x180, 0x4C69C0, OpcodeClass.Todo, "directed relay to the player named by payload[0] (FUN_004EA5F0); exact payload form not verified"),
+        new(0x180, 0x4C69C0, OpcodeClass.Answered, "OnDirectedRelay: unchanged to the slot in payload[0], origin = sender"),
         new(0x181, 0x4CC582, OpcodeClass.Forward, "mode 2 InGame"),
         new(0x182, 0x4CC582, OpcodeClass.Forward, "mode 2 InGame"),
         new(0x183, 0x4C6996, OpcodeClass.Forward, "mode 8 SectorAndObject"),

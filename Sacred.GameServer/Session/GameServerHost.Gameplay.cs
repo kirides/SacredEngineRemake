@@ -81,6 +81,9 @@ public sealed partial class GameServerHost
             case 0x043: AnswerProbe(s, m); return;                  // 0x4CC4B9
             case 0x044: case 0x045: ProbeResult(s, m); return;      // 0x4CC4FD / 0x4CC522
             case 0x134: case 0x135: Pause(s, m); return;            // 0x4C4830 / 0x4C47AB
+            case 0x004: OnGroupMessage(s, m); return;               // 0x4CA9A5
+            case 0x139: OnStatisticsRequest(s, m); return;          // 0x4C6C60
+            case 0x180: OnDirectedRelay(s, m); return;              // 0x4C69C0
             case 0x198: OnTrade(s, m); return;                      // 0x4C850E: trade state machine (GameServerHost.Trade.cs)
             case 0x01D: OnGameStart(s); return;                     // 0x4CAD99
             case 0x17D: ForwardKill(s, m); return;                  // 0x4C647E: tails 0x4C97C4 (mode 6) / 0x4C81D1 (mode 8)
@@ -289,6 +292,48 @@ public sealed partial class GameServerHost
     {
         var reference = m.Payload.Length >= 4 ? BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) : 0;
         Forward(s, m, reference > 0x10 ? RouteMode.SectorAndObject : RouteMode.ObjectVisible, includeSender: false);
+    }
+
+    private PlayerSession? ConnectedSlot(uint slot) =>
+        slot is >= 1 and <= MaxSlots && _slots[slot] is { } p && p.State >= SessionState.SlotAssigned ? p : null;
+
+    /// <summary>
+    /// 0x180 [target slot][...] (case 0x4C69C0): the message goes unchanged to the player in that slot (1..16), origin = the sender.
+    /// </summary>
+    private void OnDirectedRelay(PlayerSession s, in GoldMessageView m)
+    {
+        if (m.Payload.Length < 4) return;
+        if (ConnectedSlot(BinaryPrimitives.ReadUInt32LittleEndian(m.Payload)) is { } target) SendMessage(target, m.Opcode, 0, s.Slot, m.Payload);
+    }
+
+    /// <summary>
+    /// 0x004 [slot or lobby id][...] (case 0x4CA9A5): the original resolves the player (a value above 16 is a lobby id, matched against
+    /// +0x90), looks up that player's group in its statistics manager and sends the message unchanged to every member except the
+    /// sender (origin = sender). TODO: the group membership lives in the statistics manager (not modelled), so only the named player
+    /// itself receives the message here.
+    /// </summary>
+    private void OnGroupMessage(PlayerSession s, in GoldMessageView m)
+    {
+        if (m.Payload.Length < 4) return;
+        var who = BinaryPrimitives.ReadUInt32LittleEndian(m.Payload);
+        PlayerSession? target = null;
+        if (who is >= 1 and <= MaxSlots) target = ConnectedSlot(who);
+        else if (who > MaxSlots)
+            for (var slot = 1; slot <= MaxSlots && target is null; slot++)
+                if (_slots[slot] is { } candidate && candidate.LobbyIdentity == (int)who) target = candidate;
+        if (target is not null && target != s) SendMessage(target, m.Opcode, 0, s.Slot, m.Payload);
+    }
+
+    /// <summary>
+    /// 0x139 [player slot] (case 0x4C6C60): the original answers the requester with the request itself (origin = the asked player) and
+    /// then with a 0x13A of 0x48 bytes built from that player's statistics manager. TODO (0x4C6CD6): the 0x13A needs the statistics
+    /// block of the asked player (see 0x14F); only the first answer is sent here.
+    /// </summary>
+    private void OnStatisticsRequest(PlayerSession s, in GoldMessageView m)
+    {
+        if (m.Payload.Length < 4) return;
+        var asked = BinaryPrimitives.ReadUInt32LittleEndian(m.Payload);
+        SendMessage(s, m.Opcode, 0, (byte)asked, m.Payload);
     }
 
     private void SetMaxPlayers(PlayerSession s, in GoldMessageView m)

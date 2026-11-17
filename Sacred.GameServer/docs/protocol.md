@@ -90,7 +90,7 @@ Index table `0x4CC9C4` (opcode - 3), jump table `0x4CC6E0`, 185 distinct cases; 
 | Opcode | Case address | Class | Our handling |
 |---|---|---|---|
 | 0x003 | 0x4CA8AA | Answered | PrivateChat |
-| 0x004 | 0x4CA9A5 | Todo | relays a message to the player named by payload[0] (slot or lobby id) with FUN_004EA5F0; group/recipient state not modelled |
+| 0x004 | 0x4CA9A5 | Answered | OnGroupMessage: relayed unchanged to the named player (slot, or lobby id above 16), origin = sender; the group members of the original (statistics manager) are TODO |
 | 0x005 | 0x4CA771 | Answered | PublicChat |
 | 0x006 | 0x4CAB98 | Consumed | clears bit (payload-1) of the sender's flag mask (+0x94), UI refresh only |
 | 0x007 | 0x4CAACD | Consumed | sets bit (payload-1) of the sender's flag mask (+0x94), UI refresh only |
@@ -183,7 +183,7 @@ Index table `0x4CC9C4` (opcode - 3), jump table `0x4CC6E0`, 185 distinct cases; 
 | 0x134 | 0x4C4830 | Answered | Pause |
 | 0x135 | 0x4C47AB | Answered | Pause |
 | 0x138 | 0x4C6D0B | Forward | mode 1 Connected |
-| 0x139 | 0x4C6C60 | Todo | answers with two messages built from the server's object world (0x13A, 72 bytes); object world not modelled |
+| 0x139 | 0x4C6C60 | Answered | OnStatisticsRequest: the request is echoed to the requester (origin = asked player); the 0x13A of 0x48 bytes from the statistics manager is TODO |
 | 0x13B | 0x4C6DCE | Forward | mode 1 Connected |
 | 0x13C | 0x4C67DB | ForwardAfterState | mode 8 SectorAndObject; the server-world update is TODO |
 | 0x13E | 0x4C6A07 | Consumed | applied to the server's own state only |
@@ -244,7 +244,7 @@ Index table `0x4CC9C4` (opcode - 3), jump table `0x4CC6E0`, 185 distinct cases; 
 | 0x17C | 0x4C61AB | ForwardAfterState | mode 8 SectorAndObject; the server-world update is TODO |
 | 0x17D | 0x4C647E | ForwardAfterState | kill report: applies native event 0x208, XP/loot (state not modelled), then forwards: mode 6 when the killer word is a player slot, else mode 8 |
 | 0x17F | 0x4C61C7 | Consumed | applied to the server's own state only |
-| 0x180 | 0x4C69C0 | Todo | directed relay to the player named by payload[0] (FUN_004EA5F0); exact payload form not verified |
+| 0x180 | 0x4C69C0 | Answered | OnDirectedRelay: unchanged to the slot in payload[0], origin = sender |
 | 0x181 | 0x4CC582 | Forward | mode 2 InGame |
 | 0x182 | 0x4CC582 | Forward | mode 2 InGame |
 | 0x183 | 0x4C6996 | Forward | mode 8 SectorAndObject |
@@ -319,7 +319,7 @@ Index table `0x4CC9C4` (opcode - 3), jump table `0x4CC6E0`, 185 distinct cases; 
 | 0x1D4 | 0x4C8012 | Forward | mode 2 InGame |
 | 0x1D5 | 0x4C8089 | Forward | mode 2 InGame |
 
-Counts: 229 cases = 60 Forward, 57 ForwardAfterState (state part TODO), 44 Answered, 35 Consumed, 22 Internal, 7 NoOp, 3 Todo (0x004, 0x139, 0x180), 1 Admission.
+Counts: 229 cases = 60 Forward, 57 ForwardAfterState (state part TODO), 47 Answered, 35 Consumed, 22 Internal, 7 NoOp, 0 Todo, 1 Admission. Parts of the Answered cases that need the original's object or statistics world are TODO inside their handlers (0x198 validation and exchange, 0x004 group, 0x139 answer 0x13A, 0x17D rewards, 0x01C/0x150 reason 7).
 
 ### 0x198 trade (case 0x4C850E)
 
@@ -339,3 +339,29 @@ Client message `[partner slot][sub command][...]`; the server answers with 0x198
 | 0x30 cancel | own 2/3/4 | both reset; both get `[other][0x31]` |
 
 A leaving player (0x150/0x01C/any removal) ends the trade of its partner with `[leaver][0x31]` (origin = leaver) before its own state is cleared (case 0x4CA4F9).
+
+## Custom net opcodes (Sacred Gear mod channels)
+
+Two message types above the original's range (its dispatch tables end at 0x1D5; every other id reaches the default case that
+only logs, so the original neither relays nor disconnects: checked with a Sacred Gear client sending 0x1E0 and a 4032 byte
+0x1E1 message to GameServer.exe). Defaults 0x1E0 (control) and 0x1E1 (data); both are options of the server and announced.
+Little endian payloads:
+
+```
+control 0x1E0   [u8 kind] ...
+  1 HELLO      c->s  [u8 proto=1][u32 features][u32 mod-set hash]       features: 1 fragments, 2 JSON
+  2 HELLO_ACK  s->c  [u8 proto][u32 features][u16 data opcode][u16 max fragment][u32 max message][u32 bytes/s][u8 max in flight]
+                     features: 1 fragments, 2 JSON, 4 relay between clients, 8 server channels (scripts on)
+  3 PEERS      s->c  [u16 mask]   bit n = slot n+1 said HELLO (re-sent to every capable player when it changes)
+data 0x1E1      [u32 channel id = FNV-1a(name)][u8 flags][u8 target][u16 message id][bytes]
+  flags   1 first fragment, 2 last fragment, 4 JSON payload (else raw bytes)
+  target  0 server, 1 host, 0xFF everybody else, 0x10 + slot (0x11..0x20) one player
+```
+
+A client sends HELLO after the world started (before admission the server drops the connection like for any other opcode); the
+server never sends 0x1E0/0x1E1 to a slot that did not. A message is cut into fragments of at most `max fragment` data bytes,
+fragments of one message are in order and share the message id (per sender); a message needs both the first and the last flag
+(a single wire message has both). The server relays fragments unchanged to the capable recipients with the real sender in the
+header's origin (sender 0 = the server for its own messages), and reassembles only messages for the server. Limits (all
+options): token bucket per session, messages in flight per sender, channels per client, message size, reassembly memory per
+session and in total, fragment timeout. Over the KCP/SBT transport the frames are the same messages.
