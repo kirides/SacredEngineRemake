@@ -226,6 +226,15 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
 * Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
   kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
   shows the kill ladder in chat. `player.online` is the current session in seconds.
+* Achievements and login streak: `scripts-examples/achievements.lua` unlocks 31 achievements from kills, distinct creature types,
+  "giants" (a creature 10+ levels above the hero), deaths, players defeated, hero level (read from the player on kills, joins and a
+  20 s timer: there is no level event), time online, days visited and the streak, and pays rewards with `drop_gold` / `drop_item`
+  (held until the hero is in the world; no `--game-dir`: the item becomes 1000 gold). The first entry into the world on a new UTC
+  day extends the streak (a missed day resets it) and pays 100 gold per streak day up to 1000, plus an item every 7th day. Page
+  `/mods/achievements/` (public with `WebUi:PublicApi`), JSON `players` and `achievements`, chat `!ach` and `!streak`, and the
+  net channel `achievements:sync` for the Sacred Gear mod `gear/examples/achievements` (toast on unlock and streak, a panel;
+  messages `{op = "state" | "unlock" | "streak"}` to the client, `{op = "get"}` from it). Gold held/earned and exploration are not
+  achievements: the script API has no data for them. Tests: `ScriptTests` (fake server) and `NetOpsTests` (live channel).
 * `drop_gold` drops a gold pile the same way (no `--game-dir` needed). Money is an ordinary item object: resources
   0x140C..0x140F (Gold client table 0x949920 / test 0x43AF50, GameServer.exe 0x5B0274 / 0x409D30), pile size by amount as the
   game picks it when gold is dropped (0x4AEC1E: below 50, 350, 1000, else). The amount is the value block's price (+8, cItemBase
