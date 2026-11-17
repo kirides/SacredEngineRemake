@@ -12,6 +12,9 @@ using Sacred.Network.Admission;
 
 namespace Sacred.GameServer.Session;
 
+/// <summary>Handler of an opcode above the native range (see <see cref="GameServerHost.RegisterOpcode"/>).</summary>
+public delegate void MessageHandler(PlayerSession player, in GoldMessageView message);
+
 /// <summary>
 /// The dedicated server: accepts clients, performs TinCat login and FIRSTCONTACT admission and runs the fixed-step game loop.
 /// Everything below <see cref="Run"/> executes on one thread; I/O threads only enqueue verified frames. The loop and packet paths
@@ -34,7 +37,18 @@ public sealed partial class GameServerHost : IDisposable
     private readonly ZlibInflater _inflater = new();
     private readonly ZlibDeflater _deflater = new();
     private readonly byte[] _relay = new byte[16 * 1024];
+    /// <summary>
+    /// Claims an opcode above the native range (0x1D5) for an extension (e.g. the Gear envelope opcodes 0x1E0/0x1E1). Its handler
+    /// runs for every message with that opcode after admission, before the native routing. Native opcodes cannot be claimed.
+    /// </summary>
+    public void RegisterOpcode(ushort opcode, MessageHandler handler)
+    {
+        if (opcode <= OpcodeTable.NativeLast) throw new ArgumentOutOfRangeException(nameof(opcode), "native opcodes cannot be claimed");
+        _extensions[opcode] = handler;
+    }
+
     private readonly bool[] _seenUnhandled = new bool[4096];
+    private readonly Dictionary<ushort, MessageHandler> _extensions = new();
     private readonly LanAnnouncer? _lan;
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private uint _nextTinCatId = 0x100;

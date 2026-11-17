@@ -45,10 +45,12 @@ public sealed partial class GameServerHost
         if (_config.Auth.Enabled) { if (!AuthoritativeFilter(s, m)) return; }
         else if (TrackHeroes) CaptureHeroState(s, m);
         if (_scripts is not null && ScriptMessage(s, m)) return;
+        if (m.Opcode > OpcodeTable.NativeLast && _extensions.TryGetValue(m.Opcode, out var extension)) { extension(s, m); return; }
         if (WorldMessage(s, m)) return;
         var mode = Routing.Mode(m.Opcode);
         if (mode != RouteMode.None) { Forward(s, m, mode, Routing.IncludeSender(m.Opcode)); return; }
         if (Routing.IsConsumed(m.Opcode)) return;
+        if (Routing.IsPending(m.Opcode)) return;
         if (Routing.IsInternal(m.Opcode)) { Log.Info($"#{s.Slot} sent internal server command 0x{m.Opcode:X3}, ignored"); return; }
         switch (m.Opcode)
         {
@@ -79,12 +81,14 @@ public sealed partial class GameServerHost
             case 0x043: AnswerProbe(s, m); return;                  // 0x4CC4B9
             case 0x044: case 0x045: ProbeResult(s, m); return;      // 0x4CC4FD / 0x4CC522
             case 0x134: case 0x135: Pause(s, m); return;            // 0x4C4830 / 0x4C47AB
+            case 0x01D: OnGameStart(s); return;                     // 0x4CAD99
+            case 0x17D: ForwardKill(s, m); return;                  // 0x4C647E: tails 0x4C97C4 (mode 6) / 0x4C81D1 (mode 8)
             case 0x156: case 0x157: Kick(s, m); return;             // 0x4C4A5B
             case 0x150: case 0x01C: OnQuit(s, m); return;           // 0x4CA4F9 -> FUN_004d6ac0 (graceful quit / leave)
             case 0x1B1: case 0x1B2: case 0x1B3: case 0x1B4: StoreWorldBank(s, m); return; // 0x4C4CBB..0x4C4CF4
             case 0x1B5: SendWorldBanks(s); return;                  // 0x4C4C86
         }
-        if (m.Opcode < _seenUnhandled.Length && !_seenUnhandled[m.Opcode])
+        if (!OpcodeTable.IsNative(m.Opcode) && m.Opcode < _seenUnhandled.Length && !_seenUnhandled[m.Opcode])
         {
             _seenUnhandled[m.Opcode] = true;
             Log.Info($"unhandled opcode 0x{m.Opcode:X3} ({m.Payload.Length} bytes) from {s.Describe()}");
@@ -262,6 +266,28 @@ public sealed partial class GameServerHost
         BinaryPrimitives.WriteUInt32LittleEndian(payload, _gameFlags);
         SendAll(0x01E, 0, payload);
         Log.Info("Gameflags changed by host.");
+    }
+
+    /// <summary>0x01D (case 0x4CAD99): the host starts a campaign game; only before it entered the world and with a campaign flag
+    /// (0x40010), else service code 0x64. Sets flag 0x8000 and broadcasts 0x01E [flags] to everybody.</summary>
+    private void OnGameStart(PlayerSession s)
+    {
+        if (!s.IsHost || s.InGame || (_gameFlags & 0x40010) == 0) { SendServiceCode(s, NotAllowed); return; }
+        _gameFlags |= 0x8000;
+        Span<byte> payload = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, _gameFlags);
+        SendAll(0x01E, 0, payload);
+    }
+
+    /// <summary>
+    /// 0x17D [creature ref][killer word][..] (case 0x4C647E): the original applies the kill to its own object world (native event
+    /// 0x208, experience and loot messages; not modelled, TODO) and then forwards the message unchanged: mode 8 (sector visible and
+    /// in the object's mask) for a creature (reference above 0x10), mode 6 (object visible) when a hero died (reference = slot).
+    /// </summary>
+    private void ForwardKill(PlayerSession s, in GoldMessageView m)
+    {
+        var reference = m.Payload.Length >= 4 ? BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) : 0;
+        Forward(s, m, reference > 0x10 ? RouteMode.SectorAndObject : RouteMode.ObjectVisible, includeSender: false);
     }
 
     private void SetMaxPlayers(PlayerSession s, in GoldMessageView m)
