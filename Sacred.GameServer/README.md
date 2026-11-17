@@ -123,6 +123,10 @@ online, lobby kick, Closed Net character, lobby shutdown).
    not full parity with the client API).
 6. Ladder export (`LADDER_EXPORT`).
 
+## Demo mode (`--demo`)
+
+`--demo` shows fake players, chat, bans and sector owners in the web UI (loopback only, no game ports), for screenshots of any page: see [Demo/README.md](Demo/README.md).
+
 ## Server scripts (Lua)
 
 Lua scripts run on the server itself, with [LuaCSharp](https://github.com/nuskey8/Lua-CSharp) 0.5.8 (pure managed Lua 5.2:

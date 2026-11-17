@@ -25,16 +25,16 @@ internal static partial class Pages
 .sm .tip{position:absolute;z-index:3;pointer-events:none;background:rgba(12,10,7,.92);color:#efe6d6;border:1px solid #4a3d2c;border-radius:8px;padding:.45rem .65rem;font-size:.85rem;line-height:1.45;max-width:16rem;box-shadow:0 6px 20px rgba(0,0,0,.5)}
 .sm .tip b{color:#f2c36b}.sm .tip .dot{display:inline-block;width:.6rem;height:.6rem;border-radius:2px;margin-right:.3rem;vertical-align:baseline}
 .sm .tip .dim{color:#a39683}
-.sm .live{position:absolute;right:.6rem;top:.6rem;display:flex;align-items:center;gap:.4rem;background:rgba(12,10,7,.78);color:#efe6d6;border-radius:999px;padding:.2rem .65rem;font-size:.8rem;pointer-events:none}
-.sm .live i{width:.55rem;height:.55rem;border-radius:50%;background:var(--bad)}
-.sm .live.on i{background:var(--ok);animation:smp 2s ease-in-out infinite}
+.sm .smlive{position:absolute;right:.6rem;top:.6rem;display:flex;align-items:center;gap:.4rem;background:rgba(12,10,7,.78);color:#efe6d6;border-radius:999px;padding:.2rem .65rem;font-size:.8rem;pointer-events:none}
+.sm .smlive i{width:.55rem;height:.55rem;border-radius:50%;background:var(--bad)}
+.sm .smlive.on i{background:var(--ok);animation:smp 2s ease-in-out infinite}
 @keyframes smp{50%{opacity:.35}}
 .sm .readout{position:absolute;left:.5rem;bottom:.5rem;background:rgba(12,10,7,.78);color:#efe6d6;border-radius:6px;padding:.25rem .5rem;font-size:.82rem;pointer-events:none;max-width:calc(100% - 1rem)}
 .sm .hint{color:var(--dim);font-size:.85rem}
 .sm .stats{display:flex;gap:1rem;flex-wrap:wrap}.sm .stats b{display:block;font-size:1.3rem;color:var(--gold2)}.sm .stats span{color:var(--dim);font-size:.8rem}
 .sm .row{display:flex;gap:.4rem;flex-wrap:wrap}.sm .row button{flex:1 1 auto;min-height:2.6rem}
 @media (max-width:860px){.sm{grid-template-columns:minmax(0,1fr)}.sm>*{min-width:0}.sm .stage{height:62dvh;order:-1}.sm .side{max-height:none}}
-@media (prefers-reduced-motion:reduce){.sm .live.on i{animation:none}}
+@media (prefers-reduced-motion:reduce){.sm .smlive.on i{animation:none}}
 """;
 
     private const string SectorsScript = """
@@ -65,7 +65,7 @@ function resize(){dpr=window.devicePixelRatio||1;var r=cv.getBoundingClientRect(
 function fit(){if(!M)return;var r=cv.getBoundingClientRect();if(r.width<10||r.height<10)return;var k=Math.min(r.width/M.width,r.height/M.height);view.k=k;view.x=(r.width-M.width*k)/2;view.y=(r.height-M.height*k)/2}
 function zoomToSectors(ids){if(!M||!ids.length)return;var r=cv.getBoundingClientRect(),x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
   ids.forEach(function(id){var c=idCell[id];if(!c)return;diamond(c[0],c[1]).forEach(function(p){x0=Math.min(x0,p[0]);y0=Math.min(y0,p[1]);x1=Math.max(x1,p[0]);y1=Math.max(y1,p[1])})});
-  if(x0>x1)return;var pad=Math.max(60,(x1-x0)*.8,(y1-y0)*.8);x0-=pad;x1+=pad;y0-=pad;y1+=pad;
+  if(x0>x1)return;var pad=Math.max(40,(x1-x0)*.2,(y1-y0)*.2);x0-=pad;x1+=pad;y0-=pad;y1+=pad;
   var k=Math.min(r.width/(x1-x0),r.height/(y1-y0),8);view.k=k;view.x=(r.width-(x1-x0)*k)/2-x0*k;view.y=(r.height-(y1-y0)*k)/2-y0*k;fitted=true;draw()}
 
 function draw(){if(!M)return;var w=cv.width/dpr,h=cv.height/dpr;g.setTransform(dpr,0,0,dpr,0,0);g.fillStyle='#0c0a07';g.fillRect(0,0,w,h);
@@ -132,7 +132,7 @@ $('#owned').addEventListener('click',function(){zoomToSectors(data.sectors.map(f
 
 /* ---- live data: SSE, with polling as the fallback ---- */
 function apply(d){data=d;index();renderList();if(hover&&hover.id)showTip(hover.id,0,0);draw();var t=$('#stamp');t.textContent=d.timeUnixMs?new Date(d.timeUnixMs).toLocaleTimeString():''}
-function live(on){var e=$('#live');e.className='live'+(on?' on':'');$('#liveText').textContent=on?'live':'reconnecting'}
+function live(on){var e=$('#live');e.className="smlive"+(on?" on":"");$('#liveText').textContent=on?'live':'reconnecting'}
 var poller=null;
 function startPolling(){if(poller)return;poller=setInterval(function(){api('api/sectors').then(function(d){live(true);if(d.version!==data.version)apply(d)}).catch(function(){live(false)})},1500)}
 function connect(){if(!window.EventSource){startPolling();return}
@@ -165,7 +165,7 @@ api('api/areas/map').then(function(m){M=m;m.sectors.forEach(function(s){cellId[s
           .Append("<section class=\"card\"><h2>Players <small id=\"stamp\" style=\"font-weight:400;color:var(--dim)\"></small></h2><ul class=\"pl\" id=\"players\"></ul></section>")
           .Append("</div><div class=\"stage\"><canvas id=\"cv\" aria-label=\"World map: which player owns which sector\"></canvas>")
           .Append("<p class=\"hint\" id=\"loading\" style=\"position:absolute;top:.6rem;left:.8rem;margin:0;color:#efe6d6\">Loading the map...</p>")
-          .Append("<div class=\"live\" id=\"live\"><i></i><span id=\"liveText\">connecting</span></div><div class=\"tip\" id=\"tip\" hidden></div><div class=\"readout\" id=\"readout\"></div></div>")
+          .Append("<div class=\"smlive\" id=\"live\"><i></i><span id=\"liveText\">connecting</span></div><div class=\"tip\" id=\"tip\" hidden></div><div class=\"readout\" id=\"readout\"></div></div>")
           .Append("</main></div><script>").Append(SectorsScript).Append("</script></body></html>");
         return sb.ToString();
     }

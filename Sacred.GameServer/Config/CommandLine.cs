@@ -55,6 +55,8 @@ public static class CommandLine
         new("Networking", "tick-ms", OptionKind.Int, "game loop tick in milliseconds, 5..100 (default 20)", "20", 5, 100),
         new("Networking", "max-password-tries", OptionKind.Int, "wrong passwords before a player is kicked, 1..100 (default 3)", "3", 1, 100),
         new("Networking", "max-connections-per-address", OptionKind.Int, "simultaneous connections per client address, 0 = no limit (default 8)", "8", 0),
+        new("Demo", "demo", OptionKind.Flag, "stub state for screenshots and demos: the web UI shows fake players, chat, bans and sector owners (see --demo-file); loopback only, no game port, no LAN announce, no lobby", "1"),
+        new("Demo", "demo-file", OptionKind.Path, "JSON with the stub state of --demo (default: the built-in Demo/demo-state.json)", "demo-state.json"),
         new("Networking", "trace", OptionKind.Flag, "log every received and sent message (opcode, sender, origin, first 32 bytes)", "1"),
 
         // ---- lobby ----

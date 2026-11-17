@@ -35,6 +35,9 @@ public sealed class GameServerConfig
     public int MaxPasswordTries { get; set; } = 3;
     /// <summary>Per-message wire trace in the log.</summary>
     public bool Trace { get; set; }
+    /// <summary><c>--demo</c>: the web UI shows stub state (Demo/DemoAdmin.cs); <see cref="DemoFile"/> replaces the built-in one.</summary>
+    public bool Demo { get; set; }
+    public string? DemoFile { get; set; }
     /// <summary>Window handle of the game that started the server (decimal argument "quiet &lt;HWND&gt;"), 0 = started by hand.</summary>
     public long ParentWindow { get; set; }
     /// <summary>Address the TCP and UDP listeners bind (BIND_ADDRESS / NETWORK_BIND / --bind); null = every interface like the original.</summary>
@@ -117,6 +120,8 @@ public sealed class GameServerConfig
             case "LOBBY_CHANNEL": LobbyChannel = Int(value, LobbyChannel); break;
             case "CLOSED_NET": ClosedNet = Int(value, 1) != 0; break;
             case "TRACE": Trace = Int(value, 1) != 0; break;
+            case "DEMO": Demo = Int(value, 1) != 0; break;
+            case "DEMO_FILE": DemoFile = value.Length == 0 ? null : value; Demo = Demo || DemoFile is not null; break;
             case "ANNOUNCE_VERSION" or "VERSION": AnnounceVersion = (ushort)Math.Clamp(Int(value, 0), 0, ushort.MaxValue); break;
             default: if (!Auth.Apply(key, value) && !Flood.Apply(key, value) && !NetOps.Apply(key, value)) Scripts.Apply(key, value); break;
         }

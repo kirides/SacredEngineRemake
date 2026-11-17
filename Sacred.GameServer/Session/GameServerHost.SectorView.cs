@@ -5,7 +5,7 @@ namespace Sacred.GameServer.Session;
 /// <summary>
 /// Sector ownership for the admin map (<see cref="IServerAdmin.SectorOwnership"/>): about four times a second the game loop copies the
 /// sector table (owner, players inside, initialized) and the players' sector and position into an immutable snapshot that the web
-/// thread reads under a short lock. The version only moves when the content changes, so the SSE stream sends nothing while the world rests.
+/// thread reads under a short lock, and only while a web page asks for it. The version only moves when the content changes, so the SSE stream sends nothing while the world rests.
 /// Positions are the hero's last state the server mirrored (a position is only shown while it lies in the sector the client reported).
 /// </summary>
 public sealed partial class GameServerHost
@@ -16,11 +16,19 @@ public sealed partial class GameServerHost
     private long _nextSectorViewMs;
     private int _sectorViewHash;
 
-    public SectorOwnership SectorOwnership() { lock (_sectorViewGate) return _sectorView; }
+    private long _sectorViewWantedUntilMs;
+
+    /// <summary>The newest snapshot. Calling it tells the game loop that somebody watches: it keeps the snapshot fresh for the next few seconds
+    /// (and builds nothing, allocates nothing, while no page is open).</summary>
+    public SectorOwnership SectorOwnership()
+    {
+        Volatile.Write(ref _sectorViewWantedUntilMs, _clock.ElapsedMilliseconds + 5000);
+        lock (_sectorViewGate) return _sectorView;
+    }
 
     private void PumpSectorView(long now)
     {
-        if (now < _nextSectorViewMs) return;
+        if (now < _nextSectorViewMs || now > Volatile.Read(ref _sectorViewWantedUntilMs)) return;
         _nextSectorViewMs = now + SectorViewIntervalMs;
         var sectors = new List<SectorOwnerInfo>();
         var owned = new int[MaxSlots + 1];
