@@ -160,3 +160,42 @@ public sealed partial class GameServerHost
         return new ItemInfo(reference, BinaryPrimitives.ReadUInt32LittleEndian(data), data[25], data[6] & 15, records, BinaryPrimitives.ReadUInt32LittleEndian(data[8..]));
     }
 }
+
+/// <summary>Script HTTP endpoints: the web thread queues a request, the game loop runs the Lua handler (PumpScripts) and
+/// completes it. At most <see cref="ModQueueLimit"/> requests wait; more are answered 503 at once.</summary>
+public sealed partial class GameServerHost
+{
+    private const int ModQueueLimit = 64, ModRequestsPerTick = 16;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<ModWork> _modRequests = new();
+    private int _modQueued;
+
+    private sealed record ModWork(string Mod, string Path, IReadOnlyList<KeyValuePair<string, string>> Query, bool PublicOnly, TaskCompletionSource<ModResponse> Done);
+
+    public IReadOnlyList<ModEndpointInfo> ModEndpoints() =>
+        _scripts?.Endpoints.Select(e => new ModEndpointInfo(e.Mod, e.Path, e.Public, e.Description)).OrderBy(e => e.Mod).ThenBy(e => e.Path).ToArray() ?? [];
+
+    public Task<ModResponse> ModRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly, CancellationToken cancellationToken)
+    {
+        if (_scripts is null) return Task.FromResult(new ModResponse(404, "text/plain; charset=utf-8", "scripts are off"));
+        if (Interlocked.Increment(ref _modQueued) > ModQueueLimit)
+        {
+            Interlocked.Decrement(ref _modQueued);
+            return Task.FromResult(new ModResponse(503, "text/plain; charset=utf-8", "busy"));
+        }
+        var work = new ModWork(mod, path, query, publicOnly, new TaskCompletionSource<ModResponse>(TaskCreationOptions.RunContinuationsAsynchronously));
+        _modRequests.Enqueue(work);
+        return work.Done.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+    }
+
+    /// <summary>Game loop: answer queued script endpoint requests.</summary>
+    private void PumpModRequests()
+    {
+        for (var i = 0; i < ModRequestsPerTick && _modRequests.TryDequeue(out var work); i++)
+        {
+            Interlocked.Decrement(ref _modQueued);
+            var answer = _scripts?.HandleRequest(work.Mod, work.Path, work.Query, work.PublicOnly) ?? new Scripting.ScriptResponse(404, "text/plain; charset=utf-8", "scripts are off");
+            work.Done.TrySetResult(new ModResponse(answer.Status, answer.ContentType, answer.Body));
+            ExecuteScriptKicks();
+        }
+    }
+}

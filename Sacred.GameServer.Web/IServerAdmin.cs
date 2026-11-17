@@ -16,6 +16,10 @@ public interface IServerAdmin
     IReadOnlyList<HeroInfo> Heroes();
     /// <summary>Boards (ladders) published by server scripts.</summary>
     IReadOnlyList<BoardInfo> Boards();
+    /// <summary>HTTP endpoints registered by server scripts (<c>server.endpoint</c>).</summary>
+    IReadOnlyList<ModEndpointInfo> ModEndpoints();
+    /// <summary>Runs a script endpoint on the game loop. <paramref name="publicOnly"/>: only endpoints the script marked public.</summary>
+    Task<ModResponse> ModRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly, CancellationToken cancellationToken);
     /// <summary>Queues a command for the game loop. False when the queue is full.</summary>
     bool Submit(in AdminCommand command);
     /// <summary>Cancelled when the server stops: the web UI ends its streaming responses and stops at once (it never waits for browsers).</summary>
@@ -92,5 +96,10 @@ public sealed record StoredItem(int Cell, int Width, int Height, ItemInfo Item);
 /// <summary>A board (ladder) a script published with <c>server.publish</c>.</summary>
 public sealed record BoardInfo(string Name, string Title, BoardRow[] Rows, long UpdatedUnixMs);
 public sealed record BoardRow(int Rank, string Name, double Value);
+
+/// <summary>A script endpoint: <c>/mods/{Mod}/{Path}</c> (and <c>/public/mods/...</c> when <see cref="Public"/>).</summary>
+public sealed record ModEndpointInfo(string Mod, string Path, bool Public, string? Description);
+/// <summary>A script endpoint's answer.</summary>
+public sealed record ModResponse(int Status, string ContentType, string Body);
 
 public readonly record struct AdminCommand(AdminCommandKind Kind, int Slot = 0, int Value = 0, string? Text = null);

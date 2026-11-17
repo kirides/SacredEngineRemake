@@ -200,6 +200,11 @@ public class WebAdminTests
         public IReadOnlyList<BanEntry> Bans() => [];
         public IReadOnlyList<HeroInfo> Heroes() => [new HeroInfo(1, "Alice", "acct.Alice", 2, 12, 3400, 990, 1, [new SkillInfo(14, 3, 0)], [1, 0, 2, 0, 0, 0], null,
             [new ArtInfo(2, 1097, 6)], 4, [new EquippedItem(12, new ItemInfo(40, 7452, 11, 2, 1, 500))], [new StoredItem(0, 1, 1, new ItemInfo(41, 5000, 3, 0, 0, 20))], [], true, 75)];
+        public IReadOnlyList<ModEndpointInfo> ModEndpoints() => [new ModEndpointInfo("ladders", "by-creature", true, "csv"), new ModEndpointInfo("ladders", "admin", false, null)];
+        public Task<ModResponse> ModRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly, CancellationToken cancellationToken) =>
+            Task.FromResult(mod == "ladders" && path == "by-creature" ? new ModResponse(200, "text/csv; charset=utf-8", "creature,kills\r\n551," + (query.FirstOrDefault(q => q.Key == "n").Value ?? "0"))
+                : mod == "ladders" && path == "admin" && !publicOnly ? new ModResponse(200, "text/plain; charset=utf-8", "admin only")
+                : new ModResponse(404, "text/plain; charset=utf-8", "no such endpoint"));
         public IReadOnlyList<BoardInfo> Boards() => [new BoardInfo("kills", "Most kills", [new BoardRow(1, "Alice", 120)], 1)];
         public FloodSettings Flood() => new(true, false, 600, 3000, 2 * 1024 * 1024, 8 * 1024 * 1024, 3, 8, 500, 10, 60, 8, 42, 1, 2);
         public bool Submit(in AdminCommand command) { Commands.Add(command); return true; }
@@ -363,6 +368,16 @@ public class WebAdminTests
             Assert.AreEqual(12, hero.RootElement.GetProperty("level").GetInt32());
             Assert.AreEqual("Most kills", JsonDocument.Parse(await anonymous.GetStringAsync("/public/boards")).RootElement[0].GetProperty("title").GetString());
             Assert.AreEqual(HttpStatusCode.MethodNotAllowed, (await anonymous.PostAsync("/public/heroes", Json("{}"))).StatusCode);
+            // Script endpoints: public ones for everybody, the rest behind the password.
+            var csv = await anonymous.GetAsync("/public/mods/ladders/by-creature?n=7");
+            Assert.AreEqual(HttpStatusCode.OK, csv.StatusCode);
+            Assert.AreEqual("text/csv", csv.Content.Headers.ContentType!.MediaType);
+            Assert.AreEqual("creature,kills\r\n551,7", await csv.Content.ReadAsStringAsync());
+            StringAssert.Contains(string.Join(";", csv.Headers.GetValues("Content-Security-Policy")), "default-src 'none'");
+            Assert.AreEqual(HttpStatusCode.NotFound, (await anonymous.GetAsync("/public/mods/ladders/admin")).StatusCode);
+            Assert.AreEqual(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/mods/ladders/admin")).StatusCode);
+            using var list = JsonDocument.Parse(await anonymous.GetStringAsync("/public/mods"));
+            Assert.AreEqual(1, list.RootElement.GetArrayLength());
         }
     }
 

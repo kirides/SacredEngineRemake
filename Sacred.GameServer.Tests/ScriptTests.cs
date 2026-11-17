@@ -178,6 +178,54 @@ public class ScriptTests
     }
 
     [TestMethod]
+    public void ScriptEndpointsAnswerCsvJsonAndErrors()
+    {
+        using var folder = new Folder();
+        folder.Write("ladders.lua", Example("ladders.lua"));
+        folder.Write("other.lua", """
+            server.endpoint("/Boom/", function() error("broken") end)
+            server.endpoint("secret", function(r) return { a = r.query.x, list = { 1, 2 }, empty = {} } end)
+            """);
+        var (host, server, store) = Host(folder);
+        var alice = server.All[0];
+        store.Set("id:9:1", ScriptStore.NameKey, "Bob");
+        store.Set("name:Alice", ScriptStore.NameKey, "Alice");             // the game server stores this on join
+        for (uint i = 0; i < 3; i++) host.FireKill(alice, new ScriptMonster(100 + i, 551, 3));
+        host.FireKill(alice, new ScriptMonster(200, 77, 3));
+        var csv = host.HandleRequest("ladders", "by-creature", [], publicOnly: true);
+        Assert.AreEqual(200, csv.Status);
+        StringAssert.StartsWith(csv.ContentType, "text/csv");
+        Assert.AreEqual("creature,hunter,kills\r\n77,Alice,1\r\n551,Alice,3\r\n", csv.Body);
+        var top = host.HandleRequest("LADDERS", "/top/", [KeyValuePair.Create("board", "kills"), KeyValuePair.Create("n", "1")], publicOnly: true);
+        Assert.AreEqual("[{\"rank\":1,\"name\":\"Alice\",\"value\":4}]", top.Body);
+        StringAssert.StartsWith(top.ContentType, "application/json");
+        Assert.AreEqual(404, host.HandleRequest("ladders", "top", [KeyValuePair.Create("board", "nope")], false).Status);
+        Assert.AreEqual(404, host.HandleRequest("ladders", "missing", [], false).Status);
+        Assert.AreEqual(500, host.HandleRequest("other", "boom", [], false).Status);
+        Assert.AreEqual(404, host.HandleRequest("other", "secret", [], publicOnly: true).Status, "not public");
+        var json = host.HandleRequest("other", "secret", [KeyValuePair.Create("x", "1")], false);
+        using var doc = System.Text.Json.JsonDocument.Parse(json.Body);
+        Assert.AreEqual("1", doc.RootElement.GetProperty("a").GetString());
+        Assert.AreEqual(2, doc.RootElement.GetProperty("list").GetArrayLength());
+        Assert.AreEqual(System.Text.Json.JsonValueKind.Array, doc.RootElement.GetProperty("empty").ValueKind);
+        CollectionAssert.AreEquivalent(new[] { "ladders/top", "ladders/by-creature", "other/boom", "other/secret" },
+            host.Endpoints.Select(e => e.Mod + "/" + e.Path).ToArray());
+    }
+
+    [TestMethod]
+    public void EndpointRequestsRunOnTheGameLoop()
+    {
+        using var folder = new Folder();
+        folder.Write("hello.lua", "server.endpoint('players', function() return #server.players() .. ' online' end, { public = true })");
+        using var server = new Server(folder);
+        using var a = RawClient.Admit(server.Port, "A", 1);
+        var answer = server.Host.ModRequest("hello", "players", [], true, CancellationToken.None).GetAwaiter().GetResult();
+        Assert.AreEqual(200, answer.Status);
+        Assert.AreEqual("1 online", answer.Body);
+        Assert.AreEqual("hello", server.Host.ModEndpoints().Single().Mod);
+    }
+
+    [TestMethod]
     public void ChangedScriptsAreReloaded()
     {
         using var folder = new Folder();

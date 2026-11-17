@@ -48,6 +48,8 @@ public interface IScriptServer
 /// server.random([m [, n]])
 /// server.top(key, n) -> { { key, name, value }, ... }  (saved numbers of every hero, also offline)
 /// server.publish(name, title, rows)                    -- rows = { { name = "...", value = n }, ... } for the web UI
+/// server.endpoint(path, fn [, { public = true, description = "..." }])  -- GET /mods/{script}/{path} (ScriptEndpoints.cs)
+/// server.csv(rows [, columns]) / server.json(table)
 /// </code>
 /// Sandbox: basic (without dofile/loadfile/load), string, table, math and bit32 libraries only; no io, os, require or debug.
 /// Every handler or timer call gets an instruction budget (<see cref="ScriptOptions.InstructionBudget"/>) enforced through a
@@ -72,6 +74,36 @@ public sealed class ScriptHost
     private volatile bool _changed;
     private long _reloadDueMs;
 
+    private readonly Dictionary<string, ScriptEndpoints.Endpoint> _endpoints = new(StringComparer.Ordinal);
+    private ScriptEndpoints.Endpoint[] _endpointList = [];
+
+    /// <summary>Endpoints of the loaded scripts (any thread: an immutable array replaced on every change).</summary>
+    public IReadOnlyList<ScriptEndpoints.Endpoint> Endpoints => Volatile.Read(ref _endpointList);
+
+    /// <summary>Runs the endpoint <paramref name="mod"/>/<paramref name="path"/>; 404 when there is none (or it is not public and
+    /// <paramref name="publicOnly"/> is set), 500 when the script fails.</summary>
+    public ScriptResponse HandleRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly)
+    {
+        if (_state is null || !_endpoints.TryGetValue(ScriptEndpoints.Key(mod, path), out var endpoint) || (publicOnly && !endpoint.Public))
+            return new(404, "text/plain; charset=utf-8", "no such endpoint");
+        var parameters = new LuaTable(0, query.Count);
+        foreach (var (key, value) in query) parameters[key] = value;
+        var request = new LuaTable(0, 2) { ["path"] = endpoint.Path, ["query"] = parameters };
+        try
+        {
+            _currentFile = endpoint.File;
+            var values = Run(_state.CallAsync(endpoint.Function, One(request)));
+            return ScriptEndpoints.Response(values);
+        }
+        catch (Exception e) when (IsScriptError(e) || e is InvalidOperationException or ArgumentException)
+        {
+            Errors++;
+            Log.Info($"SCRIPT: {endpoint.File}: endpoint {endpoint.Mod}/{endpoint.Path}: {Describe(e)}");
+            return new(500, "text/plain; charset=utf-8", "script error");
+        }
+        finally { _currentFile = ""; }
+    }
+
     private sealed class Handler { public required LuaFunction Function; public required string File; public int Errors; }
     private sealed class Timer { public required LuaFunction Function; public required string File; public long DueMs; public long IntervalMs; public int Errors; }
 
@@ -86,7 +118,7 @@ public sealed class ScriptHost
     /// <summary>(Re)creates the Lua state and runs every script file, then fires "start".</summary>
     public void Load()
     {
-        _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear();
+        _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear(); _endpoints.Clear();
         _state = CreateState();
         var files = Directory.Exists(_options.Directory)
             ? Directory.GetFiles(_options.Directory, "*.lua").OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray() : [];
@@ -105,6 +137,7 @@ public sealed class ScriptHost
             Log.Info(error is null ? $"SCRIPT: loaded {name}." : $"SCRIPT: {name} failed to load: {error}");
         }
         _currentFile = "";
+        Volatile.Write(ref _endpointList, _endpoints.Values.ToArray());
         Fire("start");
         Log.Info($"SCRIPT: {files.Length} file(s), {HandlerCount} handler(s), {_timers.Count + _newTimers.Count} timer(s).");
     }
@@ -335,6 +368,22 @@ public sealed class ScriptHost
             if (drop is null) return c.Return(LuaValue.Nil, error ?? "failed");
             return c.Return(new LuaTable(0, 5) { ["ref"] = drop.Reference, ["type"] = drop.Type, ["quality"] = drop.Quality, ["name"] = drop.Name, ["category"] = drop.Category });
         });
+        server["endpoint"] = Fn("endpoint", c =>
+        {
+            var path = ScriptEndpoints.Normalize(c.GetArgument(0).ToString());
+            var function = c.GetArgument<LuaFunction>(1);
+            var options = c.HasArgument(2) && c.GetArgument(2).Type == LuaValueType.Table ? c.GetArgument(2).Read<LuaTable>() : null;
+            var mod = ScriptEndpoints.ModName(_currentFile);
+            if (mod.Length == 0) throw new InvalidOperationException("server.endpoint must be called while the script loads");
+            var endpoint = new ScriptEndpoints.Endpoint(mod, path, function, _currentFile, options?["public"].ToBoolean() == true,
+                options?["description"] is { Type: LuaValueType.String } d ? d.Read<string>() : null);
+            _endpoints[ScriptEndpoints.Key(mod, path)] = endpoint;
+            Volatile.Write(ref _endpointList, _endpoints.Values.ToArray());
+            return c.Return();
+        });
+        server["csv"] = Fn("csv", c => c.Return(ScriptEndpoints.Csv(c.GetArgument<LuaTable>(0),
+            c.HasArgument(1) && c.GetArgument(1).Type == LuaValueType.Table ? c.GetArgument(1).Read<LuaTable>() : null)));
+        server["json"] = Fn("json", c => c.Return(ScriptEndpoints.Json(c.GetArgument<LuaTable>(0))));
         server["top"] = Fn("top", c =>
         {
             var key = c.GetArgument(0).ToString();

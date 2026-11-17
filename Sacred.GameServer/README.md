@@ -145,7 +145,19 @@ server.drop_item(player, { quality = 0..14, category = "ring", level = n, class 
 server.random()  server.random(n)  server.random(m, n)
 server.top(key, n)                     -- { { key, name, value }, ... }: saved numbers of every hero, also offline
 server.publish(name, title, rows)      -- rows = { { name = "...", value = n }, ... }: a board for the web UI
+server.endpoint(path, fn [, { public = true, description = "..." }])   -- GET /mods/{script}/{path}
+server.csv(rows [, columns])  server.json(table)
 ```
+
+**Mod endpoints.** `server.endpoint` gives a script its own HTTP routes on the web UI: `GET /mods/{script file name without
+.lua}/{path}` (admin password like the rest of the API) and, for endpoints marked `public` while `WebUi:PublicApi` is on, `GET
+/public/mods/{script}/{path}` for anybody (CORS `*`, may be framed anywhere). The handler gets `{ path, query = { name = value } }`
+and returns a string with an optional content type and status (`return server.csv(rows, columns), "text/csv"`), or a table that
+is sent as JSON (a sequence or an empty table becomes an array). `GET /api/mods` and `/public/mods` list them. The web thread
+queues the request and the game loop runs the handler (budget and error handling as for events; at most 64 waiting, 5 s
+time-out, 503/504 otherwise). Answers carry `Content-Security-Policy: default-src 'none'`, so script output cannot run code on
+the server's site. Example: `ladders.lua` serves `/mods/ladders/top?board=kills&n=10` (JSON) and `/mods/ladders/by-creature`
+(CSV: creature type, best hunter, kills).
 
 * `player` = `{ slot, name, key, class, level, in_game, host, id }`; `key` identifies the hero across sessions (lobby id and
   hero block, or the name in LAN games). `get/set/add` keep numbers, strings and booleans per hero (or globally with `nil`)

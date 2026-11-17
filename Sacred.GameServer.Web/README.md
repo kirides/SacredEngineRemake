@@ -35,6 +35,7 @@ To put the UI on another site, list that origin in `FrameAncestors` and frame th
 * `GET /` server rendered page; its forms post to `/actions/{say|kick|ban|unban|lock|pause|max-players|password|name|mode|end-session|shutdown}` and are answered with a redirect back (Post/Redirect/Get). Cross-site posts (`Sec-Fetch-Site`, foreign `Origin`) are refused.
 * `GET /fragment` the server rendered state block (header, players, bans) the page swaps in every 3 s.
 * `GET /api/chat/stream[?after=ID]` chat as Server-Sent Events (`id`, `event: chat`, JSON `data`; resumes with `Last-Event-ID`; keep-alive comment every 15 s). `GET /api/chat?after=ID` is the same data as one JSON page.
+* `GET /mods/{script}/{path}` script endpoints (`server.endpoint`), `GET /api/mods` their list; with `PublicApi`, the public ones also as `GET /public/mods/{script}/{path}` and `GET /public/mods`.
 * `GET /api/flood` flood protection limits and counters; `POST /api/flood` with `text` = `KEY=VALUE` pairs (`;` separated, the `FLOOD_*` keys and `MAX_CONNECTIONS_PER_ADDRESS`) changes them live. The page's "Flood protection" card posts only the values that changed (`/actions/flood-form`).
 * `GET /api/overview | players | bans` and `POST /api/{command}` with the same command names and a JSON body (`slot`, `value`, `text`, `reason`, `address`; needs `Content-Type: application/json`).
 

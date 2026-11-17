@@ -47,11 +47,16 @@ public sealed partial class GameServerHost : IScriptServer
     {
         if (_scripts is null) return;
         _scripts.Pump(now);
+        PumpModRequests();
         ExecuteScriptKicks();
         if (now >= _nextScriptFlushMs) { _nextScriptFlushMs = now + 10_000; _scriptStore?.Flush(); }
     }
 
-    private void StopScripts() { _scripts?.Dispose(); _scriptStore?.Flush(); }
+    private void StopScripts()
+    {
+        _scripts?.Dispose(); _scriptStore?.Flush();
+        while (_modRequests.TryDequeue(out var pending)) pending.Done.TrySetResult(new Web.ModResponse(503, "text/plain; charset=utf-8", "server stopping"));
+    }
 
     // ---- hooks --------------------------------------------------------------------------------------------------------
 
