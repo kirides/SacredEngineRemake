@@ -322,4 +322,23 @@ public partial class AuthoritativeTests
             config.Auth.Witness.PurchaseWindowMs = 800;
         });
     }
+
+    [TestMethod]
+    public void AnItemMadeWhileTheWorldStartsMustNotGoIntoTheHero()
+    {
+        StrictRun(StrictItemsMode.On, (host, player) =>
+        {
+            player.Send(0x16F, ItemState(0x6401, 0x12A, 0x71));
+            Assert.AreEqual("world", ItemWhere(host, player, 0x6401), "a world object of the start");
+            var place = new byte[12];
+            BinaryPrimitives.WriteUInt32LittleEndian(place, 0x6401);
+            BinaryPrimitives.WriteUInt32LittleEndian(place.AsSpan(4), 5);
+            BinaryPrimitives.WriteUInt32LittleEndian(place.AsSpan(8), (uint)player.Slot);
+            player.Send(0x13F, place);                          // into the hero's inventory inside the window
+            var until = Environment.TickCount64 + 5000;
+            while (Environment.TickCount64 < until && host.StrictItemsRefused < 1) Thread.Sleep(50);
+            Assert.AreEqual(1, host.StrictItemsRefused);
+            Assert.AreEqual("nil", ItemWhere(host, player, 0x6401, not: "world"), "removed: never saved");
+        }, configure: config => config.Auth.Witness.WorldStartGraceMs = 5000);
+    }
 }

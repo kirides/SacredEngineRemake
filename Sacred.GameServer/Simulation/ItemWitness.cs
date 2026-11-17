@@ -42,6 +42,9 @@ public sealed class ItemWitness
     private readonly bool[] _scratchUsed = new bool[PerSlotRing];
     private readonly long[] _worldBegin = new long[MaxSlots + 1], _worldEnd = new long[MaxSlots + 1];
     public const int StockRing = 256;
+    public const int WorldStartRing = 512;
+    private readonly uint[][] _worldItems = new uint[MaxSlots + 1][];
+    private readonly int[] _worldItemNext = new int[MaxSlots + 1];
     private struct Stocked { public uint Reference; public uint Price; }
     private readonly Stocked[][] _stock = new Stocked[MaxSlots + 1][];
     private readonly int[] _stockNext = new int[MaxSlots + 1];
@@ -61,6 +64,7 @@ public sealed class ItemWitness
             _sectors[i] = new SectorGrant[SectorRing];
             _bought[i] = new Bought[PurchaseRing];
             _stock[i] = new Stocked[StockRing];
+            _worldItems[i] = new uint[WorldStartRing];
         }
     }
 
@@ -136,6 +140,26 @@ public sealed class ItemWitness
     {
         if (slot is 0 or > MaxSlots || _worldBegin[slot] == 0 || _worldEnd[slot] != 0) return;
         _worldEnd[slot] = now + 1;
+    }
+
+    /// <summary>An item the world start source explained (created while the client builds the world): remembered, so that one of them that is put into
+    /// the hero's own inventory while the window is still open can be told from the hero's baseline items (those are explained earlier, as Baseline).</summary>
+    public void OnWorldStartItem(byte slot, uint reference)
+    {
+        if (slot is 0 or > MaxSlots) return;
+        _worldItems[slot][_worldItemNext[slot]] = reference;
+        _worldItemNext[slot] = (_worldItemNext[slot] + 1) % WorldStartRing;
+    }
+
+    /// <summary>The item was put into the hero's inventory: true when it is a remembered world start item and the window is still open (a world
+    /// object of the first sectors is not picked up by the hero while the world is being built).</summary>
+    public bool WorldStartItemAnchored(byte slot, uint reference, long now)
+    {
+        if (slot is 0 or > MaxSlots || reference == 0) return false;
+        var ring = _worldItems[slot];
+        for (var i = 0; i < WorldStartRing; i++)
+            if (ring[i] == reference) { ring[i] = 0; return InWorldStart(slot, now + 1); }
+        return false;
     }
 
     /// <summary>A stock-like item (no position, nobody holds it) was created by the player's client: remembered until it enters a hero.</summary>
@@ -220,6 +244,7 @@ public sealed class ItemWitness
         Array.Clear(_bought[slot]);
         _questAt[slot] = 0; _questLeft[slot] = 0;
         Array.Clear(_stock[slot]); _stockNext[slot] = 0;
+        Array.Clear(_worldItems[slot]); _worldItemNext[slot] = 0;
         _receivedNext[slot] = _remnantNext[slot] = _sectorNext[slot] = 0;
     }
 
