@@ -227,7 +227,7 @@ in existing code: one call in `RemoveObject`, three lines in `LobbyClient`. **Un
 `inv.remove` reaches the server as 0x13E + 0x167 and `inv.add` as 0x16F/0x16C + 0x13F, that the export's records equal the
 server's in order, and how soon a client reports a gold change in its hero state.
 
-* `player` = `{ slot, name, character, uid, class, level, in_game, host, online, sector, x, y }`. **Privacy:** scripts never see lobby ids,
+* `player` = `{ slot, name, character, uid, account, class, level, in_game, host, online, sector, x, y }`. `account` is an opaque per-server key of the player's lobby account (all heroes of one account share it; absent without a lobby identity), made like `uid`. **Privacy:** scripts never see lobby ids,
   owner keys or account names. `name` and `character` are the character name (the server strips the `account.` prefix of
   lobby names, and only of lobby names: a LAN name like `Mr.X` stays), `uid` is an opaque per-server identity of the hero
   (HMAC-SHA256 of its lobby identity with a secret kept in `{scripts-data}/.uid-secret`): stable across sessions on this
@@ -390,6 +390,8 @@ carry their own name word in the saves (a type's base name can be empty, e.g. 19
 word of creatures on the wire (named bosses and NPCs should carry it; the saves only show the horse, 551 with 0x227 = its type),
 the language when the install has several (`us` is preferred), and that item 0x16F drops of `server.drop_item` show their
 generated name (the server creates them with name word 0, so clients see the type's name).
+
+**Shared stash (Closed Net).** `scripts-examples/shared_stash.lua` keeps the stash of the Sacred Gear mod shared-stash per `player.account` on channel `shared-stash`, with the hero custody checks above (deposits count after the item left the hero and the hero was saved; withdrawals are removed after the item arrived and the hero was saved). Outside `--authoritative` it offers nothing. Tests: `SharedStashScriptTests.cs`.
 
 ## Flood protection (`--flood-protection`, on with `--authoritative`)
 
