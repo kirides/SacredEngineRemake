@@ -179,6 +179,7 @@ internal static partial class Pages
           .Append(mods).Append("</span></a>")
           .Append("<a href=\"areas\"").Append(current == "areas" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Areas</a>")
           .Append("<a href=\"events\"").Append(current == "events" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Events</a>")
+          .Append("<a href=\"sectors\"").Append(current == "sectors" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Sectors</a>")
           .Append("<a href=\"auction\"").Append(current == "auction" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Auction</a></nav>");
     }
 

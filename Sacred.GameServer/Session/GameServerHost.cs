@@ -167,6 +167,7 @@ public sealed partial class GameServerHost : IDisposable
         PumpScripts(now);
         PumpNetOps(now);
         PumpHeroes(now);
+        PumpSectorView(now);
         foreach (var s in _sessions) s.Connection.Flush();
         for (var i = _retired.Count - 1; i >= 0; i--)
             if (now >= _retired[i].Due) { _retired[i].Connection.ReleaseBuffers(); _retired.RemoveAt(i); }
