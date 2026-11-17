@@ -136,17 +136,19 @@ server.on("enter", function(player) end)         -- in the world (0x017/0x018 an
 server.on("leave", function(player) end)
 server.on("chat", function(player, text) return true end)   -- public chat; true = not relayed (commands like "!kills")
 server.on("kill", function(player, monster) end) -- monster = { ref, type, level }
+server.on("death", function(player, by) end)     -- a hero died; by = { player } or { ref, type, level }
 server.on("start", function() end)               -- after (re)loading
 server.every(seconds, fn)  server.after(seconds, fn)
 server.broadcast(text)  server.message(player or slot, text)  server.kick(player or slot, reason)
 server.players()  server.player(slot)  server.time()  server.log(text)  print(...)
+server.save(key, value)  server.load(key [, default])  server.delete(key)  server.keys([prefix])   -- the mod's own storage
 server.get(player or nil, key [, default])  server.set(player or nil, key, value)  server.add(player or nil, key [, n])
 server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- item or nil, error
 server.random()  server.random(n)  server.random(m, n)
-server.top(key, n)                     -- { { key, name, value }, ... }: saved numbers of every hero, also offline
-server.publish(name, title, rows)      -- rows = { { name = "...", value = n }, ... }: a board for the web UI
+server.top(key, n)                     -- { { name, value }, ... }: this mod's per-hero numbers, also offline heroes
 server.endpoint(path, fn [, { public = true, description = "..." }])   -- GET /mods/{script}/{path}
-server.csv(rows [, columns])  server.json(table)
+server.page(path, html or fn [, { public = true, title = "..." }])     -- a single-file HTML page at the same address
+server.file(name)  server.html(text)  server.render(template, values)  server.csv(rows [, columns])  server.json(table)
 ```
 
 **Mod endpoints.** `server.endpoint` gives a script its own HTTP routes on the web UI: `GET /mods/{script file name without
@@ -159,13 +161,33 @@ time-out, 503/504 otherwise). Answers carry `Content-Security-Policy: default-sr
 the server's site. Example: `ladders.lua` serves `/mods/ladders/top?board=kills&n=10` (JSON) and `/mods/ladders/by-creature`
 (CSV: creature type, best hunter, kills).
 
+**Mod pages.** `server.page(path, html_or_function, { public = true })` serves single-file HTML at the endpoint address: a fixed
+string (often `server.file("dashboard.html")`, a plain file name from the scripts folder: .html .htm .css .js .txt .json .csv
+.svg, 2 MB) or a function that builds the page on each request. The web UI sends pages with
+`Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+img-src data: https:; connect-src 'self'; form-action 'none'; base-uri 'none'` and `X-Content-Type-Options: nosniff`: the
+page's own inline script and style run, but in a sandbox (opaque origin), so a page cannot use the admin's browser credentials
+against the server's API, cannot load outside scripts, post forms, change the base URL or open plugins; it may fetch public
+endpoints (CORS `*`). Text from players goes through `server.html(text)` (HTML escape) or `server.render(template, values)`:
+`{{name}}` is HTML-escaped, `{{json name}}` is JSON that cannot close a script element; there is no raw insertion. The admin
+page lists every mod page and endpoint in its "Mods" card. Example: `ladders.lua` serves a dashboard at `/mods/ladders/` with
+cards for the top heroes (kills, level, time online), the best hunter per creature and recently died heroes.
+
+**Mod storage.** Each mod (script file) has its own file `{--scripts-data folder}/{mod}.json` (default folder `script-data`):
+`server.save(key, value)` keeps any Lua value, tables included (lists and maps, nested; numbers, strings, booleans), `load`,
+`delete` and `keys` read it back. `server.get/set/add(player, key ...)` keep per-hero values in the same file (with the hero's
+character name for `server.top`); with `nil` instead of a player they are plain keys. Written through a temporary file and a
+move, flushed every 10 s, on reload and at shutdown; one value may be at most 16 MB. The game server itself keeps no state for
+mods: ladders, recent deaths, statistics live in the mod that needs them, so mods can grow without growing the server. (JSON,
+not SQLite: SQLite needs a native library, which would end the single-file Native AOT binary.)
+
 * `player` = `{ slot, name, character, key, class, level, in_game, host, id, online }`. **Privacy:** `name` is the FIRSTCONTACT
   name (`account.character` on lobby servers), `key` and `id` hold the lobby id: use `character` for anything others see
-  (chat, boards, public endpoints). `server.top` and `server.publish` only ever return/publish safe names (character part,
-  never an owner key; "unknown hero" otherwise). `key` identifies the hero across sessions (lobby id and
-  hero block, or the name in LAN games). `get/set/add` keep numbers, strings and booleans per hero (or globally with `nil`)
-  in `--scripts-data` (default `script-data.json`), written through a temporary file and a move, flushed every 10 s and at
-  shutdown.
+  (chat, pages, public endpoints). `server.top` only returns safe names (character part, never an owner key; "unknown hero"
+  otherwise). `key` identifies the hero across sessions (lobby id and hero block, or the name in LAN games).
+* Hero deaths ("death"): 0x17D whose reference is a hero (1..16); the killer word is another player's slot or the killing
+  object (type and level from the object world); several reports within 2 s count once. Unverified with a real client that
+  hero deaths arrive as 0x17D.
 * Kills come from 0x17D `[creature ref][killer]` (GameServer.exe case 0x4C647E: native death event 0x208 on its creature). The
   killer word is a player slot, or an object of a player (credited to its owner), else the sender. Type and level come from
   the creature's last 0x16E/0x16F state in the server's object world (0 when the server never saw it). Each creature counts once.
@@ -189,20 +211,19 @@ the server's site. Example: `ladders.lua` serves `/mods/ladders/top?board=kills&
   value block's resource (Weapon.pak row +0x80), not the row index. `scripts-examples/loot_rewards.lua` rolls rarities from a
   weight table on kills. **Unverified with a real client:** that the owner can pick it up (its client handles pick-ups of its own
   objects) and how `class` maps to the game's 0..9 selector (the player's FIRSTCONTACT class byte is passed as is).
-* Ladders: `server.top` ranks a saved number over every hero the server has seen (the server stores each hero's character
-  name under `_name` when it joins), `server.publish` hands a board to the web UI (`/api/boards`, `/public/boards`).
-  `scripts-examples/ladders.lua` keeps most kills, highest level and time online (+60 s per connected hero each minute) and
-  publishes them every 30 s; `!top` shows the kill ladder in chat. `player.online` is the current session in seconds.
+* Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
+  kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
+  shows the kill ladder in chat. `player.online` is the current session in seconds.
 * Not yet: gold rewards (the money item's amount field is unknown) and creature names.
 
-## Player data and boards (web UI)
+## Player data (web UI)
 
 With the web UI running the server keeps every player's hero state, equipment changes and inventories (also without
 `--authoritative`) and refreshes a snapshot once a second: `GET /api/heroes`, `/api/heroes/{slot}` (admin, with the lobby
-account) and the boards scripts publish, `GET /api/boards`, `/api/boards/{name}`.
+account).
 
-`WebUi:PublicApi=true` (`--webui-public-api`) also serves `GET /public/heroes`, `/public/heroes/{character}`, `/public/boards`
-and `/public/boards/{name}` to anybody, with `Access-Control-Allow-Origin: *` and a 2 s cache, for embeds on other sites,
+`WebUi:PublicApi=true` (`--webui-public-api`) also serves `GET /public/heroes`, `/public/heroes/{character}` and the public mod
+pages and endpoints (`/public/mods/...`) to anybody, with `Access-Control-Allow-Origin: *` and a 2 s cache, for embeds on other sites,
 stream overlays and the like. Read-only (GET), no password; the account part of lobby names and the slot are left out. Off by
 default.
 

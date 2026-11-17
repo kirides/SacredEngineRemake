@@ -6,7 +6,7 @@ using Lua;
 namespace Sacred.GameServer.Scripting;
 
 /// <summary>An HTTP answer of a script endpoint.</summary>
-public readonly record struct ScriptResponse(int Status, string ContentType, string Body);
+public readonly record struct ScriptResponse(int Status, string ContentType, string Body, bool Page = false);
 
 /// <summary>
 /// HTTP endpoints of server scripts. A script registers <c>server.endpoint(path, fn, { public = true, description = "..." })</c>;
@@ -17,7 +17,62 @@ public readonly record struct ScriptResponse(int Status, string ContentType, str
 /// </summary>
 public static class ScriptEndpoints
 {
-    public sealed record Endpoint(string Mod, string Path, LuaFunction Function, string File, bool Public, string? Description);
+    /// <summary>An endpoint or a page (<see cref="Page"/>): a handler, or for a static page its <see cref="Html"/>.</summary>
+    public sealed record Endpoint(string Mod, string Path, LuaFunction? Function, string File, bool Public, string? Description, bool Page = false, string? Html = null);
+
+    /// <summary>A mod page: text/html, sent by the web UI inside a sandbox (opaque origin) with a strict Content-Security-Policy.</summary>
+    public static ScriptResponse Page(string html, int maxChars) =>
+        html.Length > maxChars ? TooLarge : new(200, "text/html; charset=utf-8", html, Page: true);
+
+    /// <summary>
+    /// <c>server.render(template, values)</c>: <c>{{name}}</c> becomes the HTML-escaped value, <c>{{json name}}</c> the value as JSON
+    /// that is safe inside a script element (System.Text.Json escapes &lt;, &gt;, &amp; and quotes). Unknown names become empty.
+    /// Values may be nested: <c>{{player.name}}</c>.
+    /// </summary>
+    public static string Render(string template, LuaTable values)
+    {
+        var sb = new StringBuilder(template.Length + 256);
+        var position = 0;
+        while (position < template.Length)
+        {
+            var open = template.IndexOf("{{", position, StringComparison.Ordinal);
+            if (open < 0) break;
+            var close = template.IndexOf("}}", open + 2, StringComparison.Ordinal);
+            if (close < 0) break;
+            sb.Append(template, position, open - position);
+            var token = template.Substring(open + 2, close - open - 2).Trim();
+            var json = token.StartsWith("json ", StringComparison.Ordinal);
+            var value = Lookup(values, json ? token[5..].Trim() : token);
+            if (json) sb.Append(value.Type == LuaValueType.Table ? Json(value.Read<LuaTable>()) : JsonScalar(value));
+            else sb.Append(System.Net.WebUtility.HtmlEncode(value.Type switch
+            {
+                LuaValueType.Nil => "",
+                LuaValueType.Number => value.Read<double>().ToString(CultureInfo.InvariantCulture),
+                _ => value.ToString(),
+            }));
+            position = close + 2;
+        }
+        sb.Append(template, position, template.Length - position);
+        return sb.ToString();
+    }
+
+    private static LuaValue Lookup(LuaTable values, string path)
+    {
+        LuaValue current = values;
+        foreach (var part in path.Split('.'))
+        {
+            if (current.Type != LuaValueType.Table) return LuaValue.Nil;
+            current = current.Read<LuaTable>()[part];
+        }
+        return current;
+    }
+
+    private static string JsonScalar(LuaValue value)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream)) Write(writer, value, 0);
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
 
     public static string Key(string mod, string path) => mod.ToLowerInvariant() + "/" + Normalize(path);
 

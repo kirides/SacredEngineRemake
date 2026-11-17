@@ -21,7 +21,6 @@ namespace Sacred.GameServer.Session;
 public sealed partial class GameServerHost : IScriptServer
 {
     private ScriptHost? _scripts;
-    private ScriptStore? _scriptStore;
     private readonly List<(int Slot, string Reason)> _scriptKicks = new();
     private readonly uint[] _recentKills = new uint[512];
     private int _recentKillNext;
@@ -35,9 +34,7 @@ public sealed partial class GameServerHost : IScriptServer
     public void StartScripts()
     {
         var options = _config.Scripts;
-        _scriptStore = new ScriptStore(options.DataFile);
-        _scriptStore.Load();
-        _scripts = new ScriptHost(options, this, _scriptStore);
+        _scripts = new ScriptHost(options, this);
         _scripts.Load();
         try { _scripts.Watch(); }
         catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("watching the scripts folder", e); }
@@ -52,7 +49,7 @@ public sealed partial class GameServerHost : IScriptServer
             _scripts.Pump(now);
             PumpModRequests();
             ExecuteScriptKicks();
-            if (now >= _nextScriptFlushMs) { _nextScriptFlushMs = now + 10_000; _scriptStore?.Flush(); }
+            if (now >= _nextScriptFlushMs) { _nextScriptFlushMs = now + 10_000; _scripts.FlushStores(); }
         }
         catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("tick", e); }
     }
@@ -62,7 +59,7 @@ public sealed partial class GameServerHost : IScriptServer
 
     private void StopScripts()
     {
-        _scripts?.Dispose(); _scriptStore?.Flush();
+        _scripts?.Dispose(); _scripts?.FlushStores();
         while (_modRequests.TryDequeue(out var pending)) pending.Done.TrySetResult(new Web.ModResponse(503, "text/plain; charset=utf-8", "server stopping"));
     }
 
@@ -85,7 +82,7 @@ public sealed partial class GameServerHost : IScriptServer
                 ExecuteScriptKicks();
                 return consumed;
             }
-            case 0x17D when m.Payload.Length >= 8 && _scripts!.Has("kill"):
+            case 0x17D when m.Payload.Length >= 8 && (_scripts!.Has("kill") || _scripts.Has("death")):
                 OnKill(s, BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) & 0x7FFFFFFF, BinaryPrimitives.ReadUInt32LittleEndian(m.Payload[4..]));
                 return false;
         }
@@ -105,6 +102,7 @@ public sealed partial class GameServerHost : IScriptServer
 
     private void OnKill(PlayerSession sender, uint victim, uint killerWord)
     {
+        if (victim is >= 1 and <= MaxSlots) { OnHeroDeath(victim, killerWord); return; }
         foreach (var known in _recentKills) if (known == victim) return;
         _recentKills[_recentKillNext] = victim;
         _recentKillNext = (_recentKillNext + 1) % _recentKills.Length;
@@ -121,6 +119,27 @@ public sealed partial class GameServerHost : IScriptServer
         _scripts!.FireKill(ScriptPlayerOf(killer), new ScriptMonster(victim, type, level));
         ExecuteScriptKicks();
     }
+
+    /// <summary>
+    /// 0x17D for a hero (reference = slot): the player died. The killer word is another player's slot or the killing object's
+    /// reference (its type and level from the object world). Unverified with a real client: that hero deaths arrive as 0x17D.
+    /// Several reports of one death within two seconds count once.
+    /// </summary>
+    private void OnHeroDeath(uint slot, uint killerWord)
+    {
+        if (_slots[slot] is not { } dead || dead.State < SessionState.SlotAssigned) return;
+        var now = _clock.ElapsedMilliseconds;
+        if (_lastHeroDeathMs[slot] != 0 && now - _lastHeroDeathMs[slot] < 2000) return;
+        _lastHeroDeathMs[slot] = now;
+        ScriptPlayer? killer = killerWord is >= 1 and <= MaxSlots && killerWord != slot && _slots[killerWord] is { } p ? ScriptPlayerOf(p) : null;
+        ScriptMonster? monster = null;
+        if (killer is null && killerWord != 0 && _world.TryGet(killerWord & 0x7FFFFFFF, out var entry))
+            monster = new ScriptMonster(killerWord & 0x7FFFFFFF, BinaryPrimitives.ReadUInt32LittleEndian(entry.Payload[4..]), CompactLevel(entry.Payload[(entry.LongPrefix ? 24 : 8)..]));
+        _scripts!.FireDeath(ScriptPlayerOf(dead), killer, monster);
+        ExecuteScriptKicks();
+    }
+
+    private readonly long[] _lastHeroDeathMs = new long[MaxSlots + 1];
 
     /// <summary>Level word of a creature body with compact values (Gold 0x585C60: values at +445, level at +52), or 0.</summary>
     private static int CompactLevel(ReadOnlySpan<byte> body)

@@ -7,7 +7,7 @@ using Sacred.Network.Gameplay;
 namespace Sacred.GameServer.Session;
 
 /// <summary>
-/// Player data for the web UI and its public API (<see cref="IServerAdmin.Heroes"/>) and boards published by scripts.
+/// Player data for the web UI and its public API (<see cref="IServerAdmin.Heroes"/>).
 /// With <see cref="TrackHeroes"/> (set when the web UI runs) or authoritative mode the server keeps each player's hero state,
 /// equipment changes and inventories (GameServerHost.HeroState.cs); about once a second the game loop turns them into immutable
 /// <see cref="HeroInfo"/> records that the web thread reads under a short lock.
@@ -20,7 +20,6 @@ public sealed partial class GameServerHost
     private const int HeroSnapshotIntervalMs = 1000;
     private readonly object _heroGate = new();
     private HeroInfo[] _heroSnapshot = [];
-    private readonly Dictionary<string, BoardInfo> _boards = new(StringComparer.OrdinalIgnoreCase);
     private long _nextHeroSnapshotMs;
 
     /// <summary>Keep the players' hero state for <see cref="Heroes"/> even without authoritative mode (the web UI turns it on).</summary>
@@ -30,26 +29,14 @@ public sealed partial class GameServerHost
 
     public IReadOnlyList<HeroInfo> Heroes() { lock (_heroGate) return _heroSnapshot; }
 
-    public IReadOnlyList<BoardInfo> Boards() { lock (_heroGate) return _boards.Values.OrderBy(b => b.Name, StringComparer.OrdinalIgnoreCase).ToArray(); }
-
-    void Scripting.IScriptServer.Publish(string name, string title, IReadOnlyList<(string Name, double Value)> rows)
-    {
-        // Boards are public (/public/boards): strip "account." prefixes and refuse owner keys (lobby ids, account names).
-        var board = new BoardInfo(name, title, rows.Select((r, i) => new BoardRow(i + 1, Scripting.ScriptStore.DisplayName(r.Name), r.Value)).ToArray(),
-            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        lock (_heroGate) _boards[name] = board;
-    }
-
     /// <summary>The character part of the FIRSTCONTACT name ("account.character" on lobby servers).</summary>
     private static string CharacterName(string name) => name.IndexOf('.') is var dot and >= 0 && dot + 1 < name.Length ? name[(dot + 1)..] : name;
 
-    /// <summary>Admission done: remember when, store the hero's display name for ladders, tell the scripts.</summary>
+    /// <summary>Admission done: remember when, tell the scripts. (Mods keep their own data, the server stores nothing for them.)</summary>
     private void OnPlayerJoined(PlayerSession s)
     {
         s.JoinedMs = _clock.ElapsedMilliseconds;
-        if (_scripts is null) return;
-        _scriptStore?.Set(ScriptPlayerOf(s).Key, Scripting.ScriptStore.NameKey, CharacterName(s.Name));
-        ScriptPlayerEvent("join", s);
+        if (_scripts is not null) ScriptPlayerEvent("join", s);
     }
 
     private void PumpHeroes(long now)
@@ -174,7 +161,7 @@ public sealed partial class GameServerHost
     private sealed record ModWork(string Mod, string Path, IReadOnlyList<KeyValuePair<string, string>> Query, bool PublicOnly, TaskCompletionSource<ModResponse> Done);
 
     public IReadOnlyList<ModEndpointInfo> ModEndpoints() =>
-        _scripts?.Endpoints.Select(e => new ModEndpointInfo(e.Mod, e.Path, e.Public, e.Description)).OrderBy(e => e.Mod).ThenBy(e => e.Path).ToArray() ?? [];
+        _scripts?.Endpoints.Select(e => new ModEndpointInfo(e.Mod, e.Path, e.Public, e.Description, e.Page)).OrderBy(e => e.Mod).ThenBy(e => e.Path).ToArray() ?? [];
 
     public Task<ModResponse> ModRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly, CancellationToken cancellationToken)
     {
@@ -196,7 +183,7 @@ public sealed partial class GameServerHost
         {
             Interlocked.Decrement(ref _modQueued);
             var answer = _scripts?.HandleRequest(work.Mod, work.Path, work.Query, work.PublicOnly) ?? new Scripting.ScriptResponse(404, "text/plain; charset=utf-8", "scripts are off");
-            work.Done.TrySetResult(new ModResponse(answer.Status, answer.ContentType, answer.Body));
+            work.Done.TrySetResult(new ModResponse(answer.Status, answer.ContentType, answer.Body, answer.Page));
             ExecuteScriptKicks();
         }
     }

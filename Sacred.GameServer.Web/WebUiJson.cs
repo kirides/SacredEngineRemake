@@ -17,7 +17,5 @@ public sealed record ChatPage(long Last, ChatEntry[] Entries);
 [JsonSerializable(typeof(FloodSettings))]
 [JsonSerializable(typeof(HeroInfo[]))]
 [JsonSerializable(typeof(HeroInfo))]
-[JsonSerializable(typeof(BoardInfo[]))]
-[JsonSerializable(typeof(BoardInfo))]
 [JsonSerializable(typeof(ModEndpointInfo[]))]
 internal sealed partial class WebUiJson : JsonSerializerContext;

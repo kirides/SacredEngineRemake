@@ -1,85 +1,115 @@
--- Ladders: most creatures defeated, highest level and longest time online, kept per hero across sessions and published
--- every 30 seconds for the web UI (/api/boards, and /public/boards when WebUi:PublicApi is on). Copy into the server's
--- scripts folder to use it. "!top" in chat shows the kill ladder to the player who asked.
+-- Ladders and a dashboard page, as a mod with its own storage (script-data/ladders.json). The game server keeps none of this.
+-- Copy into the server's scripts folder to use it.
 --
--- Its own endpoints (this file is "ladders.lua", so they live under /mods/ladders/, and /public/mods/ladders/ when public):
+--   /mods/ladders/              the dashboard: cards for the top heroes, the best hunter per creature, recent deaths
 --   /mods/ladders/top?board=kills&n=10   JSON rows of a ladder (kills, level, online)
---   /mods/ladders/by-creature            CSV: creature type, best hunter, kills
+--   /mods/ladders/by-creature            CSV: creature, best hunter, kills
+-- With WebUi:PublicApi=true the same addresses also work under /public/mods/ladders/... for anybody (embeds, overlays).
+-- "!top" in chat shows the kill ladder to the player who asked.
 
 local size = 10
+local keep_deaths = 20
 
--- Creature types seen so far (kept in the saved data as one comma separated string).
-local types = {}
-for t in string.gmatch(server.get(nil, "ladder.types", ""), "[^,]+") do types[tonumber(t)] = true end
-
-server.on("kill", function(player, monster)
-  server.add(player, "ladder.kills")
-  server.add(player, "ladder.kills." .. monster.type)
-  if not types[monster.type] then
-    types[monster.type] = true
-    local list = {}
-    for t in pairs(types) do list[#list + 1] = t end
-    table.sort(list)
-    server.set(nil, "ladder.types", table.concat(list, ","))
-  end
-  if player.level > server.get(player, "ladder.level", 0) then server.set(player, "ladder.level", player.level) end
-end)
+-- Creature types seen so far (type -> name), kept in this mod's storage.
+local types = server.load("types", {})
 
 local function remember_level(player)
-  if player.level > server.get(player, "ladder.level", 0) then server.set(player, "ladder.level", player.level) end
+  if player.level > server.get(player, "level", 0) then server.set(player, "level", player.level) end
 end
+
+server.on("kill", function(player, monster)
+  server.add(player, "kills")
+  server.add(player, "kills." .. monster.type)
+  if not types[tostring(monster.type)] then
+    types[tostring(monster.type)] = monster.name or ("creature type " .. monster.type)
+    server.save("types", types)
+  end
+  remember_level(player)
+end)
 server.on("enter", remember_level)
 server.on("leave", remember_level)
 
--- Online time: every minute each connected hero gets 60 seconds (a crash loses at most one minute).
-server.every(60, function()
-  for _, player in ipairs(server.players()) do server.add(player, "ladder.online", 60) end
+-- Recently died heroes: a short list in this mod's storage.
+server.on("death", function(player, by)
+  local deaths = server.load("deaths", {})
+  local cause = (by.player and by.player.character) or by.name or (by.type and ("creature type " .. by.type)) or "unknown"
+  table.insert(deaths, 1, { name = player.character, level = player.level, by = cause, time = server.time() })
+  while #deaths > keep_deaths do table.remove(deaths) end
+  server.save("deaths", deaths)
 end)
 
-local function rows(key, scale)
+-- Online time: every minute each connected hero gets 60 seconds (a crash loses at most one minute).
+server.every(60, function()
+  for _, player in ipairs(server.players()) do server.add(player, "online", 60) end
+end)
+
+local boards = {
+  kills = { key = "kills", scale = 1 },
+  level = { key = "level", scale = 1 },
+  online = { key = "online", scale = 3600 },
+}
+
+local function rows(board, n)
   local result = {}
-  for i, row in ipairs(server.top(key, size)) do result[i] = { name = row.name, value = row.value / (scale or 1) } end
+  for i, row in ipairs(server.top(board.key, n or size)) do result[i] = { rank = i, name = row.name, value = row.value / board.scale } end
   return result
 end
 
-local function publish()
-  server.publish("kills", "Most creatures defeated", rows("ladder.kills"))
-  server.publish("level", "Highest level", rows("ladder.level"))
-  server.publish("online", "Longest online (hours)", rows("ladder.online", 3600))
+local function hunters()
+  local result = {}
+  for type, name in pairs(types) do
+    local best = server.top("kills." .. type, 1)[1]
+    if best then result[#result + 1] = { creature = name, hunter = best.name, kills = best.value } end
+  end
+  table.sort(result, function(a, b) return a.kills > b.kills end)
+  return result
 end
-
-server.on("start", publish)
-server.every(30, publish)
 
 server.on("chat", function(player, text)
   if text ~= "!top" then return end
-  for i, row in ipairs(server.top("ladder.kills", 5)) do
-    server.message(player, i .. ". " .. row.name .. ": " .. row.value .. " kills")
-  end
+  for i, row in ipairs(server.top("kills", 5)) do server.message(player, i .. ". " .. row.name .. ": " .. row.value .. " kills") end
   return true
 end)
 
 -- ---- endpoints ----
 
-local boards = { kills = { "ladder.kills", 1 }, level = { "ladder.level", 1 }, online = { "ladder.online", 3600 } }
-
 server.endpoint("top", function(request)
   local board = boards[request.query.board or "kills"]
   if not board then return "unknown board", "text/plain", 404 end
-  local n = math.min(tonumber(request.query.n) or size, 100)
-  local result = {}
-  for i, row in ipairs(server.top(board[1], n)) do result[i] = { rank = i, name = row.name, value = row.value / board[2] } end
-  return result
+  return rows(board, math.min(tonumber(request.query.n) or size, 100))
 end, { public = true, description = "ladder rows as JSON: ?board=kills|level|online&n=10" })
 
 server.endpoint("by-creature", function()
-  local list = {}
-  for t in pairs(types) do list[#list + 1] = t end
-  table.sort(list)
-  local result = {}
-  for _, t in ipairs(list) do
-    local best = server.top("ladder.kills." .. t, 1)[1]
-    if best then result[#result + 1] = { creature = t, hunter = best.name, kills = best.value } end
-  end
-  return server.csv(result, { "creature", "hunter", "kills" }), "text/csv"
-end, { public = true, description = "best hunter per creature type as CSV" })
+  return server.csv(hunters(), { "creature", "hunter", "kills" }), "text/csv"
+end, { public = true, description = "best hunter per creature as CSV" })
+
+-- ---- the dashboard page: built on the server, every name passes through server.html ----
+
+local style = [[
+body{margin:0;font:15px/1.4 system-ui,sans-serif;background:#15110d;color:#efe6d6}h1{margin:0;padding:1rem 1.2rem;font-size:1.3rem;color:#e0a944}
+main{display:grid;grid-template-columns:repeat(auto-fill,minmax(17rem,1fr));gap:1rem;padding:0 1.2rem 1.2rem}
+section{background:#241d16;border:1px solid #3b3025;border-radius:10px;padding:.8rem 1rem}h2{margin:0 0 .5rem;font-size:1rem;color:#f2c36b}
+ol,ul{margin:0;padding-left:1.3rem}li{margin:.15rem 0}b{color:#fff}small{color:#a39683}]]
+
+local function card(title, items, line)
+  local parts = { "<section><h2>", server.html(title), "</h2><ol>" }
+  for _, item in ipairs(items) do parts[#parts + 1] = line(item) end
+  if #items == 0 then parts[#parts + 1] = "<li><small>nobody yet</small></li>" end
+  parts[#parts + 1] = "</ol></section>"
+  return table.concat(parts)
+end
+
+server.page("", function()
+  local h = server.html
+  return table.concat({
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<meta http-equiv="refresh" content="30"><title>Sacred ladders</title><style>', style, '</style></head><body><h1>Sacred ladders</h1><main>',
+    card("Most creatures defeated", rows(boards.kills), function(r) return "<li><b>" .. h(r.name) .. "</b> " .. r.value .. "</li>" end),
+    card("Highest level", rows(boards.level), function(r) return "<li><b>" .. h(r.name) .. "</b> level " .. r.value .. "</li>" end),
+    card("Longest online", rows(boards.online), function(r) return "<li><b>" .. h(r.name) .. "</b> " .. string.format("%.1f h", r.value) .. "</li>" end),
+    card("Best hunter per creature", hunters(), function(r) return "<li>" .. h(r.creature) .. ": <b>" .. h(r.hunter) .. "</b> (" .. r.kills .. ")</li>" end),
+    card("Recently died", server.load("deaths", {}), function(d)
+      return "<li><b>" .. h(d.name) .. "</b> <small>level " .. d.level .. ", by " .. h(d.by) .. "</small></li>" end),
+    "</main></body></html>",
+  })
+end, { public = true, title = "Ladders dashboard" })

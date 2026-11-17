@@ -29,8 +29,6 @@ public interface IScriptServer
     void Kick(int slot, string reason);
     /// <summary>Generates equipment for the player and drops it next to its hero; null with <paramref name="error"/> on failure.</summary>
     ScriptDrop? DropItem(int slot, in ScriptLootRequest request, out string? error);
-    /// <summary>Publishes a board (ladder) for the web UI and its public API.</summary>
-    void Publish(string name, string title, IReadOnlyList<(string Name, double Value)> rows);
 }
 
 /// <summary>
@@ -43,14 +41,16 @@ public interface IScriptServer
 /// server.every(seconds, fn) / server.after(seconds, fn)
 /// server.broadcast(text) / server.message(player or slot, text) / server.kick(player or slot, reason)
 /// server.players() / server.player(slot) / server.time() / server.log(text)
+/// server.save(key, value) / server.load(key [, default]) / server.delete(key) / server.keys([prefix])   -- the mod's own file
 /// server.get(player or nil, key [, default]) / server.set(player or nil, key, value) / server.add(player or nil, key, n)
 /// server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- returns item or nil, error
 /// server.random([m [, n]])
-/// server.top(key, n) -> { { key, name, value }, ... }  (saved numbers of every hero, also offline)
-/// server.publish(name, title, rows)                    -- rows = { { name = "...", value = n }, ... } for the web UI (names are
-///                                                       made safe: character part only, never an owner key)
+/// server.top(key, n) -> { { name, value }, ... }   (per-hero numbers of this mod, also offline heroes; names are safe)
 /// server.endpoint(path, fn [, { public = true, description = "..." }])  -- GET /mods/{script}/{path} (ScriptEndpoints.cs)
-/// server.csv(rows [, columns]) / server.json(table)
+/// server.page(path, html or fn [, { public = true, title = "..." }])  -- a sandboxed single-file HTML page at the same address
+/// server.file(name) / server.html(text) / server.render(template, values) / server.csv(rows [, columns]) / server.json(table)
+/// Every mod (script file) has its own storage, <c>{data folder}/{mod}.json</c> (<see cref="ModStore"/>); the game server
+/// keeps no state for mods.
 /// </code>
 /// Sandbox: basic (without dofile/loadfile/load), string, table, math and bit32 libraries only; no io, os, require or debug.
 /// Every handler or timer call gets an instruction budget (<see cref="ScriptOptions.InstructionBudget"/>) enforced through a
@@ -62,7 +62,7 @@ public sealed class ScriptHost
     private const int HookInterval = 1000, MaxConsecutiveErrors = 20;
     private readonly ScriptOptions _options;
     private readonly IScriptServer _server;
-    private readonly ScriptStore _store;
+    private readonly Dictionary<string, ModStore> _stores = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<Handler>> _handlers = new(StringComparer.Ordinal);
     private readonly List<Timer> _timers = new();
     private readonly List<Timer> _newTimers = new();
@@ -93,8 +93,10 @@ public sealed class ScriptHost
         try
         {
             _currentFile = endpoint.File;
-            var values = Run(_state.CallAsync(endpoint.Function, One(request)));
-            return ScriptEndpoints.Response(values, _options.MaxResponseChars);
+            if (endpoint.Html is { } html) return ScriptEndpoints.Page(html, _options.MaxResponseChars);
+            var values = Run(_state.CallAsync(endpoint.Function!, One(request)));
+            return endpoint.Page ? ScriptEndpoints.Page(values.Length > 0 && values[0].Type == LuaValueType.String ? values[0].Read<string>() : "", _options.MaxResponseChars)
+                : ScriptEndpoints.Response(values, _options.MaxResponseChars);
         }
         catch (Exception e) when (Contained(e))
         {
@@ -108,7 +110,21 @@ public sealed class ScriptHost
     private sealed class Handler { public required LuaFunction Function; public required string File; public int Errors; }
     private sealed class Timer { public required LuaFunction Function; public required string File; public long DueMs; public long IntervalMs; public int Errors; }
 
-    public ScriptHost(ScriptOptions options, IScriptServer server, ScriptStore store) { _options = options; _server = server; _store = store; }
+    public ScriptHost(ScriptOptions options, IScriptServer server) { _options = options; _server = server; }
+
+    /// <summary>The storage of <paramref name="mod"/> (script file name without .lua), opened on first use.</summary>
+    public ModStore StoreOf(string mod)
+    {
+        mod = ScriptEndpoints.ModName(mod);
+        if (!_stores.TryGetValue(mod, out var store))
+            _stores[mod] = store = new ModStore(Path.Combine(_options.DataDirectory, mod + ".json")) { MaxChars = _options.MaxStoreChars };
+        return store;
+    }
+
+    private ModStore CurrentStore => _currentFile.Length > 0 ? StoreOf(_currentFile) : throw new InvalidOperationException("storage is only available inside a script");
+
+    /// <summary>Writes every changed mod file (temporary file + move).</summary>
+    public void FlushStores() { foreach (var store in _stores.Values) store.Flush(); }
 
     /// <summary>Loaded files and their load errors (diagnostics, web UI).</summary>
     public IReadOnlyList<(string File, string? Error)> Files => _files;
@@ -205,6 +221,17 @@ public sealed class ScriptHost
         if (!Has("kill")) return false;
         var table = new LuaTable(0, 3) { ["ref"] = monster.Reference, ["type"] = monster.Type, ["level"] = monster.Level };
         return Fire("kill", PlayerTable(player), table, 2);
+    }
+
+    /// <summary>A player's hero died; <paramref name="killer"/> is another player or null, <paramref name="monster"/> the creature that
+    /// killed it when known.</summary>
+    public bool FireDeath(ScriptPlayer player, ScriptPlayer? killer, ScriptMonster? monster)
+    {
+        if (!Has("death")) return false;
+        var by = new LuaTable(0, 4);
+        if (killer is not null) by["player"] = PlayerTable(killer);
+        if (monster is { } m) { by["ref"] = m.Reference; by["type"] = m.Type; by["level"] = m.Level; }
+        return Fire("death", PlayerTable(player), by, 2);
     }
 
     private ReadOnlySpan<LuaValue> One(LuaValue a) { _one[0] = a; return _one; }
@@ -347,24 +374,55 @@ public sealed class ScriptHost
         server["player"] = Fn("player", c => c.Return(_server.Player((int)c.GetArgument<double>(0)) is { } p ? PlayerTable(p) : LuaValue.Nil));
         server["get"] = Fn("get", c =>
         {
-            var owner = OwnerOf(c.GetArgument(0));
             var key = c.GetArgument(1).ToString();
-            if (_store.TryGet(owner, key, out var value)) return c.Return(ToLua(value));
-            return c.Return(c.HasArgument(2) ? c.GetArgument(2) : LuaValue.Nil);
+            var store = CurrentStore;
+            var found = OwnerOf(c.GetArgument(0)) is { } owner ? store.TryGetHero(owner, key, out var value) : store.TryGet(key, out value);
+            return c.Return(found ? ToLua(value) : c.HasArgument(2) ? c.GetArgument(2) : LuaValue.Nil);
         });
         server["set"] = Fn("set", c =>
         {
-            _store.Set(OwnerOf(c.GetArgument(0)), c.GetArgument(1).ToString(), FromLua(c.HasArgument(2) ? c.GetArgument(2) : LuaValue.Nil));
+            var key = c.GetArgument(1).ToString();
+            var value = Model(c.HasArgument(2) ? c.GetArgument(2) : LuaValue.Nil);
+            if (OwnerOf(c.GetArgument(0)) is { } owner) CurrentStore.SetHero(owner, CharacterOf(c.GetArgument(0)), key, value);
+            else CurrentStore.Set(key, value);
             return c.Return();
         });
         server["add"] = Fn("add", c =>
         {
-            var owner = OwnerOf(c.GetArgument(0));
             var key = c.GetArgument(1).ToString();
             var amount = c.HasArgument(2) ? c.GetArgument<double>(2) : 1;
-            var total = (_store.TryGet(owner, key, out var value) && value is double d ? d : 0) + amount;
-            _store.Set(owner, key, total);
+            var store = CurrentStore;
+            double total;
+            if (OwnerOf(c.GetArgument(0)) is { } owner)
+            {
+                total = (store.TryGetHero(owner, key, out var value) && value is double d ? d : 0) + amount;
+                store.SetHero(owner, CharacterOf(c.GetArgument(0)), key, total);
+            }
+            else
+            {
+                total = (store.TryGet(key, out var value) && value is double d ? d : 0) + amount;
+                store.Set(key, total);
+            }
             return c.Return(total);
+        });
+        server["save"] = Fn("save", c =>
+        {
+            var key = c.GetArgument(0).ToString();
+            if (key.StartsWith(ModStore.HeroPrefix, StringComparison.Ordinal)) throw new ArgumentException("keys starting with @ are the per-hero values");
+            var value = Model(c.HasArgument(1) ? c.GetArgument(1) : LuaValue.Nil);
+            if (value is not null && Size(value) > _options.MaxStoreChars) throw new ArgumentException($"value larger than {_options.MaxStoreChars:N0} characters");
+            CurrentStore.Set(key, value);
+            return c.Return();
+        });
+        server["load"] = Fn("load", c => c.Return(CurrentStore.TryGet(c.GetArgument(0).ToString(), out var value) && value is not null
+            ? ToLua(value) : c.HasArgument(1) ? c.GetArgument(1) : LuaValue.Nil));
+        server["delete"] = Fn("delete", c => { CurrentStore.Set(c.GetArgument(0).ToString(), null); return c.Return(); });
+        server["keys"] = Fn("keys", c =>
+        {
+            var keys = CurrentStore.Keys(c.HasArgument(0) ? c.GetArgument(0).ToString() : "").ToList();
+            var table = new LuaTable(keys.Count, 0);
+            for (var k = 0; k < keys.Count; k++) table[k + 1] = keys[k];
+            return c.Return(table);
         });
         server["drop_item"] = Fn("drop_item", c =>
         {
@@ -387,19 +445,12 @@ public sealed class ScriptHost
             if (drop is null) return c.Return(LuaValue.Nil, error ?? "failed");
             return c.Return(new LuaTable(0, 5) { ["ref"] = drop.Reference, ["type"] = drop.Type, ["quality"] = drop.Quality, ["name"] = drop.Name, ["category"] = drop.Category });
         });
-        server["endpoint"] = Fn("endpoint", c =>
-        {
-            var path = ScriptEndpoints.Normalize(c.GetArgument(0).ToString());
-            var function = c.GetArgument<LuaFunction>(1);
-            var options = c.HasArgument(2) && c.GetArgument(2).Type == LuaValueType.Table ? c.GetArgument(2).Read<LuaTable>() : null;
-            var mod = ScriptEndpoints.ModName(_currentFile);
-            if (mod.Length == 0) throw new InvalidOperationException("server.endpoint must be called while the script loads");
-            var endpoint = new ScriptEndpoints.Endpoint(mod, path, function, _currentFile, options?["public"].ToBoolean() == true,
-                options?["description"] is { Type: LuaValueType.String } d ? d.Read<string>() : null);
-            _endpoints[ScriptEndpoints.Key(mod, path)] = endpoint;
-            Volatile.Write(ref _endpointList, _endpoints.Values.ToArray());
-            return c.Return();
-        });
+        server["endpoint"] = Fn("endpoint", c => Register(c, page: false));
+        server["page"] = Fn("page", c => Register(c, page: true));
+        server["file"] = Fn("file", c => c.Return(ReadScriptFile(c.GetArgument(0).ToString())));
+        server["html"] = Fn("html", c => c.Return(System.Net.WebUtility.HtmlEncode(c.HasArgument(0) ? c.GetArgument(0).ToString() : "")));
+        server["render"] = Fn("render", c => c.Return(ScriptEndpoints.Render(c.GetArgument(0).ToString(),
+            c.HasArgument(1) && c.GetArgument(1).Type == LuaValueType.Table ? c.GetArgument(1).Read<LuaTable>() : new LuaTable())));
         server["csv"] = Fn("csv", c => c.Return(ScriptEndpoints.Csv(c.GetArgument<LuaTable>(0),
             c.HasArgument(1) && c.GetArgument(1).Type == LuaValueType.Table ? c.GetArgument(1).Read<LuaTable>() : null)));
         server["json"] = Fn("json", c => c.Return(ScriptEndpoints.Json(c.GetArgument<LuaTable>(0))));
@@ -407,25 +458,10 @@ public sealed class ScriptHost
         {
             var key = c.GetArgument(0).ToString();
             var count = c.HasArgument(1) ? Math.Clamp((int)c.GetArgument<double>(1), 1, 1000) : 10;
-            var rows = _store.Top(key, count);
+            var rows = CurrentStore.Top(key, count);
             var table = new LuaTable(rows.Count, 0);
-            for (var i = 0; i < rows.Count; i++) table[i + 1] = new LuaTable(0, 3) { ["key"] = rows[i].Owner, ["name"] = rows[i].Name, ["value"] = rows[i].Value };
+            for (var k = 0; k < rows.Count; k++) table[k + 1] = new LuaTable(0, 2) { ["name"] = rows[k].Name, ["value"] = rows[k].Value };
             return c.Return(table);
-        });
-        server["publish"] = Fn("publish", c =>
-        {
-            var name = c.GetArgument(0).ToString();
-            var title = c.HasArgument(1) ? c.GetArgument(1).ToString() : name;
-            var rows = new List<(string, double)>();
-            if (c.HasArgument(2) && c.GetArgument(2).Type == LuaValueType.Table)
-            {
-                var list = c.GetArgument(2).Read<LuaTable>();
-                for (int i = 1, n = Math.Min(list.ArrayLength, 1000); i <= n; i++)
-                    if (list[i].Type == LuaValueType.Table && list[i].Read<LuaTable>() is var row)
-                        rows.Add((row["name"].ToString(), row["value"].Type == LuaValueType.Number ? row["value"].Read<double>() : 0));
-            }
-            _server.Publish(name, title, rows);
-            return c.Return();
         });
         server["random"] = Fn("random", c =>
         {
@@ -452,23 +488,108 @@ public sealed class ScriptHost
         _ => 0,
     };
 
-    private static string OwnerOf(LuaValue value) =>
-        value.Type == LuaValueType.Table && value.Read<LuaTable>()["key"] is { Type: LuaValueType.String } key ? key.Read<string>() : ScriptStore.GlobalKey;
+    /// <summary>The per-hero owner key of a player table, or null for the mod's plain keys.</summary>
+    private static string? OwnerOf(LuaValue value) =>
+        value.Type == LuaValueType.Table && value.Read<LuaTable>()["key"] is { Type: LuaValueType.String } key ? key.Read<string>() : null;
 
-    private static LuaValue ToLua(object? value) => value switch { double d => d, bool b => b, string s => s, _ => LuaValue.Nil };
+    private static string? CharacterOf(LuaValue value) =>
+        value.Type == LuaValueType.Table && value.Read<LuaTable>()["character"] is { Type: LuaValueType.String } name ? name.Read<string>() : null;
 
-    private static object? FromLua(LuaValue value) => value.Type switch
+    /// <summary>A Lua value as storage model: numbers, strings, booleans, lists (a table with only a sequence part) and maps.</summary>
+    private static object? Model(LuaValue value, int depth = 0) => value.Type switch
     {
         LuaValueType.Number => value.Read<double>(),
         LuaValueType.Boolean => value.Read<bool>(),
         LuaValueType.String => value.Read<string>(),
+        LuaValueType.Table when depth < 32 => ModelTable(value.Read<LuaTable>(), depth + 1),
         LuaValueType.Nil => null,
-        _ => value.ToString(),
+        _ => throw new ArgumentException($"a {value.Type} cannot be stored"),
     };
+
+    private static object ModelTable(LuaTable table, int depth)
+    {
+        if (table.HashMapCount == 0)
+        {
+            var length = table.ArrayLength;
+            var list = new List<object?>(length);
+            for (var i = 1; i <= length; i++) list.Add(Model(table[i], depth));
+            return list;
+        }
+        var map = new Dictionary<string, object?>(StringComparer.Ordinal);
+        var key = LuaValue.Nil;
+        while (table.TryGetNext(key, out var pair))
+        {
+            key = pair.Key;
+            map[pair.Key.Type == LuaValueType.Number ? ModStore.Format(pair.Key.Read<double>()) : pair.Key.ToString()] = Model(pair.Value, depth);
+        }
+        return map;
+    }
+
+    private static LuaValue ToLua(object? value) => value switch
+    {
+        double d => d, bool b => b, string s => s,
+        List<object?> list => ListTable(list),
+        Dictionary<string, object?> map => MapTable(map),
+        _ => LuaValue.Nil,
+    };
+
+    private static LuaTable ListTable(List<object?> list)
+    {
+        var table = new LuaTable(list.Count, 0);
+        for (var i = 0; i < list.Count; i++) table[i + 1] = ToLua(list[i]);
+        return table;
+    }
+
+    private static LuaTable MapTable(Dictionary<string, object?> map)
+    {
+        var table = new LuaTable(0, map.Count);
+        foreach (var (key, item) in map) table[key] = ToLua(item);
+        return table;
+    }
+
+    private static long Size(object value)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(stream)) ModStore.Write(writer, value, 0);
+        return stream.Length;
+    }
+
+    /// <summary>server.endpoint / server.page while a script loads: path, HTML string or handler, options.</summary>
+    private int Register(LuaFunctionExecutionContext c, bool page)
+    {
+        var path = ScriptEndpoints.Normalize(c.GetArgument(0).ToString());
+        var source = c.GetArgument(1);
+        var options = c.HasArgument(2) && c.GetArgument(2).Type == LuaValueType.Table ? c.GetArgument(2).Read<LuaTable>() : null;
+        var mod = ScriptEndpoints.ModName(_currentFile);
+        if (mod.Length == 0) throw new InvalidOperationException("endpoints and pages are registered while the script loads");
+        var function = source.Type == LuaValueType.Function ? source.Read<LuaFunction>() : null;
+        var html = page && source.Type == LuaValueType.String ? source.Read<string>() : null;
+        if (function is null && html is null) throw new ArgumentException(page ? "a page needs HTML text or a function" : "an endpoint needs a function");
+        var description = options?["description"] is { Type: LuaValueType.String } d ? d.Read<string>() : options?["title"] is { Type: LuaValueType.String } t ? t.Read<string>() : null;
+        var endpoint = new ScriptEndpoints.Endpoint(mod, path, function, _currentFile, options?["public"].ToBoolean() == true, description, page, html);
+        _endpoints[ScriptEndpoints.Key(mod, path)] = endpoint;
+        Volatile.Write(ref _endpointList, _endpoints.Values.ToArray());
+        return c.Return();
+    }
+
+    /// <summary>server.file(name): a text file next to the scripts (pages, templates). Plain file names only, no folders, 2 MB.</summary>
+    private string ReadScriptFile(string name)
+    {
+        if (name.Length == 0 || name.Length > 100 || name[0] == '.' || name.AsSpan().IndexOfAny("/\\:") >= 0 || name.Contains(".."))
+            throw new ArgumentException("server.file takes a plain file name from the scripts folder");
+        var extension = Path.GetExtension(name).ToLowerInvariant();
+        if (extension is not (".html" or ".htm" or ".css" or ".js" or ".txt" or ".json" or ".csv" or ".svg"))
+            throw new ArgumentException("server.file reads .html, .htm, .css, .js, .txt, .json, .csv or .svg files");
+        var path = Path.Combine(Path.GetFullPath(_options.Directory), name);
+        var info = new FileInfo(path);
+        if (!info.Exists) throw new ArgumentException("no file " + name + " in the scripts folder");
+        if (info.Length > 2 * 1024 * 1024) throw new ArgumentException(name + " is larger than 2 MB");
+        return File.ReadAllText(path);
+    }
 
     private static LuaTable PlayerTable(ScriptPlayer p) => new(0, 10)
     {
-        ["slot"] = p.Slot, ["name"] = p.Name, ["character"] = ScriptStore.DisplayName(p.Name), ["key"] = p.Key, ["class"] = p.Class, ["level"] = p.Level,
+        ["slot"] = p.Slot, ["name"] = p.Name, ["character"] = ModStore.DisplayName(p.Name), ["key"] = p.Key, ["class"] = p.Class, ["level"] = p.Level,
         ["in_game"] = p.InGame, ["host"] = p.IsHost, ["id"] = p.LobbyId, ["online"] = p.OnlineSeconds,
     };
 }

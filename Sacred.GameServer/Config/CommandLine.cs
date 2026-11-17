@@ -84,7 +84,7 @@ public static class CommandLine
         // ---- server scripts ----
         new("Scripts", "scripts", OptionKind.Flag, "run the Lua scripts of the scripts folder (default: on when the folder exists; 0 = off)", "1"),
         new("Scripts", "scripts-dir", OptionKind.Path, "folder with the *.lua scripts, reloaded when a file changes (default scripts)", "scripts"),
-        new("Scripts", "scripts-data", OptionKind.Path, "file with the scripts' saved values (default script-data.json)", "script-data.json"),
+        new("Scripts", "scripts-data", OptionKind.Path, "folder for the mods' own storage, one {mod}.json each (default script-data)", "script-data"),
         new("Scripts", "scripts-max-response", OptionKind.Int, "largest script endpoint answer in characters (default 2097152)", "2097152", 1024, 67108864),
         new("Scripts", "scripts-max-string", OptionKind.Int, "largest string string.rep may build (default 4194304)", "4194304", 1024, 268435456),
         new("Scripts", "scripts-budget", OptionKind.Int, "Lua instructions one handler or timer may run (default 1000000)", "1000000", 10000, 100000000),

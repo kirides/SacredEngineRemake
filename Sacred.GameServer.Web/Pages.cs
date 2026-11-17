@@ -51,6 +51,7 @@ internal static class Pages
         Players(sb, players);
         Session(sb, o);
         Flood(sb, admin.Flood());
+        Mods(sb, admin.ModEndpoints());
         Bans(sb, admin.Bans());
         sb.Append("</div><section class=\"card chat\" id=\"chatCard\"><h2>").Append(Icon("chat")).Append("Live chat<span class=\"live\" id=\"live\" title=\"connection\">connecting</span></h2>")
           .Append("<div id=\"chat\" aria-live=\"polite\">");
@@ -73,7 +74,7 @@ internal static class Pages
         var o = admin.Overview();
         var sb = new StringBuilder(8 * 1024);
         sb.Append("<header class=\"top\">"); Head(sb, o); sb.Append("</header>");
-        Players(sb, admin.Players()); Session(sb, o); Flood(sb, admin.Flood()); Bans(sb, admin.Bans());
+        Players(sb, admin.Players()); Session(sb, o); Flood(sb, admin.Flood()); Mods(sb, admin.ModEndpoints()); Bans(sb, admin.Bans());
         return sb.ToString();
     }
 
@@ -167,6 +168,21 @@ internal static class Pages
     {
         string Inner(bool state) => Icon(state ? onIcon : offIcon) + "<b>" + (state ? onTitle : offTitle) + "</b><small>" + (state ? onHint : offHint) + "</small>";
         Form(sb, action, $"<input type=\"hidden\" name=\"value\" value=\"{(on ? 0 : 1)}\"><button class=\"tile {(on ? "active" : "")}\" data-alt=\"{E(Inner(!on))}\">{Inner(on)}</button>");
+    }
+
+    /// <summary>Pages and endpoints of the server scripts (links open in a new tab; pages run sandboxed).</summary>
+    private static void Mods(StringBuilder sb, IReadOnlyList<ModEndpointInfo> mods)
+    {
+        sb.Append("<section class=\"card\" id=\"mods\"><h2>").Append(Icon("pulse")).Append("Mods <span class=\"count\">").Append(mods.Count).Append("</span></h2>");
+        if (mods.Count == 0) sb.Append("<p class=\"dim small\">No script pages or endpoints. Scripts add them with server.page and server.endpoint.</p>");
+        foreach (var m in mods)
+        {
+            var href = "mods/" + Uri.EscapeDataString(m.Mod) + "/" + string.Join('/', m.Path.Split('/').Select(Uri.EscapeDataString));
+            sb.Append("<div class=\"ban\"><div><a href=\"").Append(E(href)).Append("\" target=\"_blank\" rel=\"noopener noreferrer\"><b>")
+              .Append(E(m.Mod + "/" + m.Path)).Append("</b></a><small>").Append(m.Page ? "page" : "endpoint").Append(m.Public ? " &middot; public" : "")
+              .Append(m.Description is { Length: > 0 } d ? " &middot; " + E(d) : "").Append("</small></div></div>");
+        }
+        sb.Append("</section>");
     }
 
     private static void Bans(StringBuilder sb, IReadOnlyList<BanEntry> bans)
@@ -356,7 +372,7 @@ fetch(a,{method:'POST',headers:{'Accept':'application/json'},body:body}).then(fu
 document.addEventListener('input',function(e){if(e.target.form)e.target.form.dataset.dirty='1';});
 function refresh(){if(ask.open)return Promise.resolve();return fetch('fragment',{cache:'no-store'}).then(function(r){return r.ok?r.text():null;}).then(function(h){if(!h)return;
 var doc=new DOMParser().parseFromString(h,'text/html');
-['head','players','session','flood','bans'].forEach(function(id){var cur=$(id),src=doc.getElementById(id);if(id==='session'&&src&&sessionBusy(src))return;if(!cur||!src||cur.contains(document.activeElement)||cur.querySelector('form[data-dirty]'))return;if(cur.innerHTML!==src.innerHTML)cur.innerHTML=src.innerHTML;});
+['head','players','session','flood','mods','bans'].forEach(function(id){var cur=$(id),src=doc.getElementById(id);if(id==='session'&&src&&sessionBusy(src))return;if(!cur||!src||cur.contains(document.activeElement)||cur.querySelector('form[data-dirty]'))return;if(cur.innerHTML!==src.innerHTML)cur.innerHTML=src.innerHTML;});
 var sel=$('chatTo'),v=sel.value,opts=doc.querySelectorAll('#players [data-msg]');
 var slots=Array.prototype.map.call(opts,function(o){return o.dataset.msg;});var have=Array.prototype.map.call(sel.options,function(o){return o.value;}).slice(1);
 if(slots.join()!==have.join()){while(sel.options.length>1)sel.remove(1);Array.prototype.forEach.call(doc.querySelectorAll('#players .player'),function(p){var s=p.querySelector('[data-msg]').dataset.msg;sel.add(new Option('#'+s+' '+p.querySelector('.who b').textContent,s));});sel.value=slots.indexOf(v)>=0||v==='0'?v:'0';}

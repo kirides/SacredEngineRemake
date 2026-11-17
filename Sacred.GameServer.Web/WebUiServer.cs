@@ -108,16 +108,12 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/api/flood", (RequestDelegate)(c => Json(c.Response, _admin.Flood(), WebUiJson.Default.FloodSettings)));
         app.MapGet("/api/heroes", (RequestDelegate)(c => Json(c.Response, _admin.Heroes().ToArray(), WebUiJson.Default.HeroInfoArray)));
         app.MapGet("/api/heroes/{slot:int}", (RequestDelegate)(c => HeroEndpoint(c, publicView: false)));
-        app.MapGet("/api/boards", (RequestDelegate)(c => Json(c.Response, _admin.Boards().ToArray(), WebUiJson.Default.BoardInfoArray)));
-        app.MapGet("/api/boards/{name}", (RequestDelegate)BoardEndpoint);
         app.MapGet("/api/mods", (RequestDelegate)(c => Json(c.Response, _admin.ModEndpoints().ToArray(), WebUiJson.Default.ModEndpointInfoArray)));
         app.MapGet("/mods/{mod}/{**path}", (RequestDelegate)(c => ModEndpoint(c, publicOnly: false)));
         if (_options.PublicApi)
         {
             app.MapGet("/public/heroes", (RequestDelegate)(c => Json(c.Response, _admin.Heroes().Select(Public).ToArray(), WebUiJson.Default.HeroInfoArray)));
             app.MapGet("/public/heroes/{name}", (RequestDelegate)(c => HeroEndpoint(c, publicView: true)));
-            app.MapGet("/public/boards", (RequestDelegate)(c => Json(c.Response, _admin.Boards().ToArray(), WebUiJson.Default.BoardInfoArray)));
-            app.MapGet("/public/boards/{name}", (RequestDelegate)BoardEndpoint);
             app.MapGet("/public/mods", (RequestDelegate)(c => Json(c.Response, _admin.ModEndpoints().Where(e => e.Public).ToArray(), WebUiJson.Default.ModEndpointInfoArray)));
             app.MapGet("/public/mods/{mod}/{**path}", (RequestDelegate)(c => ModEndpoint(c, publicOnly: true)));
         }
@@ -170,18 +166,15 @@ public sealed class WebUiServer : IAsyncDisposable
         catch (OperationCanceledException) { return; }
         context.Response.StatusCode = answer.Status;
         context.Response.ContentType = answer.ContentType;
-        // Script output is data, not part of this site: no scripts or frames run from it when opened directly.
-        context.Response.Headers.ContentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data: https:; frame-ancestors " +
-            (publicOnly ? "*" : FrameAncestors());
+        // Script output is data, not part of this site. Endpoints: nothing runs. Pages: their own inline scripts and styles run, but in
+        // a sandbox (opaque origin), so they cannot use the admin's credentials for this site's API; no forms, no base, no plugins;
+        // they may fetch (connect-src 'self', public endpoints answer CORS *) and show images.
+        context.Response.Headers.ContentSecurityPolicy = (answer.Page
+                ? "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: https:; connect-src 'self'; form-action 'none'; base-uri 'none'"
+                : "default-src 'none'; style-src 'unsafe-inline'; img-src data: https:")
+            + "; frame-ancestors " + (publicOnly ? "*" : FrameAncestors());
         if (publicOnly) context.Response.Headers.Remove("X-Frame-Options");          // public data may be embedded anywhere
         await context.Response.WriteAsync(answer.Body, context.RequestAborted).ConfigureAwait(false);
-    }
-
-    private Task BoardEndpoint(HttpContext context)
-    {
-        var name = (string?)context.GetRouteValue("name") ?? "";
-        var board = _admin.Boards().FirstOrDefault(b => b.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        return board is null ? Fail(context.Response, 404, "no such board") : Json(context.Response, board, WebUiJson.Default.BoardInfo);
     }
 
     private async Task ChatPageEndpoint(HttpContext context)

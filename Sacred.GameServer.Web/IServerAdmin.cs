@@ -14,8 +14,6 @@ public interface IServerAdmin
     FloodSettings Flood();
     /// <summary>What the server knows about each online hero (refreshed about once a second).</summary>
     IReadOnlyList<HeroInfo> Heroes();
-    /// <summary>Boards (ladders) published by server scripts.</summary>
-    IReadOnlyList<BoardInfo> Boards();
     /// <summary>HTTP endpoints registered by server scripts (<c>server.endpoint</c>).</summary>
     IReadOnlyList<ModEndpointInfo> ModEndpoints();
     /// <summary>Runs a script endpoint on the game loop. <paramref name="publicOnly"/>: only endpoints the script marked public.</summary>
@@ -93,13 +91,9 @@ public sealed record ItemInfo(uint Ref, uint Type, int Level, int Rarity, int So
 public sealed record EquippedItem(int Slot, ItemInfo Item);
 public sealed record StoredItem(int Cell, int Width, int Height, ItemInfo Item);
 
-/// <summary>A board (ladder) a script published with <c>server.publish</c>.</summary>
-public sealed record BoardInfo(string Name, string Title, BoardRow[] Rows, long UpdatedUnixMs);
-public sealed record BoardRow(int Rank, string Name, double Value);
-
 /// <summary>A script endpoint: <c>/mods/{Mod}/{Path}</c> (and <c>/public/mods/...</c> when <see cref="Public"/>).</summary>
-public sealed record ModEndpointInfo(string Mod, string Path, bool Public, string? Description);
+public sealed record ModEndpointInfo(string Mod, string Path, bool Public, string? Description, bool Page = false);
 /// <summary>A script endpoint's answer.</summary>
-public sealed record ModResponse(int Status, string ContentType, string Body);
+public sealed record ModResponse(int Status, string ContentType, string Body, bool Page = false);
 
 public readonly record struct AdminCommand(AdminCommandKind Kind, int Slot = 0, int Value = 0, string? Text = null);

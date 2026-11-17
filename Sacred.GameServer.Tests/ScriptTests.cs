@@ -34,8 +34,6 @@ public class ScriptTests
         public void Broadcast(string text) { if (BroadcastFails is { } e) throw e; Said.Add(text); }
         public void Message(int slot, string text) => Told.Add((slot, text));
         public void Kick(int slot, string reason) => Kicked.Add(slot);
-        public readonly Dictionary<string, (string Title, IReadOnlyList<(string Name, double Value)> Rows)> Boards = new();
-        public void Publish(string name, string title, IReadOnlyList<(string Name, double Value)> rows) => Boards[name] = (title, rows);
         public readonly List<ScriptLootRequest> Drops = new();
         public ScriptDrop? DropItem(int slot, in ScriptLootRequest request, out string? error)
         {
@@ -44,14 +42,13 @@ public class ScriptTests
         }
     }
 
-    private static (ScriptHost Host, FakeServer Server, ScriptStore Store) Host(Folder folder, int budget = 1_000_000)
+    private static (ScriptHost Host, FakeServer Server, ModStore Store) Host(Folder folder, int budget = 1_000_000, string mod = "a")
     {
-        var options = new ScriptOptions { Directory = folder.Scripts, DataFile = folder.Data, InstructionBudget = budget };
+        var options = new ScriptOptions { Directory = folder.Scripts, DataDirectory = folder.Data, InstructionBudget = budget };
         var server = new FakeServer();
-        var store = new ScriptStore(folder.Data);
-        var host = new ScriptHost(options, server, store);
+        var host = new ScriptHost(options, server);
         host.Load();
-        return (host, server, store);
+        return (host, server, host.StoreOf(mod));
     }
 
     private static string Example(string name)
@@ -75,10 +72,10 @@ public class ScriptTests
         var (host, _, store) = Host(folder);
         foreach (var name in new[] { "io", "os", "dofile", "load", "require" })
         {
-            Assert.IsTrue(store.TryGet(ScriptStore.GlobalKey, name, out var value));
+            Assert.IsTrue(store.TryGet(name, out var value));
             Assert.AreEqual("nil", value, name);
         }
-        Assert.IsTrue(store.TryGet(ScriptStore.GlobalKey, "string", out var format));
+        Assert.IsTrue(store.TryGet("string", out var format));
         Assert.AreEqual("function", format);
         Assert.IsNull(host.Files.Single().Error);
     }
@@ -128,7 +125,7 @@ public class ScriptTests
         }
         Assert.AreEqual(5, server.Told.Count);
         Assert.IsTrue(host.Errors >= 15);
-        store.Set("name:Alice", "corrupt", "not a number");
+        store.SetHero("name:Alice", null, "corrupt", "not a number");
         Assert.IsFalse(host.FireChat(server.All[0], "hi"), "a Lua error in a chat handler does not swallow or crash");
         server.BroadcastFails = null;
         host.FirePlayer("join", server.All[0]);
@@ -161,7 +158,7 @@ public class ScriptTests
             """);
         var (host, server, store) = Host(folder);
         for (server.Now = 0; server.Now <= 3100; server.Now += 100) host.Pump(server.Now);
-        Assert.IsTrue(store.TryGet(ScriptStore.GlobalKey, "ticks", out var ticks));
+        Assert.IsTrue(store.TryGet("ticks", out var ticks));
         Assert.AreEqual(3.0, ticks);
         CollectionAssert.AreEqual(new[] { "once" }, server.Said);
         var alice = server.All[0];
@@ -170,41 +167,107 @@ public class ScriptTests
         Assert.AreEqual((1, "Alice L10 C2"), server.Told.Single());
         host.FireKill(alice, new ScriptMonster(4000, 551, 3));
         host.FireKill(alice, new ScriptMonster(4001, 552, 9));
-        Assert.IsTrue(store.TryGet("name:Alice", "kills", out var kills));
+        Assert.IsTrue(store.TryGetHero("name:Alice", "kills", out var kills));
         Assert.AreEqual(4.0, kills);
-        Assert.IsTrue(store.TryGet("name:Alice", "last", out var last));
+        Assert.IsTrue(store.TryGetHero("name:Alice", "last", out var last));
         Assert.AreEqual(552.0, last);
         CollectionAssert.AreEqual(new[] { 1 }, server.Kicked);
-        // Values survive a restart (temporary file + move).
-        store.Flush();
-        Assert.IsFalse(File.Exists(folder.Data + ".tmp"));
-        var reloaded = new ScriptStore(folder.Data);
-        reloaded.Load();
-        Assert.IsTrue(reloaded.TryGet("name:Alice", "kills", out var again));
+        // Each mod has its own file; values survive a restart (temporary file + move).
+        host.FlushStores();
+        var file = Path.Combine(folder.Data, "a.json");
+        Assert.IsTrue(File.Exists(file));
+        Assert.IsFalse(File.Exists(file + ".tmp"));
+        var reloaded = new ModStore(file);
+        Assert.IsTrue(reloaded.TryGetHero("name:Alice", "kills", out var again));
         Assert.AreEqual(4.0, again);
     }
 
     [TestMethod]
-    public void LaddersExampleRanksSavedHeroesAndPublishesBoards()
+    public void ModsHaveTheirOwnStorageForLuaTables()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.save("deaths", { { name = "Bob", level = 7, items = { "sword", "shield" } }, { name = "Cara", level = 9 } })
+            server.save("config", { enabled = true, chance = 0.25, title = "A" })
+            server.set(nil, "plain", 5)
+            server.endpoint("read", function()
+              local d = server.load("deaths")
+              local c = server.load("config")
+              return d[1].name .. d[1].items[2] .. d[2].level .. tostring(c.enabled) .. c.chance .. table.concat(server.keys(), ",") .. tostring(server.load("missing", "dflt"))
+            end)
+            server.endpoint("drop", function() server.delete("config"); return table.concat(server.keys(), ",") end)
+            """);
+        folder.Write("b.lua", """
+            server.endpoint("read", function() return tostring(server.load("deaths")) .. "/" .. tostring(server.get(nil, "plain")) end)
+            server.endpoint("bad", function() server.save("@x", 1) end)
+            """);
+        var (host, _, store) = Host(folder);
+        Assert.AreEqual("Bobshield9true0.25config,deaths,plaindflt", host.HandleRequest("a", "read", [], false).Body);
+        Assert.AreEqual("nil/nil", host.HandleRequest("b", "read", [], false).Body, "mod b cannot see mod a's data");
+        Assert.AreEqual(500, host.HandleRequest("b", "bad", [], false).Status, "@ keys belong to the per-hero values");
+        Assert.AreEqual("deaths,plain", host.HandleRequest("a", "drop", [], false).Body);
+        host.FlushStores();
+        using var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(folder.Data, "a.json")));
+        Assert.AreEqual("shield", json.RootElement.GetProperty("deaths")[0].GetProperty("items")[1].GetString());
+        // After a reload (and a restart) the tables come back.
+        host.Load();
+        Assert.AreEqual("Bobshield9", host.HandleRequest("a", "read", [], false).Body[..10]);
+    }
+
+    [TestMethod]
+    public void LaddersModKeepsItsOwnDataAndServesItsDashboard()
     {
         using var folder = new Folder();
         folder.Write("ladders.lua", Example("ladders.lua"));
-        var (host, server, store) = Host(folder);
-        // Saved heroes from earlier sessions (names as the server stores them on join).
-        foreach (var (key, name, count, level) in new[] { ("id:1:1", "Bob", 30.0, 20.0), ("id:2:1", "Cara", 70.0, 5.0) })
-        { store.Set(key, ScriptStore.NameKey, name); store.Set(key, "ladder.kills", count); store.Set(key, "ladder.level", level); }
-        store.Set("name:Alice", ScriptStore.NameKey, "Alice");
-        var alice = server.All[0];                                        // level 10
+        var (host, server, store) = Host(folder, mod: "ladders");
+        // Heroes from earlier sessions, in the mod's own file (names as the mod stores them: character only).
+        store.SetHero("id:1:1", "acct.Bob", "kills", 30.0); store.SetHero("id:1:1", null, "level", 20.0);
+        store.SetHero("id:2:1", "Cara", "kills", 70.0); store.SetHero("id:2:1", null, "level", 5.0);
+        var alice = server.All[0] with { Name = "acct.Alice" };            // level 10
         for (uint i = 0; i < 50; i++) host.FireKill(alice, new ScriptMonster(100 + i, 551, 3));
-        for (server.Now = 0; server.Now <= 91_000; server.Now += 1000) host.Pump(server.Now);   // online +60 at 60 s, published at 90 s
-        var kills = server.Boards["kills"].Rows;
-        CollectionAssert.AreEqual(new[] { "Cara", "Alice", "Bob" }, kills.Select(r => r.Name).ToArray());
-        Assert.AreEqual(50, kills[1].Value);
-        CollectionAssert.AreEqual(new[] { "Bob", "Alice", "Cara" }, server.Boards["level"].Rows.Select(r => r.Name).ToArray());
-        Assert.AreEqual(60.0 / 3600, server.Boards["online"].Rows.Single().Value, 1e-9);
-        Assert.AreEqual("Highest level", server.Boards["level"].Title);
+        for (server.Now = 0; server.Now <= 61_000; server.Now += 1000) host.Pump(server.Now);
+        host.FireDeath(alice, null, new ScriptMonster(9000, 38, 12));
+        var top = System.Text.Json.JsonDocument.Parse(host.HandleRequest("ladders", "top", [KeyValuePair.Create("board", "kills")], true).Body).RootElement;
+        CollectionAssert.AreEqual(new[] { "Cara", "Alice", "Bob" }, top.EnumerateArray().Select(r => r.GetProperty("name").GetString()).ToArray());
+        Assert.AreEqual(50, top[1].GetProperty("value").GetDouble());
+        var level = System.Text.Json.JsonDocument.Parse(host.HandleRequest("ladders", "top", [KeyValuePair.Create("board", "level")], true).Body).RootElement;
+        CollectionAssert.AreEqual(new[] { "Bob", "Alice", "Cara" }, level.EnumerateArray().Select(r => r.GetProperty("name").GetString()).ToArray());
+        var online = System.Text.Json.JsonDocument.Parse(host.HandleRequest("ladders", "top", [KeyValuePair.Create("board", "online")], true).Body).RootElement;
+        Assert.AreEqual(60.0 / 3600, online[0].GetProperty("value").GetDouble(), 1e-9);
+        var page = host.HandleRequest("ladders", "", [], publicOnly: true);
+        Assert.AreEqual(200, page.Status);
+        Assert.IsTrue(page.Page);
+        StringAssert.StartsWith(page.ContentType, "text/html");
+        StringAssert.Contains(page.Body, "<b>Cara</b> 70");
+        StringAssert.Contains(page.Body, "creature type 551: <b>Alice</b> (50)");
+        StringAssert.Contains(page.Body, "<b>Alice</b> <small>level 10, by creature type 38</small>");
+        Assert.IsFalse(page.Body.Contains("acct"), "no account names on the page");
         Assert.IsTrue(host.FireChat(alice, "!top"));
         Assert.AreEqual("1. Cara: 70 kills", server.Told[0].Text);
+    }
+
+    [TestMethod]
+    public void PagesEscapeNamesAndRenderTemplates()
+    {
+        using var folder = new Folder();
+        folder.Write("evil.html", "<p>{{name}}</p><script>const data = {{json data}};</script>");
+        folder.Write("p.lua", """
+            local template = server.file("evil.html")
+            server.page("", function() return server.render(template, { name = "<img src=x onerror=alert(1)>", data = { n = "</script><script>alert(2)</script>" } }) end)
+            server.page("static", "<h1>static</h1>", { public = true })
+            server.endpoint("file", function(r) return server.file(r.query.f) end)
+            """);
+        var (host, _, _) = Host(folder, mod: "p");
+        var page = host.HandleRequest("p", "", [], false).Body;
+        StringAssert.Contains(page, "&lt;img src=x onerror=alert(1)&gt;");
+        Assert.IsFalse(page.Contains("</script><script>alert(2)"), "JSON in a script element cannot close it");
+        Assert.AreEqual(404, host.HandleRequest("p", "", [], publicOnly: true).Status, "not public");
+        var stat = host.HandleRequest("p", "static", [], publicOnly: true);
+        Assert.IsTrue(stat.Page);
+        Assert.AreEqual("<h1>static</h1>", stat.Body);
+        foreach (var bad in new[] { "../p.lua", "p.lua", ".hidden.html", "sub/evil.html", "C:\\x.html", "missing.html" })
+            Assert.AreEqual(500, host.HandleRequest("p", "file", [KeyValuePair.Create("f", bad)], false).Status, bad);
+        Assert.AreEqual(200, host.HandleRequest("p", "file", [KeyValuePair.Create("f", "evil.html")], false).Status);
     }
 
     [TestMethod]
@@ -216,16 +279,15 @@ public class ScriptTests
             server.endpoint("/Boom/", function() error("broken") end)
             server.endpoint("secret", function(r) return { a = r.query.x, list = { 1, 2 }, empty = {} } end)
             """);
-        var (host, server, store) = Host(folder);
+        var (host, server, store) = Host(folder, mod: "ladders");
         var alice = server.All[0];
-        store.Set("id:9:1", ScriptStore.NameKey, "Bob");
-        store.Set("name:Alice", ScriptStore.NameKey, "Alice");             // the game server stores this on join
+        store.SetHero("id:9:1", "Bob", "level", 3.0);
         for (uint i = 0; i < 3; i++) host.FireKill(alice, new ScriptMonster(100 + i, 551, 3));
         host.FireKill(alice, new ScriptMonster(200, 77, 3));
         var csv = host.HandleRequest("ladders", "by-creature", [], publicOnly: true);
         Assert.AreEqual(200, csv.Status);
         StringAssert.StartsWith(csv.ContentType, "text/csv");
-        Assert.AreEqual("creature,hunter,kills\r\n77,Alice,1\r\n551,Alice,3\r\n", csv.Body);
+        Assert.AreEqual("creature,hunter,kills\r\ncreature type 551,Alice,3\r\ncreature type 77,Alice,1\r\n", csv.Body);
         var top = host.HandleRequest("LADDERS", "/top/", [KeyValuePair.Create("board", "kills"), KeyValuePair.Create("n", "1")], publicOnly: true);
         Assert.AreEqual("[{\"rank\":1,\"name\":\"Alice\",\"value\":4}]", top.Body);
         StringAssert.StartsWith(top.ContentType, "application/json");
@@ -239,7 +301,7 @@ public class ScriptTests
         Assert.AreEqual(2, doc.RootElement.GetProperty("list").GetArrayLength());
         Assert.AreEqual(System.Text.Json.JsonValueKind.Array, doc.RootElement.GetProperty("empty").ValueKind);
         CollectionAssert.AreEquivalent(new[] { "ladders/top", "ladders/by-creature", "other/boom", "other/secret" },
-            host.Endpoints.Select(e => e.Mod + "/" + e.Path).ToArray());
+            host.Endpoints.Where(e => !e.Page).Select(e => e.Mod + "/" + e.Path).ToArray());
     }
 
     [TestMethod]
@@ -255,9 +317,9 @@ public class ScriptTests
             server.endpoint("type", function(r) return "<b>x</b>", r.query.t end)
             server.endpoint("empty", function() return "body", "text/plain", 204 end)
             """);
-        var options = new ScriptOptions { Directory = folder.Scripts, DataFile = folder.Data, MaxResponseChars = 2 * 1024 * 1024 };
+        var options = new ScriptOptions { Directory = folder.Scripts, DataDirectory = folder.Data, MaxResponseChars = 2 * 1024 * 1024 };
         var server = new FakeServer();
-        var host = new ScriptHost(options, server, new ScriptStore(folder.Data));
+        var host = new ScriptHost(options, server);
         host.Load();
         foreach (var path in new[] { "big", "concat", "table" })
         {
@@ -297,23 +359,18 @@ public class ScriptTests
     }
 
     [TestMethod]
-    public void BoardsNeverShowLobbyIdsOrAccountNames()
+    public void LaddersNeverShowLobbyIdsOrAccountNames()
     {
-        // A hero without a stored name, one whose name still has the account part, and a script that publishes keys on purpose.
-        var store = new ScriptStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"));
-        store.Set("id:4711:2", "ladder.kills", 9.0);
-        store.Set("name:acct.Cara", "ladder.kills", 5.0);
-        store.Set("name:acct.Cara", ScriptStore.NameKey, "acct.Cara");
-        var top = store.Top("ladder.kills", 10);
-        CollectionAssert.AreEqual(new[] { ScriptStore.UnknownName, "Cara" }, top.Select(t => t.Name).ToArray());
+        // A hero without a stored name and one whose name still has the account part.
+        var store = new ModStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json"));
+        store.SetHero("id:4711:2", null, "kills", 9.0);
+        store.SetHero("name:acct.Cara", "acct.Cara", "kills", 5.0);
+        store.SetHero("name:x", "id:4711:2", "kills", 1.0);
+        var top = store.Top("kills", 10);
+        CollectionAssert.AreEqual(new[] { ModStore.UnknownName, "Cara", ModStore.UnknownName }, top.Select(t => t.Name).ToArray());
         Assert.IsFalse(top.Any(t => t.Name.Contains("4711") || t.Name.Contains("acct")));
-
-        var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false };
-        using var host = new GameServerHost(config, new AdmissionRules(null), null);
-        ((IScriptServer)host).Publish("leak", "test", [("id:4711:2", 1), ("name:acct.Dora", 2), ("acct.Erik", 3), ("Finn", 4), ("global", 5)]);
-        var rows = host.Boards().Single().Rows.Select(r => r.Name).ToArray();
-        CollectionAssert.AreEqual(new[] { ScriptStore.UnknownName, ScriptStore.UnknownName, "Erik", "Finn", ScriptStore.UnknownName }, rows);
-        Assert.IsFalse(rows.Any(r => r.Contains("4711") || r.Contains("acct") || r.StartsWith("id:") || r.StartsWith("name:")));
+        foreach (var (raw, shown) in new[] { ("id:4711:2", ModStore.UnknownName), ("name:acct.Dora", ModStore.UnknownName), ("acct.Erik", "Erik"), ("Finn", "Finn"), ("@id:1:1", ModStore.UnknownName) })
+            Assert.AreEqual(shown, ModStore.DisplayName(raw));
     }
 
     [TestMethod]
@@ -408,7 +465,7 @@ public class ScriptTests
         public Server(Folder folder, string? gameDirectory = null)
         {
             var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5, GameDirectory = gameDirectory };
-            config.Scripts.Directory = folder.Scripts; config.Scripts.DataFile = folder.Data;
+            config.Scripts.Directory = folder.Scripts; config.Scripts.DataDirectory = folder.Data;
             Host = new GameServerHost(config, new AdmissionRules(null), null);
             Host.StartScripts();
             _thread = new Thread(Host.Run) { IsBackground = true };
