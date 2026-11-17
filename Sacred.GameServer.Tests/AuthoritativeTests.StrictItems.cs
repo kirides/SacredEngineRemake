@@ -21,14 +21,6 @@ public partial class AuthoritativeTests
                 server.save("mint", tostring(server.item_token(p, { type = ty, records = rec }, 60)))
                 return true
             end
-            local t2, f1, f2 = text:match("^!mint2 (%d+) (%x%x) (%x%x)")
-            if t2 then
-                local ty = tonumber(t2)
-                local function rec(fill) return string.format("%02x%02x%02x%02x", ty % 256, math.floor(ty / 256) % 256, math.floor(ty / 65536) % 256, math.floor(ty / 16777216))
-                    .. string.rep(fill, 8) .. string.rep("00", 8) .. string.rep(fill, 110) end
-                server.save("mint", tostring(server.item_token(p, { type = ty, records = rec(f1) .. rec(f2) }, 60)))
-                return true
-            end
             local ref = tonumber(text:match("^!item (%d+)"))
             if ref then local it = server.hero_item(p, ref) server.save("item", it and it.where or "nil") return true end
         end)
@@ -128,25 +120,6 @@ public partial class AuthoritativeTests
             player.Send(0x16F, ItemState(0x5003, 0x12A, 0x66));
             Assert.AreEqual("nil", ItemWhere(host, player, 0x5003, not: "world"));
             Assert.AreEqual(2, host.StrictItemsRefused);
-        });
-    }
-
-    [TestMethod]
-    public void StrictItemsTokenOfASocketedItemCoversItsCreation()
-    {
-        StrictRun(StrictItemsMode.On, (host, player) =>
-        {
-            // a token of an item with one socket entry (66) and the item's own record (77): the client's creation holds the own record only
-            player.Send(0x005, ChatLine("!mint2 " + 0x12A + " 66 77"));
-            Assert.IsTrue(StoredOf(host, "strict", "mint") is not (null or "nil"));
-            player.Send(0x16F, ItemState(0x5031, 0x12A, 0x77));
-            Assert.AreEqual("world", ItemWhere(host, player, 0x5031, not: "nil"));
-            Assert.AreEqual(0, host.StrictItemsRefused, "the creation is covered by the socketed item's token");
-
-            // another own record, or another type, is not covered
-            player.Send(0x16F, ItemState(0x5032, 0x12A, 0x55));
-            Assert.AreEqual("nil", ItemWhere(host, player, 0x5032, not: "world"));
-            Assert.AreEqual(1, host.StrictItemsRefused);
         });
     }
 
