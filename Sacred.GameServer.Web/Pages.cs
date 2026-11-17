@@ -46,12 +46,12 @@ internal static class Pages
           .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>").Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style)
           .Append("</style></head><body><div class=\"app\">");
         sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>management</small></div></div>");
+        Tabs(sb, "server", admin.ModEndpoints().Select(m => m.Mod).Distinct().Count());
         Head(sb, o);
         sb.Append("<button id=\"theme\" type=\"button\" class=\"themebtn ghost\" aria-label=\"Change theme\"></button></header><main class=\"grid\"><div class=\"col\">");
         Players(sb, players);
         Session(sb, o);
         Flood(sb, admin.Flood());
-        Mods(sb, admin.ModEndpoints());
         Bans(sb, admin.Bans());
         sb.Append("</div><section class=\"card chat\" id=\"chatCard\"><h2>").Append(Icon("chat")).Append("Live chat<span class=\"live\" id=\"live\" title=\"connection\">connecting</span></h2>")
           .Append("<div id=\"chat\" aria-live=\"polite\">");
@@ -74,7 +74,7 @@ internal static class Pages
         var o = admin.Overview();
         var sb = new StringBuilder(8 * 1024);
         sb.Append("<header class=\"top\">"); Head(sb, o); sb.Append("</header>");
-        Players(sb, admin.Players()); Session(sb, o); Flood(sb, admin.Flood()); Mods(sb, admin.ModEndpoints()); Bans(sb, admin.Bans());
+        Players(sb, admin.Players()); Session(sb, o); Flood(sb, admin.Flood()); Bans(sb, admin.Bans());
         return sb.ToString();
     }
 
@@ -170,19 +170,63 @@ internal static class Pages
         Form(sb, action, $"<input type=\"hidden\" name=\"value\" value=\"{(on ? 0 : 1)}\"><button class=\"tile {(on ? "active" : "")}\" data-alt=\"{E(Inner(!on))}\">{Inner(on)}</button>");
     }
 
-    /// <summary>Pages and endpoints of the server scripts (links open in a new tab; pages run sandboxed).</summary>
-    private static void Mods(StringBuilder sb, IReadOnlyList<ModEndpointInfo> mods)
+    /// <summary>The header tabs: the server page and the mods page.</summary>
+    private static void Tabs(StringBuilder sb, string current, int mods)
     {
-        sb.Append("<section class=\"card\" id=\"mods\"><h2>").Append(Icon("pulse")).Append("Mods <span class=\"count\">").Append(mods.Count).Append("</span></h2>");
-        if (mods.Count == 0) sb.Append("<p class=\"dim small\">No script pages or endpoints. Scripts add them with server.page and server.endpoint.</p>");
-        foreach (var m in mods)
+        sb.Append("<nav class=\"tabs\" aria-label=\"Sections\">")
+          .Append("<a href=\"./\"").Append(current == "server" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Server</a>")
+          .Append("<a href=\"mods\"").Append(current == "mods" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("users")).Append("Mods <span class=\"count\">")
+          .Append(mods).Append("</span></a></nav>");
+    }
+
+    /// <summary>
+    /// <c>GET /mods</c>: one card per mod (script file) with its pages and its endpoints listed apart. Links open in a new tab; pages
+    /// run sandboxed (see WebUiServer.ModEndpoint). Public ones show their <c>/public/mods/...</c> address too.
+    /// </summary>
+    public static string ModsPage(IServerAdmin admin, bool publicApi)
+    {
+        var o = admin.Overview();
+        var mods = admin.ModEndpoints().GroupBy(m => m.Mod).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase).ToList();
+        var sb = new StringBuilder(8 * 1024);
+        sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+          .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>Mods - ")
+          .Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style).Append("</style></head><body><div class=\"app\">");
+        sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>")
+          .Append(E(o.Name)).Append("</small></div></div>");
+        Tabs(sb, "mods", mods.Count);
+        sb.Append("</header><main class=\"modgrid\">");
+        if (mods.Count == 0)
+            sb.Append("<section class=\"card\"><div class=\"empty\">").Append(Icon("users")).Append("<p>No mods with pages or endpoints.</p>")
+              .Append("<small>Scripts add them with server.page and server.endpoint.</small></div></section>");
+        foreach (var mod in mods)
         {
-            var href = "mods/" + Uri.EscapeDataString(m.Mod) + "/" + string.Join('/', m.Path.Split('/').Select(Uri.EscapeDataString));
-            sb.Append("<div class=\"ban\"><div><a href=\"").Append(E(href)).Append("\" target=\"_blank\" rel=\"noopener noreferrer\"><b>")
-              .Append(E(m.Mod + "/" + m.Path)).Append("</b></a><small>").Append(m.Page ? "page" : "endpoint").Append(m.Public ? " &middot; public" : "")
-              .Append(m.Description is { Length: > 0 } d ? " &middot; " + E(d) : "").Append("</small></div></div>");
+            var pages = mod.Where(m => m.Page).OrderBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
+            var endpoints = mod.Where(m => !m.Page).OrderBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
+            sb.Append("<section class=\"card mod\"><h2>").Append(Icon("pulse")).Append(E(mod.Key)).Append(".lua</h2>");
+            ModList(sb, "Pages", pages, publicApi);
+            ModList(sb, "Endpoints", endpoints, publicApi);
+            sb.Append("</section>");
         }
-        sb.Append("</section>");
+        sb.Append("</main></div></body></html>");
+        return sb.ToString();
+    }
+
+    private static void ModList(StringBuilder sb, string title, List<ModEndpointInfo> items, bool publicApi)
+    {
+        sb.Append("<h3>").Append(title).Append(" <span class=\"count\">").Append(items.Count).Append("</span></h3>");
+        if (items.Count == 0) { sb.Append("<p class=\"dim small\">none</p>"); return; }
+        sb.Append("<ul class=\"modlist\">");
+        foreach (var m in items)
+        {
+            var path = "mods/" + Uri.EscapeDataString(m.Mod) + "/" + string.Join('/', m.Path.Split('/').Select(Uri.EscapeDataString));
+            sb.Append("<li><a href=\"").Append(E(path)).Append("\" target=\"_blank\" rel=\"noopener noreferrer\"><b>/").Append(E(m.Path.Length == 0 ? "" : m.Path))
+              .Append(m.Path.Length == 0 ? "(index)" : "").Append("</b></a>");
+            if (m.Public) sb.Append(" <span class=\"pill ").Append(publicApi ? "ok" : "").Append("\">").Append(publicApi ? "public" : "public (API off)").Append("</span>");
+            if (m.Description is { Length: > 0 } d) sb.Append("<small>").Append(E(d)).Append("</small>");
+            if (m.Public && publicApi) sb.Append("<small class=\"dim\">/public/").Append(E(path)).Append("</small>");
+            sb.Append("</li>");
+        }
+        sb.Append("</ul>");
     }
 
     private static void Bans(StringBuilder sb, IReadOnlyList<BanEntry> bans)
@@ -251,6 +295,11 @@ body{margin:0;background:radial-gradient(1200px 600px at 10% -10%,var(--bg2),var
 .i{width:1.15em;height:1.15em;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;vertical-align:-.2em}
 .app{max-width:1280px;margin:0 auto;padding:1rem}
 .top{display:flex;flex-wrap:wrap;align-items:center;gap:1rem 2rem;padding:.9rem 1.1rem;background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);margin-bottom:1rem}
+.tabs{display:flex;gap:.4rem;flex-wrap:wrap}.tabs a{display:inline-flex;align-items:center;gap:.4rem;padding:.4rem .8rem;border-radius:999px;border:1px solid var(--line);color:var(--dim);text-decoration:none}
+.tabs a[aria-current=page]{color:var(--text);border-color:var(--gold);background:var(--card2)}.tabs a:hover{color:var(--text)}
+.modgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(20rem,1fr));gap:1rem}.mod h3{margin:.8rem 0 .4rem;font-size:.85rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+.modlist{list-style:none;margin:0;padding:0;display:grid;gap:.45rem}.modlist li{display:flex;flex-wrap:wrap;align-items:baseline;gap:.2rem .5rem;padding:.45rem .6rem;background:var(--card2);border-radius:8px}
+.modlist small{flex-basis:100%;color:var(--dim)}.modlist a{color:var(--gold2);text-decoration:none}.modlist a:hover{text-decoration:underline}
 .brand{display:flex;align-items:center;gap:.7rem}.brand b{display:block;letter-spacing:.02em}.brand small{color:var(--dim)}
 .logo{display:grid;place-items:center;width:2.4rem;height:2.4rem;border-radius:9px;background:linear-gradient(135deg,var(--gold2),var(--gold));color:#2a1c05}.logo .i{width:1.4rem;height:1.4rem;stroke-width:2}
 .head{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem 1.6rem;flex:1}.head h1{margin:0;font-size:1.2rem;color:var(--gold2);font-weight:650}
@@ -372,7 +421,7 @@ fetch(a,{method:'POST',headers:{'Accept':'application/json'},body:body}).then(fu
 document.addEventListener('input',function(e){if(e.target.form)e.target.form.dataset.dirty='1';});
 function refresh(){if(ask.open)return Promise.resolve();return fetch('fragment',{cache:'no-store'}).then(function(r){return r.ok?r.text():null;}).then(function(h){if(!h)return;
 var doc=new DOMParser().parseFromString(h,'text/html');
-['head','players','session','flood','mods','bans'].forEach(function(id){var cur=$(id),src=doc.getElementById(id);if(id==='session'&&src&&sessionBusy(src))return;if(!cur||!src||cur.contains(document.activeElement)||cur.querySelector('form[data-dirty]'))return;if(cur.innerHTML!==src.innerHTML)cur.innerHTML=src.innerHTML;});
+['head','players','session','flood','bans'].forEach(function(id){var cur=$(id),src=doc.getElementById(id);if(id==='session'&&src&&sessionBusy(src))return;if(!cur||!src||cur.contains(document.activeElement)||cur.querySelector('form[data-dirty]'))return;if(cur.innerHTML!==src.innerHTML)cur.innerHTML=src.innerHTML;});
 var sel=$('chatTo'),v=sel.value,opts=doc.querySelectorAll('#players [data-msg]');
 var slots=Array.prototype.map.call(opts,function(o){return o.dataset.msg;});var have=Array.prototype.map.call(sel.options,function(o){return o.value;}).slice(1);
 if(slots.join()!==have.join()){while(sel.options.length>1)sel.remove(1);Array.prototype.forEach.call(doc.querySelectorAll('#players .player'),function(p){var s=p.querySelector('[data-msg]').dataset.msg;sel.add(new Option('#'+s+' '+p.querySelector('.who b').textContent,s));});sel.value=slots.indexOf(v)>=0||v==='0'?v:'0';}

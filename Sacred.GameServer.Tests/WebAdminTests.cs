@@ -200,7 +200,7 @@ public class WebAdminTests
         public IReadOnlyList<BanEntry> Bans() => [];
         public IReadOnlyList<HeroInfo> Heroes() => [new HeroInfo(1, "Alice", "acct.Alice", 2, 12, 3400, 990, 1, [new SkillInfo(14, 3, 0)], [1, 0, 2, 0, 0, 0], null,
             [new ArtInfo(2, 1097, 6)], 4, [new EquippedItem(12, new ItemInfo(40, 7452, 11, 2, 1, 500))], [new StoredItem(0, 1, 1, new ItemInfo(41, 5000, 3, 0, 0, 20))], [], true, 75)];
-        public IReadOnlyList<ModEndpointInfo> ModEndpoints() => [new ModEndpointInfo("ladders", "by-creature", true, "csv"), new ModEndpointInfo("ladders", "admin", false, null)];
+        public IReadOnlyList<ModEndpointInfo> ModEndpoints() => [new ModEndpointInfo("ladders", "by-creature", true, "csv"), new ModEndpointInfo("ladders", "admin", false, null), new ModEndpointInfo("ladders", "page", true, "dashboard", Page: true)];
         public Task<ModResponse> ModRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly, CancellationToken cancellationToken) =>
             Task.FromResult(mod == "ladders" && path == "by-creature" ? new ModResponse(200, "text/csv; charset=utf-8", "creature,kills\r\n551," + (query.FirstOrDefault(q => q.Key == "n").Value ?? "0"))
                 : mod == "ladders" && path == "page" ? new ModResponse(200, "text/html; charset=utf-8", "<h1>dash</h1>", Page: true)
@@ -353,6 +353,18 @@ public class WebAdminTests
             Assert.AreEqual(7452u, JsonDocument.Parse(await client.GetStringAsync("/api/heroes/1")).RootElement.GetProperty("equipment")[0].GetProperty("item").GetProperty("type").GetUInt32());
             Assert.AreEqual(HttpStatusCode.NotFound, (await client.GetAsync("/api/heroes/9")).StatusCode);
             Assert.AreEqual(HttpStatusCode.NotFound, (await client.GetAsync("/public/heroes")).StatusCode, "the public API is off by default");
+            // The Mods tab: one card per mod, pages and endpoints apart; the server page no longer lists them.
+            var mods = await client.GetStringAsync("/mods");
+            StringAssert.Contains(mods, "ladders.lua");
+            var pagesAt = mods.IndexOf("Pages", StringComparison.Ordinal);
+            var endpointsAt = mods.IndexOf("Endpoints", StringComparison.Ordinal);
+            Assert.IsTrue(pagesAt > 0 && endpointsAt > pagesAt);
+            Assert.IsTrue(mods.IndexOf("by-creature", StringComparison.Ordinal) > endpointsAt, "the endpoint is listed under Endpoints");
+            var page = mods.IndexOf("/page", StringComparison.Ordinal);
+            Assert.IsTrue(page > pagesAt && page < endpointsAt, "the page is listed under Pages");
+            var main = await client.GetStringAsync("/");
+            StringAssert.Contains(main, "href=\"mods\"");
+            Assert.IsFalse(main.Contains("by-creature"));
         }
         var (open, anonymous, _) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0, PublicApi = true, Password = "secret" });
         await using (open) using (anonymous)
@@ -383,7 +395,7 @@ public class WebAdminTests
             Assert.IsFalse(policy.Contains("allow-same-origin"));
             Assert.AreEqual("nosniff", page.Headers.GetValues("X-Content-Type-Options").Single());
             using var list = JsonDocument.Parse(await anonymous.GetStringAsync("/public/mods"));
-            Assert.AreEqual(1, list.RootElement.GetArrayLength());
+            Assert.AreEqual(2, list.RootElement.GetArrayLength());                 // the public page and the public endpoint
         }
     }
 

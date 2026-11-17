@@ -92,9 +92,9 @@ section{background:#241d16;border:1px solid #3b3025;border-radius:10px;padding:.
 ol,ul{margin:0;padding-left:1.3rem}li{margin:.15rem 0}b{color:#fff}small{color:#a39683}]]
 
 local function card(title, items, line)
+  if #items == 0 then return "<section><h2>" .. server.html(title) .. "</h2><small>nobody yet</small></section>" end
   local parts = { "<section><h2>", server.html(title), "</h2><ol>" }
   for _, item in ipairs(items) do parts[#parts + 1] = line(item) end
-  if #items == 0 then parts[#parts + 1] = "<li><small>nobody yet</small></li>" end
   parts[#parts + 1] = "</ol></section>"
   return table.concat(parts)
 end
