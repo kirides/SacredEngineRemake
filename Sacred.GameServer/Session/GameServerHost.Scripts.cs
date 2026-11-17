@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Text;
 using Sacred.GameServer.Scripting;
 using Sacred.GameServer.Wire;
+using Sacred.Core.Pax.Hero.Inventory;
 using Sacred.Network.Gameplay;
 
 namespace Sacred.GameServer.Session;
@@ -100,6 +101,14 @@ public sealed partial class GameServerHost : IScriptServer
         catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault(name, e); }
     }
 
+    /// <summary>The hero moved into another sector (<see cref="PlayerSession.CurrentSector"/> is already updated).</summary>
+    private void ScriptSectorChanged(PlayerSession s)
+    {
+        if (_scripts is null || !_scripts.Has("sector")) return;
+        try { _scripts.FireSector(ScriptPlayerOf(s)); ExecuteScriptKicks(); }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("sector", e); }
+    }
+
     private void OnKill(PlayerSession sender, uint victim, uint killerWord)
     {
         if (victim is >= 1 and <= MaxSlots) { OnHeroDeath(victim, killerWord); return; }
@@ -144,6 +153,25 @@ public sealed partial class GameServerHost : IScriptServer
         ExecuteScriptKicks();
     }
 
+    /// <summary>
+    /// A 0x16F state (an object with a position) the server's world did not have yet and that is an item: the "drop" event. The game
+    /// has no drop message; a creature's loot, a chest's content or an item a player throws down all appear as such a state from
+    /// the client that owns the sector, so mods that want creature loot correlate it with "kill".
+    /// </summary>
+    private void ScriptItemOnGround(PlayerSession reporter, uint reference)
+    {
+        if (_scripts is null || !_scripts.Has("drop") || reporter.Slot == 0) return;
+        try
+        {
+            if (Item(reference) is not { } item || !_world.TryGet(reference, out var entry)) return;
+            var (sector, x, y) = Position(entry);
+            if (x == 0 && y == 0) return;                           // carried, not lying on the ground
+            _scripts.FireDrop(ScriptPlayerOf(reporter), new ScriptItem(reference, item.Type, item.Level, item.Rarity, item.Sockets, item.Price, item.Name, sector, x, y));
+            ExecuteScriptKicks();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("drop", e); }
+    }
+
     private readonly long[] _lastHeroDeathMs = new long[MaxSlots + 1];
 
     /// <summary>Level word of a creature body with compact values (Gold 0x585C60: values at +445, level at +52), or 0.</summary>
@@ -169,7 +197,7 @@ public sealed partial class GameServerHost : IScriptServer
         if (_world.TryGet(s.Slot, out var hero)) level = CompactLevel(hero.Payload[(hero.LongPrefix ? 24 : 8)..]);
         var key = s.LobbyIdentity is not (0 or -1) ? $"id:{s.LobbyIdentity}:{s.CharacterBlock}" : "name:" + s.Name;
         return new ScriptPlayer(s.Slot, s.Name, key, s.RosterEntry[RosterClass], level, s.InGame, s.IsHost, s.LobbyIdentity,
-            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0, CharacterName(s));
+            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0, CharacterName(s), s.CurrentSector);
     }
 
     private void ExecuteScriptKicks()
@@ -209,6 +237,24 @@ public sealed partial class GameServerHost : IScriptServer
     void IScriptServer.Message(int slot, string text) { if (PlayerAt(slot) is { } p) AdminSay(p, text); }
 
     void IScriptServer.Kick(int slot, string reason) { if (slot is >= 1 and <= MaxSlots) _scriptKicks.Add((slot, reason)); }
+
+    ScriptHero? IScriptServer.Hero(int slot)
+    {
+        if (!KeepsHeroState || PlayerAt(slot) is not { } p || _live[slot] is not { } live) return null;
+        var pairs = new List<(uint, uint)>();
+        var stream = live.InventoryStream;
+        if (stream.Length >= SacredSavedInventoryLayout.MinimumSize)
+        {
+            var count = BinaryPrimitives.ReadUInt32LittleEndian(stream[SacredSavedInventoryLayout.QuestCountOffset..]);
+            for (var i = 0; i < count && i < 4096; i++)
+            {
+                var at = SacredSavedInventoryLayout.QuestRecordsOffset + i * SacredSavedInventoryLayout.QuestRecordSize;
+                if (at + SacredSavedInventoryLayout.QuestRecordSize > stream.Length) break;
+                pairs.Add((BinaryPrimitives.ReadUInt32LittleEndian(stream[at..]), BinaryPrimitives.ReadUInt32LittleEndian(stream[(at + 4)..])));
+            }
+        }
+        return new ScriptHero(HeroOf(p, _clock.ElapsedMilliseconds), pairs.ToArray());
+    }
 
     string? IScriptServer.CreatureName(uint type) => Names?.Creature(type);
 

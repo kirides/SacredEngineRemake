@@ -23,6 +23,7 @@ path here is separate and allocation free.
 | Leave / kick (`FUN_004d6ac0`) | done: 0x157 to the victim, 0x150 to others, host hand-over 0x0D to the first in-game player (`FUN_004cdc50`), otherwise unlock and end the session (reason 0x10) |
 | Generic forwarding (`FUN_004d3ea0`) | done for ~140 opcodes, table in `Session/Routing.cs`: pure forwards, forwards after a server-world update (not modelled yet) including cases that share a jump tail (e.g. 0x4C81D1, 0x4C9907); ~20 opcodes the original only applies to its own state (inventories, NW_ITEM cheat protection, references) are consumed; the original's internal menu commands (0x109..0x10C, 0x152..0x15B) are never accepted from clients. `tools`-style classification of every case is reproducible from the disassembly |
 | Transport abstraction | sessions talk to `Net/IClientLink` (frame in/out, flush, close) and the host takes any number of `IClientListener`s (`GameServerHost.AddListener`); TCP (`ClientConnection`/`TcpAcceptor`) is the stock client's stream, and reliable UDP (KCP, as Sacred Bild uses for LAN) can plug in beside it |
+| Bind address | `--bind=127.0.0.1` (key `BIND_ADDRESS`/`NETWORK_BIND`): the TCP acceptor and the SBT UDP listener bind that one address (a plain socket of its family, no dual-stack wildcard) and the LAN announce is skipped with a log line when it is loopback. Default as in the original: every interface. Tests set `BindPolicy.Default` to loopback (`LoopbackOnly.cs`), so no test opens a wildcard socket; the web UI is loopback by default |
 | Sacred Bild UDP transport (SBT/KCP) | `Net/Sbt`: host side of Sacred Bild's LAN transport (sacred-bild docs/UDP_PROTOCOL.md) on UDP `--udp-port` (default 2105, 0 = off): HELLO/CHALLENGE cookie handshake (no amplification), WELCOME with random session id/token, REFUSED 2/3/4, DATA (KCP, conv = session id), KEEPALIVE (1 s, 200 ms while the peer is silent), CLOSE, 45 s time-out, roaming to the last valid source address, immediate resend after 300 ms silence. `Net/Kcp` is a managed port of ikcp.c (MIT) with pooled segments, tested by our own KCP tests (lossy link, header layout). Sessions are `IClientLink`s, so everything above works unchanged over it |
 | LAN announcement (UDP broadcast, 0xAE payload) | done, format from `GoldLanAnnouncementCodec` |
 | Player roster 0x1B (`FUN_004d3030`) | done: 17 x 834-byte records (session name, then each player's FIRSTCONTACT data), sent after admission (internal 0x101), the right password (0x12), ready (0x0F), connection speed (0x21) and client record uploads (0x1B, `FUN_004d2ee0`); the admission also sends the first time probe 0x43 (internal 0x41). The host may set a password with 0x12 while none is configured (case 0x4CA33E) |
@@ -137,6 +138,8 @@ server.on("leave", function(player) end)
 server.on("chat", function(player, text) return true end)   -- public chat; true = not relayed (commands like "!kills")
 server.on("kill", function(player, monster) end) -- monster = { ref, type, level, name }
 server.on("death", function(player, by) end)     -- a hero died; by = { player } or { ref, type, level }
+server.on("sector", function(player, sector) end) -- the hero moved into another sector (player.sector is the same number)
+server.on("drop", function(item, reporter) end)  -- a new item lies on the ground; item = { ref, type, level, rarity 0..15, sockets, price, name, sector, x, y }
 server.on("start", function() end)               -- after (re)loading
 server.every(seconds, fn)  server.after(seconds, fn)
 server.broadcast(text)  server.message(player or slot, text)  server.kick(player or slot, reason)
@@ -147,6 +150,7 @@ server.drop_item(player, { quality = 0..14, category = "ring", level = n, class 
 server.drop_gold(player, amount)       -- { ref, type, amount } or nil, error: a gold pile next to the hero
 server.random()  server.random(n)  server.random(m, n)
 server.creature_name(type or monster)  server.item_name(type or item)   -- the game's name, or nil
+server.hero(player or slot)            -- table, or nil + reason: the server's view of a hero (see "Hero data for scripts")
 server.top(key, n)                     -- { { name, value }, ... }: this mod's per-hero numbers, also offline heroes
 server.endpoint(path, fn [, { public = true, description = "..." }])   -- GET /mods/{script}/{path}
 server.page(path, html or fn [, { public = true, title = "..." }])     -- a single-file HTML page at the same address
@@ -188,7 +192,7 @@ with an error instead of silently becoming a folder of that name. The game serve
 mods: ladders, recent deaths, statistics live in the mod that needs them, so mods can grow without growing the server. (JSON,
 not SQLite: SQLite needs a native library, which would end the single-file Native AOT binary.)
 
-* `player` = `{ slot, name, character, uid, class, level, in_game, host, online }`. **Privacy:** scripts never see lobby ids,
+* `player` = `{ slot, name, character, uid, class, level, in_game, host, online, sector }`. **Privacy:** scripts never see lobby ids,
   owner keys or account names. `name` and `character` are the character name (the server strips the `account.` prefix of
   lobby names, and only of lobby names: a LAN name like `Mr.X` stays), `uid` is an opaque per-server identity of the hero
   (HMAC-SHA256 of its lobby identity with a secret kept in `{scripts-data}/.uid-secret`): stable across sessions on this
@@ -224,7 +228,33 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
   objects) and how `class` maps to the game's 0..9 selector (the player's FIRSTCONTACT class byte is passed as is).
 * Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
   kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
+  shows the kill ladder in chat. `player.online` is the current session in seconds. `player.sector` is the sector number the hero stands in (first word of its last 0x148 sector entry; 0 until the server has seen one); the `"sector"` event fires when it changes.
+* World events: `scripts-examples/world_events.lua` runs server-wide timed goals ("slay 1000 orcs in 2 hours", optionally only in some sectors, filtered by creature name or type) from a config table at the top of the file: a rotation with a cooldown, 25/50/75 % and result broadcasts, a reward shared by contribution (`drop_gold`, `drop_item`; heroes who are offline get theirs when they enter), `!event` and `!sector` in chat, a public dashboard page and `/mods/world_events/state` (JSON, character names only), and the state pushed over the net channel `worldevents:state` to the Sacred Gear mod `world-events` (a movable progress bar). Everything, including an event that ran out while the server was down, lives in `script-data/world_events.json`. Uses `player.sector` and the `"sector"` event.
+* Bounty board: `scripts-examples/bounty_board.lua` posts a few bounties at a time ("kill N creatures whose name contains ...", optionally only in some sectors, `min_level`), each hero works on them separately, finishing one pays gold (`drop_gold`) and/or an item (`drop_item`) once; bounties expire and are replaced from a pool in the file. `!bounty` lists them, `!where` tells the sector number; a public dashboard at `/mods/bounty_board/` and JSON at `/mods/bounty_board/state`; the net channel `bounty:state` pushes each hero's own progress to Sacred Gear clients (client mod `gear/examples/bounty`, panel on F8). Everything is in the mod's own storage; no host API was added.
   shows the kill ladder in chat. `player.online` is the current session in seconds.
+* Achievements and login streak: `scripts-examples/achievements.lua` unlocks 31 achievements from kills, distinct creature types,
+  "giants" (a creature 10+ levels above the hero), deaths, players defeated, hero level (read from the player on kills, joins and a
+  20 s timer: there is no level event), time online, days visited and the streak, and pays rewards with `drop_gold` / `drop_item`
+  (held until the hero is in the world; no `--game-dir`: the item becomes 1000 gold). The first entry into the world on a new UTC
+  day extends the streak (a missed day resets it) and pays 100 gold per streak day up to 1000, plus an item every 7th day. Page
+  `/mods/achievements/` (public with `WebUi:PublicApi`), JSON `players` and `achievements`, chat `!ach` and `!streak`, and the
+  net channel `achievements:sync` for the Sacred Gear mod `gear/examples/achievements` (toast on unlock and streak, a panel;
+  messages `{op = "state" | "unlock" | "streak"}` to the client, `{op = "get"}` from it). Gold held/earned and exploration are not
+  achievements: the script API has no data for them. Tests: `ScriptTests` (fake server) and `NetOpsTests` (live channel).
+* Ground items ("drop"): the game has no drop message. Creature loot, chest contents and items a player throws down all show up
+  as a 0x16F state with a position, sent by the client that owns the sector; the first such state of an item object the server's
+  world did not have yet fires `drop` (`item.rarity` is the tier 0..15 of the value block: Sacred Gear shows 0-4 normal, 5-11
+  magic, 12-14 rare, 15 unique; `reporter` is the player whose client reported it, which is not necessarily the killer; items
+  without a position, updates of known objects and the server's own `drop_item`/`drop_gold` objects do not fire it). Items already
+  lying in a sector when its owner enters also arrive this way, so a mod that wants creature loot ties a drop to a recent
+  `kill`, as `rare_drops.lua` does. **Unverified with a real client:** the rarity mapping and that all loot arrives as 0x16F.
+* Statistics mods (`scripts-examples`, each with a public page and JSON endpoints, own storage, tests in `ScriptTests.Mods.cs`):
+  `server_stats.lua` (online, peak, uptime, totals, 24 h charts as inline SVG), `hall_of_fame.lua` (records, first to reach a level
+  or defeat a creature, `!hof`), `seasons.lua` (ladders per season: timer or `/mods/seasons/end-season` (admin), archive of past
+  seasons, `!season`), `rare_drops.lua` (live feed of rare/unique drops from the `drop` event, chat line, Gear client channel
+  `rare_drops:feed`) and `graveyard.lua` (recent deaths with killer names, deadliest killers, `!rip`, channel `graveyard:feed`).
+  The Sacred Gear mod `gear/examples/serverfeed` (sacred-bild) shows the two channels on screen.
+* Mods built on `server.hero` and `net`: `scripts-examples/build_sharer.lua` (players publish their build, stored per mod, a searchable page, JSON endpoints and a channel for the Sacred Gear panel `buildsharer`) and `scripts-examples/quest_helper.lua` (a hero's quest records with an owner-written catalog of names, areas and hints, change notices, a page; Gear panel `questhelper`). Client halves: sacred-bild `gear/examples/buildsharer` and `gear/examples/questhelper`; docs there in `docs/GearServerMods.md`. `ModScriptTests` cover them.
 * `drop_gold` drops a gold pile the same way (no `--game-dir` needed). Money is an ordinary item object: resources
   0x140C..0x140F (Gold client table 0x949920 / test 0x43AF50, GameServer.exe 0x5B0274 / 0x409D30), pile size by amount as the
   game picks it when gold is dropped (0x4AEC1E: below 50, 350, 1000, else). The amount is the value block's price (+8, cItemBase
@@ -233,6 +263,18 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
   adds it to the hero's gold (values +0x46, AddGold 0x57FD80, at most 0x7FFFFFFE, the cap `drop_gold` applies). Amounts are
   whole numbers of at least 1. **Unverified with a real client:** as for `drop_item`, that the owner's pick-up of a
   server-referenced object runs that path, and that the new gold reaches the server in the hero's values (saves).
+
+### Hero data for scripts (`server.hero`)
+
+`server.hero(player or slot)` returns a fresh read-only table of what the server knows about that hero, or `nil` and a reason. It is the
+data of the web UI's `/api/heroes` (the same code, `HeroOf`), so it exists only while the server keeps hero state (the web UI runs, or
+`--authoritative`) and once the player's client has sent its hero. Fields: `character`, `class`, `level`, `experience`, `gold`,
+`skill_points`, `combos`, `in_game`; `skills` (`id`, `level`, `bonus`, `name`), `attribute_points` (the six spent points), `attributes`
+(six totals, only after a full 0x16B state), `arts` (`kind`, `id`, `rank`, `name`), `equipment` (`slot` 0..18, `type`, `level`, `rarity`
+0..15, `sockets`, `name`), `inventory_items` (a count), `quest_pairs` (`key`, `value`: the `[key][word04]` records of the inventory
+stream, see "Quest pairs"). Names are the game's text and exist only with `--game-dir`. No account, lobby id or owner key. What it does not
+have: the quest journal, active quests and their progress (world state of the game's interpreter, not in a hero file and on no wire message).
+In the five hero saves we have, the quest pairs are empty, so a script cannot rely on them being filled.
 
 ### Custom net messages for scripts (`net`)
 
@@ -354,6 +396,8 @@ hooks in existing files are one filter call in `Route`, one save call in `Remove
 | Difficulty | the difficulty bits (0x100..0x800) stay what the server was configured with; a host 0x01E cannot change them (`AUTH_LOCK_DIFFICULTY`) |
 | Damage 0x17A | attacker must be the sender's own hero or an object it owns in the server's object world, damage is clamped to `AUTH_MAX_DAMAGE` (default 0xFFFF) and forwarded; `AUTH_STRICT_ATTACKERS` also rejects unknown attackers |
 | Trade 0x198 | sender word must be the sender's slot (the original ignores a mismatch) |
+| Items | item states (0x169/0x16B/0x16C/0x16E/0x16F with an item body) no legitimate item has are dropped (not stored, not relayed, never saved) and counted as violations (`AUTH_CHECK_ITEMS`, `Auth/ItemGuard.cs`): more socket records than the item's own value block has open sockets (slot types 1..4, at most 8); with `--game-dir` also an object type that is not an item type, an item whose own value block names another type than its type or its Weapon.pak base type, and socket records of non-item types. Every rule holds for all 1845 items of the 40 real hero files we checked (sockets included) |
+| Hero level | a hero state above `AUTH_MAX_HERO_LEVEL` (default 216, the Sacred Gold cap; 0 = off) removes the player (reason 8) |
 | Violations | counted per player, kick (reason 8) at `AUTH_MAX_VIOLATIONS` (default 25, 0 = never) |
 | Anti-dupe saves | Closed Net hero uploaded to the lobby (message 18) when the player leaves (hard disconnects too), every `AUTH_SAVE_INTERVAL` s (default 120) and `AUTH_SAVE_DEBOUNCE_MS` after trades, pick-ups, equipment and inventory changes. The block is written by the server from its own view (below), never taken from the client |
 

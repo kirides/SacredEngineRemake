@@ -64,7 +64,7 @@ public sealed partial class GameServerHost : IDisposable
     public GameServerHost(GameServerConfig config, AdmissionRules rules, LanAnnouncer? lan)
     {
         _config = config; _rules = rules; _lan = lan;
-        _acceptor = new TcpAcceptor(config.TcpPort, _inbox);
+        _acceptor = new TcpAcceptor(config.TcpPort, _inbox, config.BindAddress);
         _listeners.Add(_acceptor);
         InitializeSession();
         InitializeNetOps();
@@ -83,6 +83,9 @@ public sealed partial class GameServerHost : IDisposable
 
     /// <summary>Server clock when <see cref="Stop"/> was first called (shutdown timing in the log), -1 before.</summary>
     public long StopRequestedMs { get; private set; } = -1;
+    /// <summary>The transports (TCP acceptor first); tests check their local end points.</summary>
+    public IReadOnlyList<IClientListener> Listeners => _listeners;
+
     public long ClockMs => _clock.ElapsedMilliseconds;
 
     /// <summary>Adds another transport (for example reliable UDP); it feeds the same inbox, so sessions work the same on it.
