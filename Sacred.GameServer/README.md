@@ -349,6 +349,8 @@ hooks in existing files are one filter call in `Route`, one save call in `Remove
 | Difficulty | the difficulty bits (0x100..0x800) stay what the server was configured with; a host 0x01E cannot change them (`AUTH_LOCK_DIFFICULTY`) |
 | Damage 0x17A | attacker must be the sender's own hero or an object it owns in the server's object world, damage is clamped to `AUTH_MAX_DAMAGE` (default 0xFFFF) and forwarded; `AUTH_STRICT_ATTACKERS` also rejects unknown attackers |
 | Trade 0x198 | sender word must be the sender's slot (the original ignores a mismatch) |
+| Items | item states (0x169/0x16B/0x16C/0x16E/0x16F with an item body) no legitimate item has are dropped (not stored, not relayed, never saved) and counted as violations (`AUTH_CHECK_ITEMS`, `Auth/ItemGuard.cs`): more socket records than the item's own value block has open sockets (slot types 1..4, at most 8); with `--game-dir` also an object type that is not an item type, an item whose own value block names another type than its type or its Weapon.pak base type, and socket records of non-item types. Every rule holds for all 1845 items of the 40 real hero files we checked (sockets included) |
+| Hero level | a hero state above `AUTH_MAX_HERO_LEVEL` (default 216, the Sacred Gold cap; 0 = off) removes the player (reason 8) |
 | Violations | counted per player, kick (reason 8) at `AUTH_MAX_VIOLATIONS` (default 25, 0 = never) |
 | Anti-dupe saves | Closed Net hero uploaded to the lobby (message 18) when the player leaves (hard disconnects too), every `AUTH_SAVE_INTERVAL` s (default 120) and `AUTH_SAVE_DEBOUNCE_MS` after trades, pick-ups, equipment and inventory changes. The block is written by the server from its own view (below), never taken from the client |
 

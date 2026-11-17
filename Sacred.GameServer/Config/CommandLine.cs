@@ -68,6 +68,8 @@ public static class CommandLine
         new("Authoritative mode", "auth-lock-difficulty", OptionKind.Flag, "keep the session's difficulty fixed", "1"),
         new("Authoritative mode", "auth-save-interval", OptionKind.Int, "seconds between periodic hero saves (0 = off)", "60"),
         new("Authoritative mode", "auth-save-debounce-ms", OptionKind.Int, "milliseconds to wait after a trade or drop before saving", "500"),
+        new("Authoritative mode", "auth-check-items", OptionKind.Flag, "refuse impossible item states (sockets; item types with --game-dir)", "1"),
+        new("Authoritative mode", "auth-max-hero-level", OptionKind.Int, "highest hero level a player may report, above it the player is removed (0 = no check)", "216"),
 
         // ---- flood protection ----
         new("Flood protection", "flood-protection", OptionKind.Flag, "1/0 overrides the default (on with --authoritative)", "1"),
