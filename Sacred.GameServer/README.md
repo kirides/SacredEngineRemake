@@ -193,6 +193,9 @@ with an error instead of silently becoming a folder of that name. The game serve
 mods: ladders, recent deaths, statistics live in the mod that needs them, so mods can grow without growing the server. (JSON,
 not SQLite: SQLite needs a native library, which would end the single-file Native AOT binary.)
 
+**User documentation of the example mods** (install, chat commands, settings, pages and endpoints, Sacred Gear channels,
+limits, screenshots of the web pages): [`docs/mods/README.md`](../docs/mods/README.md).
+
 * `player` = `{ slot, name, character, uid, class, level, in_game, host, online, sector, x, y }`. **Privacy:** scripts never see lobby ids,
   owner keys or account names. `name` and `character` are the character name (the server strips the `account.` prefix of
   lobby names, and only of lobby names: a LAN name like `Mr.X` stays), `uid` is an opaque per-server identity of the hero
