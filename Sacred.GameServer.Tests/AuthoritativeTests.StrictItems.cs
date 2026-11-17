@@ -46,7 +46,7 @@ public partial class AuthoritativeTests
         return null;
     }
 
-    private static void StrictRun(StrictItemsMode mode, Action<GameServerHost, RawClient> test)
+    private static void StrictRun(StrictItemsMode mode, Action<GameServerHost, RawClient> test, Dictionary<string, string>? scripts = null)
     {
         using var fake = new LobbyTests.FakeLobby();
         var folder = Directory.CreateTempSubdirectory("strict-").FullName;
@@ -54,6 +54,7 @@ public partial class AuthoritativeTests
         {
             Directory.CreateDirectory(Path.Combine(folder, "scripts"));
             File.WriteAllText(Path.Combine(folder, "scripts", "strict.lua"), StrictScript);
+            foreach (var (name, source) in scripts ?? []) File.WriteAllText(Path.Combine(folder, "scripts", name), source);
             var block = new byte[0x300];
             new Random(5).NextBytes(block);
             var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5, LobbyChannel = 1 };

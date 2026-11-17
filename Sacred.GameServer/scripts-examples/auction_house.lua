@@ -12,6 +12,10 @@
 -- the sales history and the request log. Every change is written durably (server.flush) before its answer goes out; a failed
 -- write is undone and refused. Requests carry ids (rid): a repeated request gets the same answer and changes nothing.
 --
+-- Closed Net also: a delivered item gets a one-time token (server.item_token, label "auction:<rid>"), so the client's creation of exactly
+-- that item passes --auth-strict-items; a gold withdrawal counts only when the server's own hero copy shows the increase (a check in this
+-- script, not a general gold gate), with a timeout after which the saved hero decides and the wallet gets the gold back when it did not
+-- arrive. The rules (fees, durations, limits ...) are data in the mod's storage (web UI page /auction); a reload (unload hook) is safe.
 -- Closed Net with --authoritative (the server writes the heroes): a listing or a deposit only becomes real after the server has
 -- seen the item (or gold) leave the hero in its own hero state and the lobby has stored the hero without it; a mailbox entry is
 -- only removed after the server has seen the item (or gold) arrive and the lobby has stored the hero with it. LAN and Open Net:
