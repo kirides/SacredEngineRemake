@@ -258,7 +258,7 @@ public class WorldEventsScriptTests
         host.FireKill(inside, Orc(3)); host.FireKill(inside, Wolf(4));            // any creature there
         var active = State(host).GetProperty("active");
         Assert.AreEqual(2, active.GetProperty("count").GetInt32());
-        Assert.AreEqual(2, active.GetProperty("sectors").GetArrayLength());
+        Assert.IsFalse(active.TryGetProperty("area", out _), "an anonymous sector list has no name");
 
         // !sector tells the number
         Assert.IsTrue(host.FireChat(inside, "!sector"));
@@ -449,5 +449,149 @@ public class WorldEventsScriptTests
         Assert.IsTrue(store.TryGet("at0", out var at0)); Assert.AreEqual("nil", at0);
         var bare = Start(folder, new Fake()).Host.StoreOf("grid");           // a host without game data
         Assert.IsTrue(bare.TryGet("cell", out var nogrid)); Assert.AreEqual("none", nogrid);
+    }
+
+    // ---- areas ------------------------------------------------------------------------------------------------------------
+
+    private static string AreaSource(string areaLine, Func<string, string>? more = null) =>
+        Source(t =>
+        {
+            t = t.Replace("silver_creek = { name = \"Silver Creek\", sectors = {}, near = 1 },", areaLine)
+                 .Replace("target = 4, duration = 3600, names = { \"orc\" },", "target = 100, duration = 3600, area = \"silver_creek\", names = { \"thief\" },");
+            return more is null ? t : more(t);
+        });
+
+    private static ScriptMonster Thief(uint reference, int sector = 0, int x = 0, int y = 0) => new(reference, 77, 5, "Thief", sector, x, y);
+
+    private static int Count(ScriptHost host) => State(host).GetProperty("active").GetProperty("count").GetInt32();
+
+    [TestMethod]
+    public void AnAreaOfListsAndRangesCountsKillsByTheVictimsSectorWithAFallback()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", AreaSource("silver_creek = { name = \"Silver Creek\", sectors = { 2900, { 2910, 2912 } } },"));
+        var (host, server) = Start(folder);
+        server.Tick(host);
+        StringAssert.Contains(server.Said.Single(), "Orc hunt begins: Slay 1000 orcs");
+        var inside = server.Alice with { Sector = 2911 };
+        var outside = server.Bob with { Sector = 5000 };
+        host.FireKill(outside, Thief(1, 2911));              // the thief is in the area, the killer is not: counts
+        host.FireKill(inside, Thief(2, 5000));               // the killer is in the area, the thief is not: does not
+        host.FireKill(inside, Thief(3));                     // the creature's place is unknown: the killer's place decides
+        host.FireKill(outside, Thief(4));                    // ... outside
+        host.FireKill(outside, Thief(5, 2909)); host.FireKill(outside, Thief(6, 2913));   // just outside the range
+        host.FireKill(outside, Thief(7, 2910)); host.FireKill(outside, Thief(8, 2912)); host.FireKill(outside, Thief(9, 2900));
+        Assert.AreEqual(5, Count(host));
+        Assert.AreEqual("Silver Creek", State(host).GetProperty("active").GetProperty("area").GetString());
+    }
+
+    [TestMethod]
+    public void TheWhereSettingChoosesVictimPlayerOrEither()
+    {
+        foreach (var (where, want) in new[] { ("victim", 2), ("player", 2), ("either", 3) })
+        {
+            using var folder = new Folder();
+            folder.Write("world_events.lua", AreaSource("silver_creek = { name = \"Silver Creek\", sectors = { 10 } },",
+                t => t.Replace("where = \"victim\",", $"where = \"{where}\",")));
+            var (host, server) = Start(folder);
+            server.Tick(host);
+            var inside = server.Alice with { Sector = 10 };
+            var outside = server.Bob with { Sector = 99 };
+            host.FireKill(outside, Thief(1, 10));            // victim in, killer out
+            host.FireKill(inside, Thief(2, 99));             // victim out, killer in
+            host.FireKill(inside, Thief(3, 10));             // both in
+            host.FireKill(outside, Thief(4, 99));            // both out
+            Assert.AreEqual(want, Count(host), where);
+        }
+    }
+
+    [TestMethod]
+    public void ACircleCountsKillsInsideItsRadiusWhateverTheSector()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", AreaSource("silver_creek = { name = \"Silver Creek\", sectors = {}, circle = { x = 1000, y = 1000, r = 500 } },"));
+        var (host, server) = Start(folder);
+        server.Tick(host);
+        host.FireKill(server.Alice, Thief(1, 7, 1200, 1200));    // 283 away
+        host.FireKill(server.Alice, Thief(2, 7, 1500, 1000));    // exactly on the edge
+        host.FireKill(server.Alice, Thief(3, 7, 1600, 1000));    // 600 away
+        host.FireKill(server.Alice, Thief(4, 8, 0, 0));          // far
+        Assert.AreEqual(2, Count(host));
+    }
+
+    [TestMethod]
+    public void RectUsesTheSectorGridAndMarginWidensWhereTheClientShowsTheEvent()
+    {
+        using var folder = new Folder();
+        // the fake grid: id = 1000 + y * 100 + x. The rect (3,3)-(2,2) is the cells 1202 1203 1302 1303
+        folder.Write("world_events.lua", AreaSource("silver_creek = { name = \"Silver Creek\", rect = { 3, 3, 2, 2 } },"));
+        var server = new Fake { Grid = true };
+        server.NetPlayers.Add(1);
+        var (host, _) = Start(folder, server);
+        server.Tick(host);
+        foreach (var id in new[] { 1202, 1203, 1302, 1303 }) host.FireKill(server.Bob, Thief((uint)id, id));
+        host.FireKill(server.Bob, Thief(90, 1204)); host.FireKill(server.Bob, Thief(91, 1201));
+        Assert.AreEqual(4, Count(host));
+        // the margin: one cell around the area is "here" for the client, two cells away is not
+        server.Pushed.Clear();
+        host.FireSector(server.Alice with { Sector = 1204 });          // cell (4,2): next to the rect
+        Assert.IsTrue(server.Pushed.Single().Payload.GetProperty("here").GetBoolean());
+        Assert.AreEqual("Silver Creek", server.Pushed.Single().Payload.GetProperty("area").GetString());
+        server.Pushed.Clear();
+        host.FireSector(server.Alice with { Sector = 1205 });          // cell (5,2): two away
+        Assert.IsFalse(server.Pushed.Single().Payload.GetProperty("here").GetBoolean());
+    }
+
+    [TestMethod]
+    public void NearAddsTheNeighboursAndAnEmptyAreaIsNotOffered()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", AreaSource("silver_creek = { name = \"Silver Creek\", sectors = { 1505 }, near = 1 },"));
+        var (host, server) = Start(folder, new Fake { Grid = true });
+        server.Tick(host);
+        foreach (var id in new[] { 1404, 1405, 1406, 1504, 1505, 1506, 1604, 1605, 1606 }) host.FireKill(server.Bob, Thief((uint)id, id));
+        host.FireKill(server.Bob, Thief(90, 1403)); host.FireKill(server.Bob, Thief(91, 1607));
+        Assert.AreEqual(9, Count(host));
+
+        // an area without sectors: the event is skipped, the next one in the rotation starts
+        using var empty = new Folder();
+        empty.Write("world_events.lua", AreaSource("silver_creek = { name = \"Silver Creek\", sectors = {} },"));
+        var (host2, server2) = Start(empty);
+        server2.Tick(host2);
+        StringAssert.Contains(server2.Said.Single(), "The great cull begins");
+    }
+
+    [TestMethod]
+    public void AdminsRecordAreasByWalkingAndTheSnippetIsReady()
+    {
+        using var folder = new Folder();
+        folder.Write("world_events.lua", Source());
+        var (host, server) = Start(folder);
+        var alice = server.Alice with { Sector = 2909, X = 5000, Y = 6000 };            // the host: an admin
+        Assert.IsTrue(host.FireChat(server.Bob with { Sector = 1 }, "!area start town"));
+        StringAssert.Contains(server.Told.Last().Text, "Only the admins");
+        Assert.IsTrue(host.FireChat(alice, "!area add"));
+        StringAssert.Contains(server.Told.Last().Text, "Not recording");
+        Assert.IsTrue(host.FireChat(alice, "!area start silver_creek Silver \"Creek\""));
+        foreach (var id in new[] { 2910, 2911, 2912, 2920, 2915 }) host.FireSector(alice with { Sector = id });
+        host.FireSector(alice with { Sector = 2911 });                                  // twice: once
+        Assert.IsTrue(host.FireChat(alice, "!area circle 800"));
+        Assert.IsTrue(host.FireChat(alice, "!area remove"));                             // the sector it stands in (2909)
+        Assert.IsTrue(host.FireChat(alice, "!area stop"));
+        var line = server.Told.Last().Text;
+        Assert.AreEqual("silver_creek = { name = \"Silver \\\"Creek\\\"\", sectors = {{2910, 2912}, 2915, 2920}, circle = { x = 5000, y = 6000, r = 800 } },", line);
+        host.FlushStores(wait: true);
+        // stored in the mod's storage in the config format
+        Assert.IsTrue(host.StoreOf("world_events").TryGet("areas", out var stored));
+        StringAssert.Contains(System.Text.Json.JsonSerializer.Serialize(stored), "silver_creek");
+        // where am I: the area is listed
+        Assert.IsTrue(host.FireChat(alice with { Sector = 2915 }, "!here"));
+        StringAssert.Contains(server.Told.Last().Text, "sector 2915");
+        StringAssert.Contains(server.Told.Last().Text, "area silver_creek");
+        Assert.IsTrue(host.FireChat(alice, "!area show silver_creek"));
+        Assert.AreEqual(line, server.Told.Last().Text);
+        Assert.IsTrue(host.FireChat(alice, "!area drop silver_creek"));
+        Assert.IsTrue(host.FireChat(alice, "!area list"));
+        Assert.IsFalse(server.Told.Last().Text.Contains("silver_creek*"));
     }
 }
