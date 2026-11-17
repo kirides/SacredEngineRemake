@@ -55,8 +55,17 @@ public class CommandLineTests
         Assert.IsNull(CommandLine.Validate(["1313466", "netlog", "tincatlog"]));
         Assert.IsNull(CommandLine.Validate(["quiet", "1313466", "tincatlog"]));        // started by hand with the full line
         Assert.IsNull(CommandLine.Validate(["quiet"]));
-        Assert.AreEqual(1313466L, CommandLine.WindowHandle(["netlog", "1313466"]));
+        Assert.AreEqual(1313466L, CommandLine.WindowHandle(["1313466"]));
+        Assert.AreEqual(1313466L, CommandLine.WindowHandle(["quiet", "1313466"]));
+        Assert.AreEqual(1313466L, CommandLine.WindowHandle(["1313466", "--webui-port", "18099"]));
+        Assert.AreEqual(0L, CommandLine.WindowHandle(["--webui-port", "18099"]), "the value of a spaced option is no window handle");
         Assert.AreEqual(0L, CommandLine.WindowHandle(["quiet"]));
+        Assert.AreEqual(0L, CommandLine.WindowHandle(["netlog", "1313466"]), "only args[0], or args[1] behind quiet");
+        Assert.IsNull(CommandLine.Validate(["--webui-port", "18099"]));
+        Assert.IsNull(CommandLine.Validate(["1313466", "--webui-port", "18099"]));
+        StringAssert.Contains(CommandLine.Validate(["--bind=127.0.0.1", "1313466"])!, "unexpected argument '1313466'");   // a number later on
+        StringAssert.Contains(CommandLine.Validate(["netlog", "1313466"])!, "unexpected argument '1313466'");
+        StringAssert.Contains(CommandLine.Validate(["quiet", "--authoritative", "1313466"])!, "unexpected argument '1313466'");
         var config = GameServerConfig.Load(["1313466", "tincatlog"]);
         Assert.AreEqual(1313466L, config.ParentWindow);
         Assert.IsTrue(config.Trace);
@@ -89,6 +98,21 @@ public class CommandLineTests
                 Assert.IsNull(CommandLine.Validate([$"--{name.ToUpperInvariant().Replace('-', '_')}" + (spec.Kind == OptionKind.Flag ? "" : "=" + spec.Sample)]), name);
             }
         }
+    }
+
+    [TestMethod]
+    public void TheOptionTableHasNoDuplicateNamesOrAliases()
+    {
+        var seen = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var spec in CommandLine.Options)
+            foreach (var name in spec.AllNames())
+            {
+                var key = name.Replace('_', '-').ToLowerInvariant();
+                Assert.IsFalse(seen.TryGetValue(key, out var other), $"'{name}' of --{spec.Name} is also a name or alias of --{other}");
+                seen[key] = spec.Name;
+            }
+        Assert.AreEqual(1, CommandLine.Options.Count(o => o.Name == "bind"), "one --bind");
+        CollectionAssert.AreEquivalent(new[] { "bind-address", "network-bind" }, CommandLine.Options.Single(o => o.Name == "bind").Aliases!);
     }
 
     [TestMethod]

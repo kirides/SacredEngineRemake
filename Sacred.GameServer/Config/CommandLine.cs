@@ -139,20 +139,25 @@ public static class CommandLine
 
     private static string Normalize(string name) => name.Replace('_', '-').ToLowerInvariant();
 
+    /// <summary>What a bare (non <c>--</c>) argument means.</summary>
+    public enum Positional { None, Quiet, NetLog, TincatLog, WindowHandle }
+
     /// <summary>
-    /// Checks the arguments. Returns null when they are fine, else the complete error message (one or two lines) for the console.
-    /// The positional words of the original GameServer.exe (FUN_004C27B0 searches its command line): <c>quiet</c> (no dialog), a
-    /// decimal number (the window handle of the game, see <see cref="WindowHandle"/>), <c>netlog</c> and <c>tincatlog</c>.
-    /// Nothing is bound or read here.
+    /// The single walk over the positional words, shared by <see cref="Validate"/> and <see cref="WindowHandle"/> so they cannot disagree.
+    /// Sacred.exe starts the server with CreateProcess(lpApplicationName "GameServer.exe", lpCommandLine "quiet &lt;HWND&gt;[ netlog][ tincatlog]");
+    /// the program-name slot holds "quiet", so this process sees the decimal window handle as args[0] (or as args[1] behind a literal
+    /// "quiet", when started by hand). The original takes the handle with atoi() from the text right behind "quiet "; a number anywhere
+    /// else (the value of a spaced option, a stray argument) is not a handle. <c>quiet</c>, <c>netlog</c> and <c>tincatlog</c> may stand anywhere.
     /// </summary>
-    /// <summary>
-    /// Sacred.exe starts the server with CreateProcess(lpApplicationName "GameServer.exe", lpCommandLine "quiet &lt;HWND&gt;[ netlog][ tincatlog]"),
-    /// so the program name slot of the command line holds "quiet" and this process sees the decimal window handle as its first (and
-    /// usually only) argument: <c>12345</c>, optionally followed by <c>netlog</c> and <c>tincatlog</c>.
-    /// </summary>
-    public static bool IsPositional(string arg) =>
-        arg.Equals("quiet", StringComparison.OrdinalIgnoreCase) || arg.Equals("netlog", StringComparison.OrdinalIgnoreCase) ||
-        arg.Equals("tincatlog", StringComparison.OrdinalIgnoreCase) || TryWindowHandle(arg, out _);
+    public static Positional Classify(string[] args, int index)
+    {
+        var arg = args[index];
+        if (arg.Equals("quiet", StringComparison.OrdinalIgnoreCase)) return Positional.Quiet;
+        if (arg.Equals("netlog", StringComparison.OrdinalIgnoreCase)) return Positional.NetLog;
+        if (arg.Equals("tincatlog", StringComparison.OrdinalIgnoreCase)) return Positional.TincatLog;
+        var handleSlot = index == 0 || (index == 1 && args[0].Equals("quiet", StringComparison.OrdinalIgnoreCase));
+        return handleSlot && TryWindowHandle(arg, out _) ? Positional.WindowHandle : Positional.None;
+    }
 
     /// <summary>A bare decimal number (the original takes it with atoi from the text behind "quiet"): the game's window handle.</summary>
     public static bool TryWindowHandle(string arg, out long handle)
@@ -161,19 +166,24 @@ public static class CommandLine
         return arg.Length is > 0 and <= 10 && arg.All(char.IsAsciiDigit) && long.TryParse(arg, NumberStyles.None, CultureInfo.InvariantCulture, out handle) && handle <= int.MaxValue;
     }
 
-    /// <summary>The window handle among the arguments (0 = none). The original posts its status messages (0x410) to that window.</summary>
+    /// <summary>The window handle of the game (0 = none); the original posts its status messages (0x410) to that window.</summary>
     public static long WindowHandle(string[] args)
     {
-        foreach (var arg in args) if (TryWindowHandle(arg, out var handle)) return handle;
+        for (var i = 0; i < args.Length && i < 2; i++)
+            if (Classify(args, i) == Positional.WindowHandle && TryWindowHandle(args[i], out var handle)) return handle;
         return 0;
     }
 
+    /// <summary>
+    /// Checks the arguments. Returns null when they are fine, else the complete error message (one or two lines) for the console.
+    /// The positional words of the original GameServer.exe are described at <see cref="Classify"/>. Nothing is bound or read here.
+    /// </summary>
     public static string? Validate(string[] args)
     {
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
-            if (IsPositional(arg) || arg is "-h" or "--help" or "-?" or "/?") continue;
+            if (Classify(args, i) != Positional.None || arg is "-h" or "--help" or "-?" or "/?") continue;
             if (!arg.StartsWith("--", StringComparison.Ordinal))
                 return $"ERROR: unexpected argument '{arg}'. Options look like --name=value; see --help.";
             var body = arg[2..];
