@@ -7,7 +7,7 @@ using Sacred.GameServer.Session;
 namespace Sacred.GameServer.Tests;
 
 [TestClass]
-public class ScriptTests
+public partial class ScriptTests
 {
     private sealed class Folder : IDisposable
     {
