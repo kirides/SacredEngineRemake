@@ -145,6 +145,7 @@ server.every(seconds, fn)  server.after(seconds, fn)
 server.broadcast(text)  server.message(player or slot, text)  server.kick(player or slot, reason)
 server.players()  server.player(slot)  server.time()  server.log(text)  print(...)
 server.save(key, value)  server.load(key [, default])  server.delete(key)  server.keys([prefix])   -- the mod's own storage
+server.flush([fn])                     -- write this mod's storage now, durably; fn(ok, err) afterwards on the game loop
 server.get(player or nil, key [, default])  server.set(player or nil, key, value)  server.add(player or nil, key [, n])
 server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- item or nil, error
 server.drop_gold(player, amount)       -- { ref, type, amount } or nil, error: a gold pile next to the hero
@@ -191,6 +192,16 @@ allowed. `--scripts-data` names a folder now: a value ending in `.json` (the ear
 with an error instead of silently becoming a folder of that name. The game server itself keeps no state for
 mods: ladders, recent deaths, statistics live in the mod that needs them, so mods can grow without growing the server. (JSON,
 not SQLite: SQLite needs a native library, which would end the single-file Native AOT binary.)
+
+**Durable writes (`server.flush([fn])`).** For a mod that must not answer a player before its change is on disk (the auction
+house: a delivery that was answered and then lost in a crash before the 10 s flush could be collected twice). The store is
+serialized at once on the game loop thread and written on a worker thread after any write still running: temporary file,
+flushed to the disk (`FileStream.Flush(true)`, write-through), moved over the old file. `fn(ok, err)` runs on the game loop at the
+next pump after the write finished, in the order the writes were started; the game loop never waits. While a durable write is out
+(until its callback ran) the regular 10 s flush skips this mod's file, so after a failed write the file still holds the state from
+before it and the script can undo its change in memory first (the next flush writes the undo). Callbacks of scripts that were
+reloaded meanwhile are dropped; their writes still finish. Code: `Scripting/ScriptHost.Durable.cs`, `ModStore.Durable.cs`; tests
+`ScriptTests.Durable.cs`.
 
 * `player` = `{ slot, name, character, uid, class, level, in_game, host, online, sector }`. **Privacy:** scripts never see lobby ids,
   owner keys or account names. `name` and `character` are the character name (the server strips the `account.` prefix of

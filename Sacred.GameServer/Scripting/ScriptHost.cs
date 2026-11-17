@@ -258,6 +258,7 @@ public sealed partial class ScriptHost
     {
         if (_changed) { _changed = false; _reloadDueMs = nowMs + 500; }
         if (_reloadDueMs != 0 && nowMs >= _reloadDueMs) { _reloadDueMs = 0; Log.Info("SCRIPT: reloading."); Load(); }
+        PumpDurable();                                                      // server.flush callbacks (ScriptHost.Durable.cs)
         if (_newTimers.Count > 0) { _timers.AddRange(_newTimers); _newTimers.Clear(); }
         for (var i = _timers.Count - 1; i >= 0; i--)
         {
@@ -591,6 +592,7 @@ public sealed partial class ScriptHost
             var high = (int)c.GetArgument<double>(c.HasArgument(1) ? 1 : 0);
             return c.Return(high < low ? low : Random.Shared.Next(low, high + 1));
         });
+        AddDurable(server);                                                 // server.flush (ScriptHost.Durable.cs)
         return server;
     }
 
