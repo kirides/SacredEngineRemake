@@ -61,8 +61,11 @@ public static class Routing
         // Consumed by the server's own state (inventories and NW_ITEM cheat protection 0x12x/0x13E/0x144, references, free-slot
         // checks, ...): no network effect in the original either, so they are dropped without the "unhandled" log.
         foreach (var opcode in (ReadOnlySpan<ushort>)[0x10E, 0x10F, 0x122, 0x123, 0x129, 0x12A, 0x12B, 0x12C, 0x130, 0x131, 0x13E,
-            0x144, 0x14F, 0x155, 0x172, 0x176, 0x17F, 0x18A, 0x197, 0x19C, 0x19D])
+            0x13F, 0x144, 0x14F, 0x155, 0x172, 0x176, 0x17F, 0x18A, 0x197, 0x19C, 0x19D])
             Consumed[opcode] = true;
+        // 0x13F [item ref][cell][inventory id] (case 0x4C69EE -> FUN_004D37F0, SETITEM "put into inventory"): updates the server's own
+        // object and inventory; it only sends (0x16A to the viewers, mode 6) when its cheat protection corrects the item, which needs
+        // the server's object world. Dropped silently in every mode; the authoritative checks run before in CaptureHeroState.
         // 0x14F (9940 bytes, sent on entering and on leaving): the player's statistics block; case 0x4C6030 copies it into the
         // cStatsManager slot of the sender (FUN_00477500 / FUN_00477490, 0x26D4 bytes) and does nothing else.
         // 0x17F NW_FIGHT_ENEMY_SPOTTED (case 0x4C61C7 -> FUN_004CE530, pairs [creature ref][value]): sets/clears the creature's

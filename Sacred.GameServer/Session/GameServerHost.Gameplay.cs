@@ -304,7 +304,7 @@ public sealed partial class GameServerHost
     /// first in-game player (FUN_004cdc50: 0x00D to the new host). Without a candidate the session ends: everybody is kicked with
     /// reason 0x10.
     /// </summary>
-    private void RemovePlayer(PlayerSession s, uint reason, bool notifyVictim, bool closeConnection = true)
+    private void RemovePlayer(PlayerSession s, uint reason, bool notifyVictim, bool closeConnection = true, bool echoToLeaver = false)
     {
         if (notifyVictim)
         {
@@ -325,9 +325,11 @@ public sealed partial class GameServerHost
             _slots[slot] = null; PlayerCount--; LobbyPlayerRemoved(s); _world.Forget(slot);
             ReleaseReferences(slot); LeaveAllSectors(slot);
         }
-        s.State = SessionState.Closed;
         Span<byte> departure = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32LittleEndian(departure, reason);
+        // Mode 1 of the original's broadcast (except = 0x11) reaches the leaver too: its own 0x150 copy, origin = its slot.
+        if (echoToLeaver && slot != 0 && !s.Connection.IsClosed) SendMessage(s, 0x150, 0, slot, departure);
+        s.State = SessionState.Closed;
         if (slot != 0) SendAll(0x150, slot, departure);
         if (wasHost) TransferHost();
         if (closeConnection) s.Connection.Close();   // a graceful 0x150 leaves the close to the client, like the original
@@ -347,7 +349,7 @@ public sealed partial class GameServerHost
         var reason = m.Payload.Length >= 4 ? BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) : 0;
         var withKick = m.Opcode == 0x01C;
         Log.Info($"{s.Describe()} left the game (opcode 0x{m.Opcode:X3}, reason {reason}).");
-        RemovePlayer(s, reason, notifyVictim: withKick, closeConnection: withKick);
+        RemovePlayer(s, reason, notifyVictim: withKick, closeConnection: withKick, echoToLeaver: !withKick);
     }
 
     private void TransferHost()

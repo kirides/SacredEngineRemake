@@ -216,6 +216,8 @@ public partial class AuthoritativeTests
             var left = other.WaitFor(0x150);
             Assert.AreEqual(player.Slot, left.Origin);
             Assert.AreEqual(0u, BinaryPrimitives.ReadUInt32LittleEndian(left.Payload));
+            var own = player.WaitFor(0x150);                                       // the leaver gets its own copy too (mode 1)
+            Assert.AreEqual(player.Slot, own.Origin);
             other.WaitFor(0x00D);                                                  // the leaving host hands over
             fake.WaitFor(LobbyProtocol.ServerDataUpload);
             player.Dispose();                                                      // the TCP close that follows
