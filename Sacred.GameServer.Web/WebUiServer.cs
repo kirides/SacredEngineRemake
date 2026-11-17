@@ -180,7 +180,7 @@ public sealed class WebUiServer : IAsyncDisposable
     {
         var request = context.Request; var response = context.Response;
         // Cookie-less Basic auth is attached by the browser to cross-site posts too: refuse anything a foreign page started.
-        if (request.Headers["Sec-Fetch-Site"].ToString() == "cross-site") { response.StatusCode = StatusCodes.Status403Forbidden; return; }
+        if (request.Headers["Sec-Fetch-Site"].ToString() == "cross-site") { await Deny(response, "Request refused: the form was posted from another site."); return; }
         if (request.ContentType is null || !request.ContentType.StartsWith("application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))
         { response.StatusCode = StatusCodes.Status415UnsupportedMediaType; return; }
         var form = await request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false);
@@ -262,7 +262,8 @@ public sealed class WebUiServer : IAsyncDisposable
         }
         if (HttpMethods.IsOptions(request.Method)) { response.StatusCode = corsAllowed ? StatusCodes.Status204NoContent : StatusCodes.Status403Forbidden; return; }
         // A foreign origin that is not allowed must not drive the API with the browser's cached credentials.
-        if (origin.Length > 0 && !corsAllowed && !SameOrigin(origin, request)) { response.StatusCode = StatusCodes.Status403Forbidden; return; }
+        if (origin.Length > 0 && !corsAllowed && !SameOrigin(origin, request))
+        { await Deny(response, $"Request refused: it comes from the origin '{origin}', but this page is served as '{request.Host}'. Open the UI under one address (or list the origin in WebUi:CorsOrigins)."); return; }
         if (!Authorized(request))
         {
             response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -303,8 +304,27 @@ public sealed class WebUiServer : IAsyncDisposable
     private bool OriginAllowed(string origin) =>
         _options.CorsOrigins.Any(o => o == "*" || o.TrimEnd('/').Equals(origin, StringComparison.OrdinalIgnoreCase));
 
-    private static bool SameOrigin(string origin, HttpRequest request) =>
-        Uri.TryCreate(origin, UriKind.Absolute, out var uri) && uri.Authority.Equals(request.Host.Value, StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// The browser's own verdict (<c>Sec-Fetch-Site</c>) wins when it is there; otherwise the Origin must name this server. Behind a
+    /// reverse proxy the original host is accepted from <c>X-Forwarded-Host</c> (a foreign page cannot set that header).
+    /// </summary>
+    private static bool SameOrigin(string origin, HttpRequest request)
+    {
+        var site = request.Headers["Sec-Fetch-Site"].ToString();
+        if (site is "same-origin" or "none") return true;
+        if (site is "cross-site" or "same-site") return false;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+        var forwarded = request.Headers["X-Forwarded-Host"].ToString().Split(',')[0].Trim();
+        return uri.Authority.Equals(request.Host.Value, StringComparison.OrdinalIgnoreCase) ||
+               (forwarded.Length > 0 && uri.Authority.Equals(forwarded, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static Task Deny(HttpResponse response, string message)
+    {
+        response.StatusCode = StatusCodes.Status403Forbidden;
+        response.ContentType = "text/plain; charset=utf-8";
+        return response.WriteAsync(message);
+    }
 
     private bool Authorized(HttpRequest request)
     {

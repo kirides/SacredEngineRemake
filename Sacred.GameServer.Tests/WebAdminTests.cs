@@ -303,6 +303,32 @@ public class WebAdminTests
     }
 
     [TestMethod]
+    public async Task SameOriginPostsPassBehindProxiesAndRefusalsExplainThemselves()
+    {
+        var (server, _, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = new Uri($"http://127.0.0.1:{server.Ports[0]}") };
+        await using (server)
+        {
+            HttpRequestMessage Post(string origin, params (string, string)[] headers)
+            {
+                var m = new HttpRequestMessage(HttpMethod.Post, "/actions/lock") { Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["value"] = "1" }) };
+                m.Headers.Add("Origin", origin);
+                foreach (var (k, v) in headers) m.Headers.Add(k, v);
+                return m;
+            }
+            // The browser says same-origin (page opened through a proxy or alias whose Host differs from the Origin).
+            Assert.AreEqual(HttpStatusCode.SeeOther, (await client.SendAsync(Post("https://gs.example", ("Sec-Fetch-Site", "same-origin")))).StatusCode);
+            // Reverse proxy without Sec-Fetch-Site: the original host arrives in X-Forwarded-Host.
+            Assert.AreEqual(HttpStatusCode.SeeOther, (await client.SendAsync(Post("https://gs.example", ("X-Forwarded-Host", "gs.example")))).StatusCode);
+            Assert.AreEqual(2, admin.Commands.Count);
+            var refused = await client.SendAsync(Post("https://evil.example"));
+            Assert.AreEqual(HttpStatusCode.Forbidden, refused.StatusCode);
+            StringAssert.Contains(await refused.Content.ReadAsStringAsync(), "evil.example");
+            Assert.AreEqual(HttpStatusCode.Forbidden, (await client.SendAsync(Post("https://gs.example", ("Sec-Fetch-Site", "cross-site")))).StatusCode);
+        }
+    }
+
+    [TestMethod]
     public async Task SettingsFormSavesOnlyWhatChanged()
     {
         var (server, _, admin) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
