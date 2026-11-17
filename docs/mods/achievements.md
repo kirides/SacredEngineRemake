@@ -44,13 +44,22 @@ Rewards are queued and dropped next to the hero once the hero is in the world (r
 | `!ach` (or `!achievements`) | "Achievements: N of 31 unlocked", your three latest, and the next one with progress (`have/target`) |
 | `!streak` | Your streak, the best, days visited, and today's (or tomorrow's) reward |
 
-## Settings (top of the file)
+## Settings (the `config` data of the mod)
 
-| Name | Default | Meaning |
+The tables at the top of the script are the defaults of the first run; the live values are the storage key `config`, edited with
+`POST /api/mod-store` and shown on `/mods/achievements/config` (see [README](README.md#configuration-live-edits-and-hot-reload)).
+A reload keeps the roster, every hero's progress and the queue of rewards that could not be dropped yet (retried every 20 s while
+the hero is in the world).
+
+| Field | Default | Meaning |
 |---|---|---|
-| `UTC_OFFSET_HOURS` | 0 | Shifts the day change of the streak |
-| `ROSTER_LIMIT` | 500 | Heroes shown on the page and kept in its roster (the ones seen longest ago are dropped) |
-| `defs` | 31 entries | The achievements: edit, add or remove rows |
+| `utc_offset_hours` | 0 | Shifts the day change of the streak (-14 to 14) |
+| `roster_limit` | 500 | Heroes shown on the page and kept in its roster (the ones seen longest ago are dropped) |
+| `streak_gold_per_day`, `streak_gold_max_days` | 100, 10 | Login reward: gold per streak day, up to this many days |
+| `streak_item_every`, `streak_item_quality`, `streak_item_max_quality` | 7, 4, 14 | Every n-th streak day also an item of quality base + streak / n, at most the maximum (0 = never an item) |
+| `reward_tries` | 8 | A reward that cannot be dropped is retried this often, then given up |
+| `item_fallback_gold` | 1000 | Gold given instead of an item when the server cannot drop items (no `--game-dir`) |
+| `achievements` | 31 entries | The list: `id`, `name`, `desc`, `stat` (`kills level species giants deaths pvp online days best`), `target`, optional `reward` `{ gold, item }` and `shout`. An invalid entry is dropped; the ids are what heroes have unlocked, so keep them |
 
 ## Web page and endpoints
 

@@ -23,7 +23,10 @@ the item is reported by the client that owns the sector. The mod therefore ties 
 lying around when a client enters a sector). Rarity is the item's tier 0..15 as Sacred Gear shows it: 0-4 normal, 5-11 magic,
 12-14 rare, 15 unique.
 
-| Setting | Default | Meaning |
+Settings: the `config` data of the mod (edit with `POST /api/mod-store`, overview on `/mods/rare_drops/config`, see the
+[README](README.md#configuration-live-edits-and-hot-reload)). A reload keeps the feed.
+
+| Field | Default | Meaning |
 |---|---|---|
 | `min_rarity` | 12 | Announce items of this tier and above (12 rare and unique, 15 only unique) |
 | `require_kill` | true | Only drops that follow a kill within `kill_window` seconds |
@@ -51,10 +54,15 @@ Recent hero deaths with the name of the killer (creature or hero), the deadliest
 Killer names are the game's own texts, so the server needs `--game-dir` for them (otherwise "creature type N"). A hero death is
 reported once (several reports within 2 s count once).
 
-| Setting | Default | Meaning |
+Settings: the `config` data of the mod (edit with `POST /api/mod-store`, overview on `/mods/graveyard/config`, see the
+[README](README.md#configuration-live-edits-and-hot-reload)). A reload keeps the deaths and the killers' counts.
+
+| Field | Default | Meaning |
 |---|---|---|
-| `keep` | 200 | Deaths kept (the page shows 48 tombstones) |
+| `keep` | 200 | Deaths kept |
 | `announce` | true | "<hero> was slain by <killer>." to everybody |
+| `page_stones` | 48 | Tombstones on the page |
+| `page_killers` | 8 | Rows of "Deadliest killers" on the page |
 
 | Chat | What |
 |---|---|

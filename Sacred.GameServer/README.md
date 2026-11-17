@@ -223,7 +223,7 @@ the folder watcher reloads only the file that changed (a new file loads, a delet
 Reload button per mod and "Reload all mods" (`POST /api/reload-mods` with `{"text": "mod"}`, empty text = all); `ScriptHost.Reload(mod|null)`
 from code. A full reload creates a fresh Lua state (global variables reset); a per-mod reload runs the file in the shared state, so
 globals it set earlier stay until overwritten, a reloaded mod's handlers run after the others', and mods that share globals should be
-reloaded together. Code: `Scripting/ScriptHost.Reload.cs`; tests `ScriptTests.Reload.cs`.
+reloaded together. Code: `Scripting/ScriptHost.Reload.cs`; tests `ScriptTests.Reload.cs`. The example mods are built on it: each saves its in-memory state in an unload handler and keeps its tunables as data in its storage key `config` (defaults in the script seed it, `POST /api/mod-store` edits it live, `/mods/{mod}/config` is the admin overview); see [`docs/mods/README.md`](../docs/mods/README.md#configuration-live-edits-and-hot-reload), tests `ScriptTests.ModConfig.cs`.
 
 **Hero custody (Closed Net, `--authoritative`).** For mods that move items or gold between a hero and their own storage (auction
 house, shared stash) so that killing the client never restores a save with the item twice: the server is the one that writes the
@@ -332,19 +332,23 @@ In the five hero saves we have, the quest pairs are empty, so a script cannot re
 
 ### Custom net messages for scripts (`net`)
 
-Sacred Gear clients (the mod kit, `gear.net`) talk to scripts through named channels over two message types above the
-original's range (default 0x1E0 control / 0x1E1 data; the original GameServer.exe only logs and drops them). A client
-says HELLO after joining; the server answers with its limits and the list of players that can use the messages. Only
-players that said HELLO ever get them, so plain clients are not affected.
+Sacred Gear clients (the mod kit, `gear.net`) talk to scripts through named channels. The channels work on the chat carrier (private
+chat frames, 64 KB per message) and are upgraded to two message types above the original's range (default 0x1E0 control /
+0x1E1 data; the original GameServer.exe only logs and drops them) when both sides agree. The agreement is made on chat: the client
+announces itself on entering the game (frame `h`), the server queries with the numbers it offers (`q`), the client answers (`a`:
+accepts or declines), then HELLO / HELLO_ACK on the agreed types verify the version and limits. The server never writes to a player
+that did not announce itself (a plain client would show the frames as chat) and never answers a HELLO without an agreement. Players
+that decline, time out or never announce stay on chat (or get nothing): `net.transport(player)` says which.
 
 ```lua
 local ch = net.channel("auction:bid" [, { server_only = true }])  -- the channel, or nil, message (bad name, id collision)
 ch:on(function(player, payload) end)    -- a message for the server; payload is a table (JSON) or a byte string
 ch:send(player | slot | "all", payload) -- string (one byte per character; above 255: UTF-8) or table (JSON) -> true | nil, message
-net.supports(player | slot)             -- true when that player's computer said HELLO
+net.supports(player | slot)             -- true when that player's computer uses the custom message types (said HELLO)
+net.transport(player | slot)           -- "custom", "chat" (channels over the chat carrier only) or nil
 ```
 
-`server_only` keeps clients from relaying through the channel (clients can still address the server, never each other). A
+`server_only` keeps clients from relaying through the channel (clients can still address the server, never each other; on the chat carrier the server reads the channel name from the first frame of a relayed message and drops it). A
 channel id is the FNV-1a hash of its name; two names with the same id are refused at registration. The server stamps the
 real sender slot into the message header and ignores any claim in the payload. Handlers get their own instruction budget
 (`NETOPS_HANDLER_BUDGET`, default 200000), and the usual error accounting (20 errors in a row switch a handler off).
@@ -365,6 +369,7 @@ the data id in the handshake, the control id is configured on their side with `g
 | `NETOPS_REASSEMBLY_SESSION`, `NETOPS_REASSEMBLY_TOTAL` | 1 MB, 8 MB | bytes of unfinished messages held |
 | `NETOPS_FRAGMENT_TIMEOUT` | 10 | seconds until an unfinished message is dropped |
 | `NETOPS_HANDLER_BUDGET` | 200000 | Lua instructions of one handler call |
+| `NETOPS_CHAT_RATE` | 16384 | bytes per second the server sends to one player over the chat carrier |
 
 Everything dropped is counted (`GameServerHost.NetStats`): unknown channels (a message for the server on a channel no script
 registered), rate limit, too many messages in flight, too many channels, too large, reassembly memory, timeouts. Wire layouts:
@@ -485,7 +490,7 @@ to the server's world in place (the 24-byte prefix and the object's base block, 
 a kill's position and the witness's loot range use where the object is now, not where it was first seen. Relay mode (no `--authoritative`) is
 unchanged.
 
-**Shared stash (Closed Net).** `scripts-examples/shared_stash.lua` keeps the stash of the Sacred Gear mod shared-stash per `player.account` on channel `shared-stash`, with the hero custody checks above (deposits count after the item left the hero and the hero was saved; withdrawals are removed after the item arrived and the hero was saved). Outside `--authoritative` it offers nothing. Hot reload: everything is stored at every change; the join times go through the unload hook (reason reload), tokens live in the C# host, in-flight checks are resumed by the clients' resends (same rid). Tunables (`max_items`, `max_data`, `verify_seconds`, `retry_seconds`, `token_seconds`, `rate_per_minute`, ...) can be overridden at run time by a table under the key `config` in the mod's storage (applies within 30 s). Tests: `SharedStashScriptTests.cs`.
+**Shared stash (Closed Net).** `scripts-examples/shared_stash.lua` keeps the stash of the Sacred Gear mod shared-stash per `player.account` on channel `shared-stash`, with the hero custody checks above (deposits count after the item left the hero and the hero was saved; withdrawals are removed after the item arrived and the hero was saved). Outside `--authoritative` it offers nothing. Hot reload: everything is stored at every change; the join times go through the unload hook (reason reload), tokens live in the C# host, in-flight checks are resumed by the clients' resends (same rid). Tunables (`max_items`, `max_data`, `verify_seconds`, `retry_seconds`, `token_seconds`, `rate_per_minute`, ...) are data: the script writes its defaults to the key `config` on the first run and the storage wins from then on (edit on the page `/mods/shared_stash/` or `POST /api/mod-store`; `config_rev` is polled every second, no reload needed). The page and `/mods/shared_stash/state` show totals (never account keys). Tests: `SharedStashScriptTests.cs`.
 
 **Auction house in Closed Net.** `scripts-examples/auction_house.lua` follows the shared stash's gate. *Tokens:* before the market tells a client to create an item (a mailbox `collect` of a bought, expired or cancelled item) it mints a token for exactly that item (`server.item_token`, label `auction:<rid>`, `token_seconds`, default 120); a repeated rid reuses the token while it lives, a delivery that is released or abandoned (the player left) revokes it, and the arrival's `claim_item` consumes it. Where no token can be minted the delivery works as before. *Gold:* the client adds withdrawn gold itself (`add_gold`), and the server has no gold hook in the item gate, so this check lives in the script and is **not a general gold gate**: it notes the hero's gold (the server's own copy) at the withdrawal and the lowest value since (so gold spent before the report does not hide the increase) and counts the withdrawal as done once the gold rose by the amount (or stands at the old value plus the amount) and the hero save is confirmed. After `gold_timeout` (default 120 s) without it the hero is saved and the saved copy decides: an increase confirms, none credits the wallet back (the rid then answers `refunded`). Not covered: gold that is picked up or earned in the same moment looks like the withdrawal, and a client that adds the gold after the refund keeps both. *Rules as data:* the script's `config` only seeds the storage on the first run; durations, `fee_per_day`, `fee_min`, `sale_cut`, `max_per_seller`, `max_listings` (total cap), `allow_special`, `sweep_seconds` (expiry interval), `verify_seconds`, `token_seconds`, `gold_timeout` and the price limits live under the storage key `config`, polled through `config_rev` (applies within 2 s, no reload), edited on the web UI's **Auction** page (`/auction`) and shown on `/mods/auction_house/` and the JSON `/mods/auction_house/rules`. *Hot reload:* the market is stored at every change; the unload hook stores the gold watches (always) and, for a reload, the join times, token ids and prepared deposits; clients resend in-flight checks with the same rid; the item sale is claimed only after the hero save so a reload in between loses nothing. The info reply says `closed = true` when `server.authoritative(player)`. Tests: `AuctionHouseScriptTests.cs`.
 

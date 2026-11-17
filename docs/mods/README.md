@@ -25,10 +25,45 @@ and their Gear client mods") and `docs/GearSessionMods.md`.
 1. Copy the `.lua` file(s) from `Sacred.GameServer/scripts-examples/` into the server's scripts folder (`--scripts-dir`,
    default `./scripts`). Scripts are loaded in name order at start and reloaded half a second after any file changes, so a
    running server needs no restart. `--scripts=0` turns all scripts off.
-2. Adjust the settings at the top of the file if you like (every mod has plain `local` tables or constants there; there is no
-   separate config file). A changed file is reloaded at once.
+2. Adjust the settings if you like: they are **data in the mod's storage**, not code (see "Configuration, live edits and hot
+   reload" below). The tables at the top of the file are only the defaults for the first run.
 3. The mod's data goes to `script-data/<mod>.json` (folder: `--scripts-data`). Delete the file to reset a mod; keep it when you
    move the server. Limits: 8 MB per mod, 32 MB for all (`--scripts-store-max`, `--scripts-store-total-max`).
+
+## Configuration, live edits and hot reload
+
+Every mod is data driven and can be reloaded while the server runs. The pattern is the same for all of them:
+
+* **Defaults in the script, truth in the storage.** The table at the top of each script (`DEFAULTS`: the bounty `pool`, the
+  achievement list, the season length, the build caps, the quest `catalog`, ...) is copied once into the mod's storage as the key
+  `config` (`script-data/<mod>.json`) the first time the mod runs (marked by `config_seeded`). From then on the storage decides;
+  editing the defaults in the script file does not change a server that has already run (delete the `config` key, or single
+  fields inside it, to get the defaults back: a missing or invalid field always falls back to its default).
+* **Edit it live.** As admin, `GET /api/mod-store?mod=<mod>&key=config` reads it and
+  `POST /api/mod-store` with `{"mod":"seasons","set":{"config":{"length_days":14,"top_n":20}}}` writes it (JSON,
+  `Content-Type: application/json`; write the whole `config` table, fields you leave out use their defaults). The write bumps
+  `config_rev`; the mod looks at it every 2 seconds and applies the change at once: no reload, no restart. Two fields are
+  timer intervals (`quest_helper.poll_seconds`, `server_stats.sample_seconds`): a timer keeps the interval it was started with,
+  so they apply on the next reload.
+* **Validated, never fatal.** Each field has a type and a range (a whole number from 1 to 20, a list of valid entries, ...).
+  A field that does not validate is ignored, its default stays and the reason is logged and shown on the overview page; the
+  other fields still apply. A list (bounty pool, achievements, boards, catalog) drops its bad entries one by one and falls
+  back to the default list only when none is valid. A `config` that is not a table at all is ignored.
+* **Overview.** `/mods/<mod>/config` (admin only, never public) shows the active value of every field and whether it comes from
+  the `storage` or is the `default`, the revision, when the mod was loaded, why (`start` = the server started the mod for the
+  first time since a crash or an old install, `restart` = it was stopped with the server before, `reload` = hot reload), the
+  time of the last live edit and the list of config errors. Each mod's own page ends with a line "Configuration: ..." with
+  the same summary.
+* **Hot reload.** Reload one mod with the Reload button of the Mods tab, `POST /api/reload-mods` with `{"text":"seasons"}`
+  (empty text = all mods) or just save the `.lua` file (the watcher reloads that file half a second later). Every mod saves what
+  it holds only in memory in an `unload` handler (`server.on("unload", fn(reason))`, reason `"reload"` or `"shutdown"`) and reads
+  it back from the storage when it loads, so nothing is lost or counted twice: bounties in progress and the board, the
+  achievement roster and the queue of rewards still waiting for a hero, the season's start and archive, statistics samples and
+  uptime, the hall of fame, feeds, quest baselines of heroes who are online, and the publish cooldowns and request budgets of
+  the build sharer. Timers and handlers are dropped and registered again by the new version, so nothing runs twice.
+  A restart is the same thing, with the reason `shutdown`.
+
+Fields of each mod are listed in its document below (the first table of its "Settings" section).
 
 ## Web pages
 

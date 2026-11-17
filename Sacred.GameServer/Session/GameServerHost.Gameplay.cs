@@ -135,7 +135,9 @@ public sealed partial class GameServerHost
     {
         if (m.Payload.Length < 4) return;
         var target = BinaryPrimitives.ReadUInt32LittleEndian(m.Payload);
-        if (target is 0 or > MaxSlots || _slots[target] is not { } recipient || recipient.State < SessionState.SlotAssigned) return;
+        if (target == 0) { NetChatFrame(s, m.Payload[4..]); return; }          // private chat to the server: net channels on the chat carrier
+        if (target > MaxSlots || _slots[target] is not { } recipient || recipient.State < SessionState.SlotAssigned) return;
+        if (!NetChatRelayAllowed(s, m.Payload[4..])) return;                   // frames of a server-only channel are not relayed
         Span<byte> payload = stackalloc byte[ChatPayloadBytes];
         BuildChat(payload, target, m.Payload[4..]);
         RecordChat(ChatKind.Private, s, (int)target, m.Payload[4..]);
