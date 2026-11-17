@@ -47,6 +47,13 @@ if (config.Auth.Enabled && config.GameDirectory is { } itemDir)
     if (itemError is not null) Log.Info($"WARNING: item tables not read from '{itemDir}' ({itemError}); unseen items are saved as 1x1.");
     else if (host.ItemFootprints is { } tables) Log.Info($"Item tables: {tables.FromRows} types with a Weapon.pak footprint (of {Sacred.GameServer.Auth.Hero.ItemFootprints.ResourceCount}) from '{itemDir}'.");
 }
+if (config.GameDirectory is { } nameDir)
+{
+    // Display names for the web API and scripts; read once here, never in the game loop.
+    host.Names = Sacred.GameServer.Data.NameService.Load(nameDir, out var nameError);
+    if (nameError is not null) Log.Info($"WARNING: game texts not read from '{nameDir}' ({nameError}); names are left out.");
+    else if (host.Names is { } names) Log.Info($"Game texts: {names.TypeCount} object types, language '{names.Language}'.");
+}
 
 if (config.Scripts.IsEnabled) host.StartScripts();
 

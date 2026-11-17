@@ -41,6 +41,8 @@ public class ScriptTests
             Drops.Add(request); error = null;
             return new ScriptDrop(100, 200, request.Quality ?? 0, "Test ring", "Ring");
         }
+        public string? CreatureName(uint type) => type == 38 ? "Orc Warrior" : null;
+        public string? ItemName(uint type) => type == 2501 ? "Longbow" : null;
     }
 
     private static (ScriptHost Host, FakeServer Server, ScriptStore Store) Host(Folder folder, int budget = 1_000_000)
@@ -282,6 +284,32 @@ public class ScriptTests
         CollectionAssert.AreEqual(new[] { "Alice has defeated 50 creatures of type 551!" }, server.Said);
         Assert.IsTrue(host.FireChat(alice, "!kills"));
         Assert.AreEqual("You have defeated 50 creatures.", server.Told.Last().Text);
+    }
+
+    [TestMethod]
+    public void KillMilestoneExampleUsesTheGameName()
+    {
+        using var folder = new Folder();
+        folder.Write("kill_milestones.lua", Example("kill_milestones.lua"));
+        var (host, server, _) = Host(folder);
+        for (uint i = 0; i < 50; i++) host.FireKill(server.All[0], new ScriptMonster(5000 + i, 38, 3, "Orc Warrior"));
+        CollectionAssert.AreEqual(new[] { "Alice has defeated Orc Warrior 50 times!" }, server.Said);
+    }
+
+    [TestMethod]
+    public void ScriptsSeeCreatureAndItemNames()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.on("kill", function(p, m)
+              server.broadcast(tostring(m.name) .. "|" .. tostring(server.creature_name(m.type)) .. "|" .. tostring(server.creature_name(m)) .. "|" ..
+                tostring(server.item_name(2501)) .. "|" .. tostring(server.item_name(1)) .. "|" .. tostring(server.creature_name("x")))
+            end)
+            """);
+        var (host, server, _) = Host(folder);
+        host.FireKill(server.All[0], new ScriptMonster(1, 38, 3, "Orc Warrior"));
+        host.FireKill(server.All[0], new ScriptMonster(2, 39, 3));
+        CollectionAssert.AreEqual(new[] { "Orc Warrior|Orc Warrior|Orc Warrior|Longbow|nil|nil", "nil|nil|nil|Longbow|nil|nil" }, server.Said);
     }
 
     private static string? GameDirectory()

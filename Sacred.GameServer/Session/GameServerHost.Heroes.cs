@@ -26,6 +26,9 @@ public sealed partial class GameServerHost
     /// <summary>Keep the players' hero state for <see cref="Heroes"/> even without authoritative mode (the web UI turns it on).</summary>
     public bool TrackHeroes { get; set; }
 
+    /// <summary>The game's names for types, skills and combat arts (read from --game-dir at startup); null leaves names out.</summary>
+    public Data.NameService? Names { get; set; }
+
     private bool KeepsHeroState => _config.Auth.Enabled || TrackHeroes;
 
     public IReadOnlyList<HeroInfo> Heroes() { lock (_heroGate) return _heroSnapshot; }
@@ -103,13 +106,16 @@ public sealed partial class GameServerHost
                 listAt = values + GoldCreatureValuesLayout.CompactCount22Offset;
                 allocations = default;
             }
-            for (var i = 0; i < 8; i++) if (ids[i] != 0) skills.Add(new SkillInfo(ids[i], levels[i], bonuses.IsEmpty ? 0 : bonuses[i]));
+            for (var i = 0; i < 8; i++) if (ids[i] != 0) skills.Add(new SkillInfo(ids[i], levels[i], bonuses.IsEmpty ? 0 : bonuses[i], Names?.Skill(ids[i])));
             if (listAt + 2 <= body.Length)
             {
                 var count22 = BinaryPrimitives.ReadUInt16LittleEndian(body[listAt..]);
                 var at = listAt + 2;
                 for (var i = 0; i < count22 && at + 22 <= body.Length; i++, at += 22)
-                    arts.Add(new ArtInfo((int)BinaryPrimitives.ReadUInt32LittleEndian(body[at..]), BinaryPrimitives.ReadUInt16LittleEndian(body[(at + 4)..]), body[at + 6]));
+                {
+                    var id = BinaryPrimitives.ReadUInt16LittleEndian(body[(at + 4)..]);
+                    arts.Add(new ArtInfo((int)BinaryPrimitives.ReadUInt32LittleEndian(body[at..]), id, body[at + 6], Names?.CombatArt(id)));
+                }
                 if (at + 2 <= body.Length)
                 {
                     combos = BinaryPrimitives.ReadUInt16LittleEndian(body[at..]);
@@ -152,14 +158,17 @@ public sealed partial class GameServerHost
         return list.ToArray();
     }
 
-    /// <summary>An item from the object world: type, level (+25), rarity tier (+6 low nibble), sockets (value records), price (+8).</summary>
+    /// <summary>An item from the object world: type, level (+25), rarity tier (+6 low nibble), sockets (value records), price (+8),
+    /// name (its own name word, base state +37, else the type's).</summary>
     private ItemInfo? Item(uint reference)
     {
         if (!_world.TryGet(reference, out var entry)) return null;
         var body = entry.Payload[(entry.LongPrefix ? 24 : 8)..];
         if (!SavedObjects.ReadLiveItem(body, out var records, out _)) return null;
         var data = body.Slice(GoldItemStateLayout.RecordsOffset + records * GoldItemStateLayout.ItemDataSize, GoldItemStateLayout.ItemDataSize);
-        return new ItemInfo(reference, BinaryPrimitives.ReadUInt32LittleEndian(data), data[25], data[6] & 15, records, BinaryPrimitives.ReadUInt32LittleEndian(data[8..]));
+        var type = BinaryPrimitives.ReadUInt32LittleEndian(data);
+        return new ItemInfo(reference, type, data[25], data[6] & 15, records, BinaryPrimitives.ReadUInt32LittleEndian(data[8..]),
+            Names?.Item(type, Data.NameService.InstanceName(body)));
     }
 }
 

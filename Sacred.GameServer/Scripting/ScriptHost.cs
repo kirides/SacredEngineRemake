@@ -6,8 +6,9 @@ namespace Sacred.GameServer.Scripting;
 /// <summary>A player as scripts see it.</summary>
 public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId, double OnlineSeconds = 0);
 
-/// <summary>A defeated creature: its object reference, its type (resource id) and level when the server knows them.</summary>
-public readonly record struct ScriptMonster(uint Reference, uint Type, int Level);
+/// <summary>A defeated creature: its object reference, its type (Items.pak type), level and name (the game's text: the creature's own
+/// name, else its type's; null without --game-dir) when the server knows them.</summary>
+public readonly record struct ScriptMonster(uint Reference, uint Type, int Level, string? Name = null);
 
 /// <summary>What a script asked for with <c>server.drop_item</c>.</summary>
 public readonly record struct ScriptLootRequest(int Level, int HeroClass, uint? Quality, Sacred.Core.Pak.Items.SacredItemCategory? Category, uint Seed);
@@ -31,6 +32,10 @@ public interface IScriptServer
     ScriptDrop? DropItem(int slot, in ScriptLootRequest request, out string? error);
     /// <summary>Publishes a board (ladder) for the web UI and its public API.</summary>
     void Publish(string name, string title, IReadOnlyList<(string Name, double Value)> rows);
+    /// <summary>The game's name of a creature type, null when unknown or the game's tables were not read.</summary>
+    string? CreatureName(uint type) => null;
+    /// <summary>The game's (base) name of an item type, null when unknown or the game's tables were not read.</summary>
+    string? ItemName(uint type) => null;
 }
 
 /// <summary>
@@ -39,13 +44,14 @@ public interface IScriptServer
 /// <code>
 /// server.on("join"|"enter"|"leave", function(player) end)
 /// server.on("chat", function(player, text) return true end)   -- true: the line is not relayed
-/// server.on("kill", function(player, monster) end)            -- monster = { ref, type, level }
+/// server.on("kill", function(player, monster) end)            -- monster = { ref, type, level, name } (name nil without --game-dir)
 /// server.every(seconds, fn) / server.after(seconds, fn)
 /// server.broadcast(text) / server.message(player or slot, text) / server.kick(player or slot, reason)
 /// server.players() / server.player(slot) / server.time() / server.log(text)
 /// server.get(player or nil, key [, default]) / server.set(player or nil, key, value) / server.add(player or nil, key, n)
 /// server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- returns item or nil, error
 /// server.random([m [, n]])
+/// server.creature_name(type) / server.item_name(type)  -- the game's names for a type number, or nil
 /// server.top(key, n) -> { { key, name, value }, ... }  (saved numbers of every hero, also offline)
 /// server.publish(name, title, rows)                    -- rows = { { name = "...", value = n }, ... } for the web UI (names are
 ///                                                       made safe: character part only, never an owner key)
@@ -203,7 +209,8 @@ public sealed class ScriptHost
     public bool FireKill(ScriptPlayer player, ScriptMonster monster)
     {
         if (!Has("kill")) return false;
-        var table = new LuaTable(0, 3) { ["ref"] = monster.Reference, ["type"] = monster.Type, ["level"] = monster.Level };
+        var table = new LuaTable(0, 4) { ["ref"] = monster.Reference, ["type"] = monster.Type, ["level"] = monster.Level };
+        if (monster.Name is { } name) table["name"] = name;
         return Fire("kill", PlayerTable(player), table, 2);
     }
 
@@ -348,6 +355,8 @@ public sealed class ScriptHost
             _store.Set(owner, key, total);
             return c.Return(total);
         });
+        server["creature_name"] = Fn("creature_name", c => c.Return(TypeOf(c) is { } t && _server.CreatureName(t) is { } n ? n : LuaValue.Nil));
+        server["item_name"] = Fn("item_name", c => c.Return(TypeOf(c) is { } t && _server.ItemName(t) is { } n ? n : LuaValue.Nil));
         server["drop_item"] = Fn("drop_item", c =>
         {
             var target = c.GetArgument(0);
@@ -425,6 +434,14 @@ public sealed class ScriptHost
         var interval = (long)(seconds * 1000);
         _newTimers.Add(new Timer { Function = c.GetArgument<LuaFunction>(1), File = _currentFile, DueMs = _server.NowMs + interval, IntervalMs = repeat ? interval : 0 });
         return c.Return();
+    }
+
+    /// <summary>First argument as a type number (a number, or a table with "type" such as a monster or item), else null.</summary>
+    private static uint? TypeOf(LuaFunctionExecutionContext c)
+    {
+        var value = c.HasArgument(0) ? c.GetArgument(0) : LuaValue.Nil;
+        if (value.Type == LuaValueType.Table) value = value.Read<LuaTable>()["type"];
+        return value.Type == LuaValueType.Number && value.Read<double>() is var d && d >= 0 && d <= uint.MaxValue ? (uint)d : null;
     }
 
     private static int SlotOf(LuaValue value) => value.Type switch

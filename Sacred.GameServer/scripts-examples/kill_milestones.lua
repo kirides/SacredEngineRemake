@@ -5,20 +5,18 @@
 
 local milestones = { [50] = true, [100] = true, [200] = true, [500] = true, [1000] = true, [2000] = true, [5000] = true }
 
--- Optional names for creature types (the type id is the creature's resource number in the game data).
-local names = {
-  -- [551] = "Orc",
-}
-
-local function creature_name(type)
-  return names[type] or ("creatures of type " .. type)
+-- monster.name is the game's own name ("Orc Warrior") when the server runs with --game-dir; without the game's texts the
+-- type number is used.
+local function defeated(monster, count)
+  if monster.name then return monster.name .. " " .. count .. " times" end
+  return count .. " creatures of type " .. monster.type
 end
 
 server.on("kill", function(player, monster)
   local total = server.add(player, "kills")
   local of_kind = server.add(player, "kills." .. monster.type)
   if milestones[of_kind] then
-    server.broadcast(player.character .. " has defeated " .. of_kind .. " " .. creature_name(monster.type) .. "!")
+    server.broadcast(player.character .. " has defeated " .. defeated(monster, of_kind) .. "!")
   end
   if total % 1000 == 0 then
     server.broadcast(player.character .. " has defeated " .. total .. " creatures in total!")
