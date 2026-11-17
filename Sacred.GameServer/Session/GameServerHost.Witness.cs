@@ -111,6 +111,9 @@ public sealed partial class GameServerHost
             case 0x017 or 0x018:
                 Witness!.OnWorldEntered(s.Slot, now);
                 return;
+            case 0x145 or (>= 0x1B8 and <= 0x1BE):
+                Witness!.OnQuestEvent(s.Slot, now);                         // a quest event: its reward items may follow (Quest source)
+                return;
             case GoldContainerActivationCodec.Opcode when p.Length >= 4:
             {
                 var container = BinaryPrimitives.ReadUInt32LittleEndian(p) & 0x7FFFFFFF;

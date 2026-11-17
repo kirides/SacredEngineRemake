@@ -271,4 +271,22 @@ public partial class AuthoritativeTests
             config.Auth.Witness.PurchaseWindowMs = 800;
         });
     }
+
+    /// <summary>A quest event (0x145 quest pair) of the player explains the reward the client creates next; without it the same creation is refused.</summary>
+    [TestMethod]
+    public void AQuestEventExplainsTheRewardItem()
+    {
+        StrictRun(StrictItemsMode.On, (host, player) =>
+        {
+            player.Send(0x16F, ItemState(0x6101, 0x12A, 0x51));
+            Assert.AreEqual("nil", ItemWhere(host, player, 0x6101), "no quest event");
+            var pair = new byte[8];
+            BinaryPrimitives.WriteUInt32LittleEndian(pair, 0x1234);
+            BinaryPrimitives.WriteUInt32LittleEndian(pair.AsSpan(4), 1);
+            player.Send(0x145, pair);
+            player.Send(0x16F, ItemState(0x6102, 0x12A, 0x52));
+            Assert.AreEqual("world", ItemWhere(host, player, 0x6102, not: "nil"), "after the quest event");
+            Assert.AreEqual(1, host.Witness!.Explained[(int)ItemSource.Quest]);
+        });
+    }
 }

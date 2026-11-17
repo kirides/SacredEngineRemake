@@ -41,6 +41,8 @@ public sealed class ItemWitness
     private int _lateNext;
     private readonly bool[] _scratchUsed = new bool[PerSlotRing];
     private readonly long[] _worldBegin = new long[MaxSlots + 1], _worldEnd = new long[MaxSlots + 1];
+    private readonly long[] _questAt = new long[MaxSlots + 1];
+    private readonly int[] _questLeft = new int[MaxSlots + 1];
     public const int PurchaseRing = 16;
     private struct Bought { public uint Reference; public uint Price; public long AtMs; }
     private readonly Bought[][] _bought = new Bought[MaxSlots + 1][];
@@ -131,6 +133,21 @@ public sealed class ItemWitness
         _worldEnd[slot] = now + 1;
     }
 
+    /// <summary>The player's client reported a quest event (0x145 quest pair, 0x1B8..0x1BE): it may create the quest's reward items now.</summary>
+    public void OnQuestEvent(byte slot, long now)
+    {
+        if (slot is 0 or > MaxSlots) return;
+        _questAt[slot] = now + 1;
+        _questLeft[slot] = _options.QuestPerEvent;
+    }
+
+    private bool TakeQuest(byte slot, long now)
+    {
+        if (_questAt[slot] == 0 || _questLeft[slot] <= 0 || now - _questAt[slot] > _options.QuestWindowMs) return false;
+        _questLeft[slot]--;
+        return true;
+    }
+
     /// <summary>A purchase was accepted provisionally: the hero gold must drop by its price soon.</summary>
     public void OnPurchase(byte slot, uint reference, uint price, long now)
     {
@@ -177,6 +194,7 @@ public sealed class ItemWitness
         Array.Clear(_received[slot]); Array.Clear(_remnants[slot]); Array.Clear(_sectors[slot]);
         _worldBegin[slot] = _worldEnd[slot] = 0;
         Array.Clear(_bought[slot]);
+        _questAt[slot] = 0; _questLeft[slot] = 0;
         _receivedNext[slot] = _remnantNext[slot] = _sectorNext[slot] = 0;
     }
 
@@ -212,6 +230,7 @@ public sealed class ItemWitness
             if (_options.Accepts(ItemSource.Sector) && InOwnedSector(slot, item.Sector, now)) return ItemSource.Sector;
         }
         if (_options.Accepts(ItemSource.WorldStart) && InWorldStart(slot, now)) return ItemSource.WorldStart;
+        if (_options.Accepts(ItemSource.Quest) && TakeQuest(slot, now)) return ItemSource.Quest;
         if (item.Purchase && _options.Accepts(ItemSource.Purchase)) return ItemSource.Purchase;     // paid for later (OnGoldSpent / TakeUnpaid)
         return ItemSource.Unexplained;
     }

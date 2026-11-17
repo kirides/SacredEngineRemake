@@ -327,4 +327,23 @@ public class WitnessTests
         var off = new ItemWitness(new WitnessOptions { Sources = WitnessOptions.AllSources & ~ItemSourceSet.Purchase });
         Assert.AreEqual(ItemSource.Unexplained, off.Classify(3, Bought(14, 1), c, 0), "AUTH_ITEM_SOURCES without purchase");
     }
+
+    [TestMethod]
+    public void ARewardIsExplainedByAQuestEventOfTheSamePlayerWithinItsWindowAndBudget()
+    {
+        var w = new ItemWitness(new WitnessOptions { QuestWindowMs = 1000, QuestPerEvent = 2 });
+        var c = Content(1);
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(1, c), c, 0), "no quest event yet");
+        w.OnQuestEvent(3, 100);
+        Assert.AreEqual(ItemSource.Quest, w.Classify(3, Facts(2, c), c, 200), "a held reward");
+        Assert.AreEqual(ItemSource.Quest, w.Classify(3, Facts(3, c, 500, 500, 7), c, 300), "a reward on the ground");
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(4, c), c, 400), "budget of the event used up");
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(4, Facts(5, c), c, 400), "another player's event is needed");
+        w.OnQuestEvent(3, 5000);
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(6, c), c, 6200), "too late");
+        w.Forget(3);
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(7, c), c, 5100), "forgotten with the player");
+        Assert.IsTrue(WitnessOptions.TryParseSources("quest", out var set));
+        Assert.AreEqual(ItemSourceSet.Quest, set);
+    }
 }

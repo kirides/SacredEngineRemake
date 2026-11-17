@@ -27,6 +27,9 @@ public enum ItemSource : byte
     WorldStart,
     /// <summary>An item the client announced with 0x16D (a merchant purchase) and that the hero gold then paid for (checked later).</summary>
     Purchase,
+    /// <summary>An item created shortly after a quest event of the same player (0x145 quest pair, 0x1B8..0x1BE journal and progress): quest rewards are
+    /// created by the client that runs the quest script.</summary>
+    Quest,
 }
 
 /// <summary>
@@ -35,7 +38,7 @@ public enum ItemSource : byte
 /// <list type="bullet">
 /// <item><c>AUTH_STRICT_ITEMS=off|log|on</c> (in <see cref="AuthoritativeOptions"/>): what happens to an item creation nothing explains.</item>
 /// <item><c>AUTH_ITEM_SOURCES</c>: the sources the server accepts as an explanation, comma separated (default all:
-/// <c>token,baseline,kill,container,trade,rebuild,sector,worldstart,purchase</c>). A source left out explains nothing, so its items fall under
+/// <c>token,baseline,kill,container,trade,rebuild,sector,worldstart,purchase,quest</c>). A source left out explains nothing, so its items fall under
 /// <c>AUTH_STRICT_ITEMS</c>.</item>
 /// <item>Windows, ranges and budgets of each source (below).</item>
 /// <item><c>AUTH_STRICT_GOLD=off|log|on</c>: a gold increase of the hero nothing explains (gold piles picked up, trades) is ignored,
@@ -47,7 +50,7 @@ public enum ItemSource : byte
 public sealed class WitnessOptions
 {
     public const ItemSourceSet AllSources = ItemSourceSet.Token | ItemSourceSet.Baseline | ItemSourceSet.Kill | ItemSourceSet.Container
-        | ItemSourceSet.Trade | ItemSourceSet.Rebuild | ItemSourceSet.Sector | ItemSourceSet.WorldStart | ItemSourceSet.Purchase;
+        | ItemSourceSet.Trade | ItemSourceSet.Rebuild | ItemSourceSet.Sector | ItemSourceSet.WorldStart | ItemSourceSet.Purchase | ItemSourceSet.Quest;
 
     /// <summary>Sources accepted as an explanation.</summary>
     public ItemSourceSet Sources { get; set; } = AllSources;
@@ -78,6 +81,9 @@ public sealed class WitnessOptions
     public int PurchaseWindowMs { get; set; } = 15_000;
     /// <summary>... of at least this percentage of the item price.</summary>
     public int PurchasePercent { get; set; } = 25;
+    /// <summary>A quest event explains up to <see cref="QuestPerEvent"/> item creations of the same player within <see cref="QuestWindowMs"/>.</summary>
+    public int QuestWindowMs { get; set; } = 5000;
+    public int QuestPerEvent { get; set; } = 4;
 
     public StrictItemsMode StrictGold { get; set; }
     /// <summary>Gold credits (piles picked up, trade gold) expire after this time without a matching increase.</summary>
@@ -97,6 +103,7 @@ public sealed class WitnessOptions
         ItemSource.Sector => (Sources & ItemSourceSet.Sector) != 0,
         ItemSource.WorldStart => (Sources & ItemSourceSet.WorldStart) != 0,
         ItemSource.Purchase => (Sources & ItemSourceSet.Purchase) != 0,
+        ItemSource.Quest => (Sources & ItemSourceSet.Quest) != 0,
         _ => false,
     };
 
@@ -126,6 +133,7 @@ public sealed class WitnessOptions
                 case "sector": sources |= ItemSourceSet.Sector; break;
                 case "worldstart" or "start": sources |= ItemSourceSet.WorldStart; break;
                 case "purchase" or "merchant" or "buy": sources |= ItemSourceSet.Purchase; break;
+                case "quest": sources |= ItemSourceSet.Quest; break;
                 default: return false;
             }
         }
@@ -155,6 +163,8 @@ public sealed class WitnessOptions
             case "AUTH_WORLDSTART_MAX_MS": WorldStartMaxMs = NonNegative(value, WorldStartMaxMs); return true;
             case "AUTH_PURCHASE_WINDOW_MS": PurchaseWindowMs = NonNegative(value, PurchaseWindowMs); return true;
             case "AUTH_PURCHASE_PERCENT": PurchasePercent = NonNegative(value, PurchasePercent); return true;
+            case "AUTH_QUEST_WINDOW_MS": QuestWindowMs = NonNegative(value, QuestWindowMs); return true;
+            case "AUTH_QUEST_PER_EVENT": QuestPerEvent = NonNegative(value, QuestPerEvent); return true;
             case "AUTH_STRICT_GOLD": StrictGold = ParseMode(value); return true;
             case "AUTH_GOLD_WINDOW_MS": GoldWindowMs = NonNegative(value, GoldWindowMs); return true;
             case "AUTH_STRICT_VIOLATIONS": CountViolations = NonNegative(value, 1) != 0; return true;
@@ -169,5 +179,5 @@ public sealed class WitnessOptions
 [Flags]
 public enum ItemSourceSet : ushort
 {
-    Token = 1, Baseline = 2, Kill = 4, Container = 8, Trade = 16, Rebuild = 32, Sector = 64, WorldStart = 128, Purchase = 256,
+    Token = 1, Baseline = 2, Kill = 4, Container = 8, Trade = 16, Rebuild = 32, Sector = 64, WorldStart = 128, Purchase = 256, Quest = 512,
 }
