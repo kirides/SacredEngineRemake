@@ -33,6 +33,8 @@ public sealed partial class GameServerHost
     public CaptureWriter? Capture => _capture;
     /// <summary>Kill reports (0x17D) of creatures that still had hit points in the server's world (0x128 applied); diagnostics for M5.</summary>
     public int KillsAlive { get; private set; }
+    /// <summary>Game messages received per opcode since the start (admitted players; the replay report lists them).</summary>
+    public readonly long[] ReceivedByOpcode = new long[0x400];
     public long WorldPositions => _world.Positions;
     public long WorldHitPointUpdates => _world.HitPointUpdates;
     /// <summary>Gold increases that were not saved (AUTH_STRICT_GOLD=on).</summary>
