@@ -95,12 +95,7 @@ public sealed partial class GameServerHost
             StrictItemsRefused++;
             Log.Info($"AUTH: strict items: {p.Owner.Describe()}: item 0x{p.Reference:X} was admitted on a token but never became the item of the token (has {content.Length / 260} of {token.Records.Length / 260} records)"
                 + (_config.Auth.StrictItems == StrictItemsMode.On ? ", removed." : " (log mode, kept)."));
-            if (_config.Auth.StrictItems == StrictItemsMode.On)
-            {
-                Span<byte> reference = stackalloc byte[4];
-                BinaryPrimitives.WriteUInt32LittleEndian(reference, p.Reference);
-                _world.Remove(reference);
-            }
+            if (_config.Auth.StrictItems == StrictItemsMode.On) _world.Remove(p.Reference);
         }
     }
 
