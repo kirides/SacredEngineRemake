@@ -1139,6 +1139,29 @@ end
 server.endpoint("state", function() return public_state() end,
   { public = true, description = "the running event, the last result and the history as JSON (character names only)" })
 
+-- For the area editor page of the web UI (admin only, not public): the areas as defined (the script file's and the saved ones, which win)
+-- and where the heroes are. The page saves areas into this mod's storage through POST /api/mod-store.
+local function area_json(a, source)
+  return { name = a.name, sectors = a.sectors or {}, ranges = a.ranges, rect = a.rect, near = a.near, circle = a.circle, source = source }
+end
+
+server.endpoint("areas", function()
+  local out = {}
+  for id, a in pairs(AREAS) do out[id] = area_json(a, "file") end
+  for id, a in pairs(recorded) do if type(a) == "table" then out[id] = area_json(a, "saved") end end
+  local events = {}
+  for i, def in ipairs(definitions) do events[i] = { id = def.id, title = def.title, area = def.area, areas = def.areas } end
+  return { areas = out, events = events }
+end, { description = "the named areas (script file and saved), for the area editor" })
+
+server.endpoint("whereabouts", function()
+  local list = {}
+  for i, player in ipairs(server.players()) do
+    list[i] = { name = player.character, sector = player.sector or 0, x = player.x or 0, y = player.y or 0 }
+  end
+  return { players = list }
+end, { description = "where the heroes are (sector and position), for the area editor" })
+
 local style = [[
 body{margin:0;font:15px/1.4 system-ui,sans-serif;background:#15110d;color:#efe6d6}h1{margin:0;padding:1rem 1.2rem;font-size:1.3rem;color:#e0a944}
 main{display:grid;grid-template-columns:repeat(auto-fill,minmax(19rem,1fr));gap:1rem;padding:0 1.2rem 1.2rem}

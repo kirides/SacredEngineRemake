@@ -142,7 +142,7 @@ public sealed class ModStore
         }
     }
 
-    private static object? FromJson(JsonElement element) => element.ValueKind switch
+    public static object? FromJson(JsonElement element) => element.ValueKind switch
     {
         JsonValueKind.Number => element.GetDouble(),
         JsonValueKind.String => element.GetString(),

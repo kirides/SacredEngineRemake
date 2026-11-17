@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using Lua;
 using Lua.Standard;
 
@@ -154,6 +156,68 @@ public sealed partial class ScriptHost
     private sealed class Timer { public required LuaFunction Function; public required string File; public long DueMs; public long IntervalMs; public int Errors; }
 
     public ScriptHost(ScriptOptions options, IScriptServer server) { _options = options; _server = server; }
+
+    private static readonly System.Text.RegularExpressions.Regex StoreKey = new("^[a-z0-9_.-]{1,64}$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// The admin's access to a mod's storage (game loop thread). GET: <paramref name="key"/> as JSON. POST (<paramref name="body"/>):
+    /// <c>{"mod":..., "set":{key: value, ...}, "delete":[key, ...]}</c>; each key written gets a companion <c>{key}_rev</c> (previous + 1)
+    /// that a script can poll to notice the change. Keys are 1..64 of <c>a-z 0-9 _ . -</c>; per-hero data (the "@" keys) is out of reach.
+    /// Only a mod (script) that is loaded; the storage limits apply (413).
+    /// </summary>
+    public ScriptResponse StoreRequest(string mod, string? key, string? body)
+    {
+        mod = ScriptEndpoints.ModName(mod);
+        if (!Mods.Any(m => m.Mod == mod)) return new(404, "text/plain; charset=utf-8", "no such mod");
+        var store = StoreOf(mod);
+        if (body is null)
+        {
+            if (key is null || !StoreKey.IsMatch(key)) return new(400, "text/plain; charset=utf-8", "bad key");
+            if (!store.TryGet(key, out var value)) return new(404, "text/plain; charset=utf-8", "no such key");
+            return new(200, "application/json; charset=utf-8", WriteJson(value));
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return new(400, "text/plain; charset=utf-8", "an object is expected");
+            var revisions = new Dictionary<string, double>();
+            var writes = new List<(string Key, JsonElement Value)>();
+            var deletes = new List<string>();
+            if (root.TryGetProperty("set", out var set) && set.ValueKind == JsonValueKind.Object)
+                foreach (var property in set.EnumerateObject())
+                {
+                    if (!StoreKey.IsMatch(property.Name) || property.Name.EndsWith("_rev", StringComparison.Ordinal)) return new(400, "text/plain; charset=utf-8", $"bad key '{property.Name}'");
+                    writes.Add((property.Name, property.Value));
+                }
+            if (root.TryGetProperty("delete", out var delete) && delete.ValueKind == JsonValueKind.Array)
+                foreach (var item in delete.EnumerateArray())
+                {
+                    var name = item.ValueKind == JsonValueKind.String ? item.GetString() ?? "" : "";
+                    if (!StoreKey.IsMatch(name)) return new(400, "text/plain; charset=utf-8", $"bad key '{name}'");
+                    deletes.Add(name);
+                }
+            foreach (var (name, value) in writes)
+            {
+                store.Set(name, ModStore.FromJson(value));
+                var rev = (store.TryGet(name + "_rev", out var old) && old is double d ? d : 0) + 1;
+                store.Set(name + "_rev", rev);
+                revisions[name] = rev;
+            }
+            foreach (var name in deletes) { store.Set(name, null); store.Set(name + "_rev", null); }
+            Log.Info($"SCRIPT: the admin wrote {writes.Count} key(s) and removed {deletes.Count} in the storage of {mod}.");
+            return new(200, "application/json; charset=utf-8", WriteJson(new Dictionary<string, object?> { ["ok"] = true, ["revisions"] = revisions.ToDictionary(p => p.Key, p => (object?)p.Value) }));
+        }
+        catch (JsonException) { return new(400, "text/plain; charset=utf-8", "invalid JSON"); }
+        catch (InvalidOperationException e) { return new(413, "text/plain; charset=utf-8", e.Message); }
+    }
+
+    private static string WriteJson(object? value)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream)) ModStore.Write(writer, value, 0);
+        return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+    }
 
     /// <summary>The storage of <paramref name="mod"/> (script file name without .lua), opened on first use.</summary>
     public ModStore StoreOf(string mod)

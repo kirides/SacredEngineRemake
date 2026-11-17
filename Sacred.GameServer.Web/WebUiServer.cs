@@ -59,7 +59,7 @@ public sealed class WebUiServer : IAsyncDisposable
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.AddServerHeader = false;
-            kestrel.Limits.MaxRequestBodySize = 16 * 1024;
+            kestrel.Limits.MaxRequestBodySize = ModStoreBodyLimit;   // the commands and forms lower it to 16 KB (LimitBody); only the mod storage endpoint takes more
             kestrel.Limits.MaxRequestHeadersTotalSize = 16 * 1024;
             kestrel.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(10);
             foreach (var address in ResolveBindAddresses(_options.Hostname))
@@ -109,6 +109,11 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/api/heroes", (RequestDelegate)(c => Json(c.Response, _admin.Heroes().ToArray(), WebUiJson.Default.HeroInfoArray)));
         app.MapGet("/api/heroes/{slot:int}", (RequestDelegate)(c => HeroEndpoint(c, publicView: false)));
         app.MapGet("/mods", (RequestDelegate)(c => Html(c.Response, Pages.ModsPage(_admin, _options.PublicApi))));
+        app.MapGet("/areas", (RequestDelegate)(c => Html(c.Response, Pages.AreaEditorPage(_admin))));
+        app.MapGet("/api/areas/map", (RequestDelegate)(c => AreaMapEndpoint(c, image: false)));
+        app.MapGet("/api/areas/map.png", (RequestDelegate)(c => AreaMapEndpoint(c, image: true)));
+        app.MapGet("/api/mod-store", (RequestDelegate)ModStoreRead);
+        app.MapPost("/api/mod-store", (RequestDelegate)ModStoreWrite);
         app.MapGet("/api/mods", (RequestDelegate)(c => Json(c.Response, _admin.ModEndpoints().ToArray(), WebUiJson.Default.ModEndpointInfoArray)));
         app.MapGet("/api/mods/installed", (RequestDelegate)(c => Json(c.Response, _admin.Mods().ToArray(), WebUiJson.Default.ModInfoArray)));
         app.MapGet("/mods/{mod}/{**path}", (RequestDelegate)(c => ModEndpoint(c, publicOnly: false)));
@@ -154,6 +159,71 @@ public sealed class WebUiServer : IAsyncDisposable
             hero = heroes.FirstOrDefault(h => h.Slot == slot);
         }
         return hero is null ? Fail(context.Response, 404, "no such hero online") : Json(context.Response, hero, WebUiJson.Default.HeroInfo);
+    }
+
+    /// <summary><c>/api/areas/map</c> (sectors and projection as JSON) and <c>/api/areas/map.png</c>: the area editor's data from the game files.</summary>
+    private async Task AreaMapEndpoint(HttpContext context, bool image)
+    {
+        BinaryResponse answer;
+        try { answer = await _admin.AreaMapRequest(image, context.RequestAborted).ConfigureAwait(false); }
+        catch (TimeoutException) { await Fail(context.Response, 504, "the map is still being read from the game files, try again").ConfigureAwait(false); return; }
+        catch (OperationCanceledException) { return; }
+        if (answer.Status != 200) { await Fail(context.Response, answer.Status, System.Text.Encoding.UTF8.GetString(answer.Body)).ConfigureAwait(false); return; }
+        context.Response.StatusCode = 200;
+        context.Response.ContentType = answer.ContentType;
+        context.Response.Headers.CacheControl = image ? "private, max-age=3600" : "no-store";
+        await context.Response.Body.WriteAsync(answer.Body, context.RequestAborted).ConfigureAwait(false);
+    }
+
+    private const int ModStoreBodyLimit = 512 * 1024;
+
+    /// <summary><c>GET /api/mod-store?mod=world_events&amp;key=areas</c>: one key of a mod's storage as JSON (admin).</summary>
+    private async Task ModStoreRead(HttpContext context)
+    {
+        var mod = context.Request.Query["mod"].ToString(); var key = context.Request.Query["key"].ToString();
+        if (mod.Length == 0 || key.Length == 0) { await Fail(context.Response, 400, "mod and key are required").ConfigureAwait(false); return; }
+        await ModStoreAnswer(context, mod, key, null).ConfigureAwait(false);
+    }
+
+    /// <summary><c>POST /api/mod-store</c> with <c>{"mod":"world_events","set":{"areas":{...}},"delete":["old"]}</c>: writes keys of a mod's
+    /// storage (admin; JSON bodies only, like the other commands; at most 512 KB). Each key written also bumps <c>{key}_rev</c> so a script
+    /// can notice cheaply.</summary>
+    private async Task ModStoreWrite(HttpContext context)
+    {
+        var request = context.Request;
+        if (request.Headers["Sec-Fetch-Site"].ToString() == "cross-site") { await Deny(context.Response, "Request refused: posted from another site."); return; }
+        if (request.ContentType is null || !request.ContentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
+        { context.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType; return; }
+        if (request.ContentLength is > ModStoreBodyLimit) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
+        var limit = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+        if (limit is { IsReadOnly: false }) limit.MaxRequestBodySize = ModStoreBodyLimit;
+        string text;
+        try
+        {
+            using var reader = new StreamReader(request.Body, System.Text.Encoding.UTF8);
+            var buffer = new char[ModStoreBodyLimit + 1];
+            var read = await reader.ReadBlockAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+            if (read > ModStoreBodyLimit) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
+            text = new string(buffer, 0, read);
+        }
+        catch (Microsoft.AspNetCore.Server.Kestrel.Core.BadHttpRequestException) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
+        string mod;
+        try { using var doc = JsonDocument.Parse(text, new JsonDocumentOptions { MaxDepth = 32 }); mod = doc.RootElement.TryGetProperty("mod", out var m) ? m.GetString() ?? "" : ""; }
+        catch (JsonException) { await Fail(context.Response, 400, "invalid JSON").ConfigureAwait(false); return; }
+        if (mod.Length == 0) { await Fail(context.Response, 400, "mod is required").ConfigureAwait(false); return; }
+        await ModStoreAnswer(context, mod, null, text).ConfigureAwait(false);
+    }
+
+    private async Task ModStoreAnswer(HttpContext context, string mod, string? key, string? body)
+    {
+        ModResponse answer;
+        try { answer = await _admin.ModStoreRequest(mod, key, body, context.RequestAborted).ConfigureAwait(false); }
+        catch (TimeoutException) { await Fail(context.Response, 504, "the game loop did not answer in time").ConfigureAwait(false); return; }
+        catch (OperationCanceledException) { return; }
+        if (answer.Status != 200) { await Fail(context.Response, answer.Status, answer.Body).ConfigureAwait(false); return; }
+        context.Response.StatusCode = 200;
+        context.Response.ContentType = answer.ContentType;
+        await context.Response.WriteAsync(answer.Body, context.RequestAborted).ConfigureAwait(false);
     }
 
     /// <summary><c>/mods/{mod}/{path}</c>: a script endpoint, answered by its Lua handler on the game loop.</summary>
@@ -228,8 +298,16 @@ public sealed class WebUiServer : IAsyncDisposable
         catch (OperationCanceledException) { }
     }
 
+    /// <summary>The usual limit of a command or a form: 16 KB (Kestrel's own limit is higher for the mod storage endpoint).</summary>
+    private static void LimitBody(HttpContext context)
+    {
+        var limit = context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+        if (limit is { IsReadOnly: false }) limit.MaxRequestBodySize = 16 * 1024;
+    }
+
     private async Task ApiCommandEndpoint(HttpContext context)
     {
+        LimitBody(context);
         var response = context.Response;
         // Only JSON bodies: a cross-site form post cannot send this content type without a CORS preflight.
         if (context.Request.ContentType is null || !context.Request.ContentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
@@ -245,6 +323,7 @@ public sealed class WebUiServer : IAsyncDisposable
     /// <summary>The HTML forms: urlencoded body, answered with a redirect back to the page (Post/Redirect/Get).</summary>
     private async Task FormActionEndpoint(HttpContext context)
     {
+        LimitBody(context);
         var request = context.Request; var response = context.Response;
         // Cookie-less Basic auth is attached by the browser to cross-site posts too: refuse anything a foreign page started.
         if (request.Headers["Sec-Fetch-Site"].ToString() == "cross-site") { await Deny(response, "Request refused: the form was posted from another site."); return; }
