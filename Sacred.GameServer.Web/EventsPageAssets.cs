@@ -46,7 +46,7 @@ function render(){
   $('#runbox').innerHTML=h;
   var rows='';
   data.events.forEach(function(e,i){
-    var d=e.def||{}, src=e.source==='file'?'script file':e.source==='override'?'file event, changed here':'web';
+    var d=e.def||{}, src=e.source==='file'?'script file (legacy)':e.source==='override'?'file event, changed here':'stored';
     rows+='<tr class="'+(e.enabled?'':'off')+'"><td><b>'+esc(d.title||e.id)+'</b><br><small>'+esc(e.id)+' &middot; '+src+'</small>'
       +(e.invalid?'<br><small class="bad" style="color:var(--bad)">refused: '+esc(e.invalid)+'</small>':'')+'</td>'
       +'<td>'+esc(e.goal||'')+'<br><small>'+(d.target||'?')+' kills in '+dur(d.duration||0)+(d.area||d.areas?' &middot; area '+esc([].concat(d.area||[],d.areas||[]).join(', ')):'')+'</small></td>'
@@ -129,6 +129,7 @@ function saveEditor(dlg,tiers){
   var areas=[].slice.call(f.querySelectorAll('[name=area]:checked')).map(function(c){return c.value});
   if(areas.length===1)def.area=areas[0];else if(areas.length>1)def.areas=areas;
   if(g('where'))def.where=g('where');
+  if(edit&&edit.def.sectors)def.sectors=edit.def.sectors;
   var rw={gold:Math.max(0,Math.floor(num(g('gold'))||0)),gold_each:Math.max(0,Math.floor(num(g('gold_each'))||0))};
   var iq=num(g('iq')),cat=g('icat').trim().toLowerCase(),il=num(g('ilvl'));
   var msRows=[].slice.call(f.querySelectorAll('#ms tr')).slice(1).map(function(tr){var m={at:num(tr.querySelector('.at').value),weights:{}};

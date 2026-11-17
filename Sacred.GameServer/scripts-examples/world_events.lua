@@ -61,7 +61,7 @@ local AREAS = {
   silver_creek = { name = "Silver Creek", sectors = {}, near = 1 },
 }
 
--- One entry per event. Rotation goes through the list; an event ends when its target is reached (success) or its time is up (fail).
+-- DEFAULT EVENTS (only copied into the storage on the first run, see above). One entry per event. Rotation goes through the list; an event ends when its target is reached (success) or its time is up (fail).
 --   id, title      short key and the name shown to players
 --   goal           "kill": defeat `target` creatures (the only kind for now)
 --   target         how many
@@ -531,6 +531,27 @@ end
 local stored_events = load_key("events", {})
 local events_off = load_key("events_off", {})
 local events_rev, events_off_rev = rev_of("events_rev"), rev_of("events_off_rev")
+
+-- EVENTS below only seeds a fresh install: the first time this mod runs with no events in its storage they are copied there, and from then on
+-- the storage is the truth (edit, add and delete on the web UI's Events page; the file's list is not read again).
+local seeded = (function() local ok, v = pcall(server.load, "events_seeded", false); return ok and v == true end)()
+local function deep_copy(v)
+  if type(v) ~= "table" then return v end
+  local out = {}
+  for k, x in pairs(v) do out[k] = deep_copy(x) end
+  return out
+end
+if not seeded and next(stored_events) == nil then
+  for i, def in ipairs(EVENTS) do
+    if type(def) == "table" and def.id and def.target then
+      local copy = deep_copy(def)
+      copy.created = i
+      stored_events[tostring(def.id)] = copy
+    end
+  end
+  seeded = pcall(server.save, "events", stored_events) and pcall(server.save, "events_seeded", true)
+  server.log("the events of the script file were copied into the storage: manage them on the web UI's Events page from now on.")
+end
 local def_source, event_errors = {}, {}   -- id -> "file" | "web" | "override"; id -> why a web event is refused
 local all_defs, all_order = {}, {}        -- every known event by id, and the ids in order (switched-off ones too)
 local MAX_WEB_EVENTS = 60
@@ -591,7 +612,7 @@ local function sanitize_event(id, raw)
   local target = int_in(raw.target, 1, 10000000)
   if not target then return nil, "the target must be a whole number from 1 to 10,000,000" end
   local duration = tonumber(raw.duration)
-  if not duration or duration < 60 or duration > 30 * 86400 then return nil, "the duration must be 60 seconds to 30 days" end
+  if not duration or duration < 1 or duration > 30 * 86400 then return nil, "the duration must be 1 second to 30 days" end
   local reward = type(raw.reward) == "table" and raw.reward or {}
   local def = {
     id = id, title = text_of(raw.title ~= nil and raw.title ~= "" and raw.title or id, 60), goal = "kill", target = target, duration = math.floor(duration),
@@ -600,6 +621,7 @@ local function sanitize_event(id, raw)
     types = words_of(raw.types, function(v) return int_in(v, 0, 4294967295) end, 50),
     area = type(raw.area) == "string" and raw.area ~= "" and text_of(raw.area, 40) or nil,
     areas = words_of(raw.areas, function(v) if type(v) == "string" and v ~= "" then return text_of(v, 40) end end, 10),
+    sectors = type(raw.sectors) == "table" and raw.sectors or nil,
     where = (raw.where == "victim" or raw.where == "player" or raw.where == "either") and raw.where or nil,
     text = type(raw.text) == "string" and raw.text:match("%S") and text_of(raw.text, 200) or nil,
     unit = type(raw.unit) == "string" and raw.unit:match("%S") and text_of(raw.unit, 30) or nil,
@@ -607,9 +629,9 @@ local function sanitize_event(id, raw)
     reward = {
       gold = int_in(reward.gold, 0, 2000000000) or 0, gold_each = int_in(reward.gold_each, 0, 2000000000) or 0,
       item = item_spec(reward.item), top_item = item_spec(reward.top_item), milestones = milestones_of(reward.milestones),
-      on_fail = reward.on_fail == false and false or nil,
     },
   }
+  if reward.on_fail == false then def.reward.on_fail = false end
   return def
 end
 
@@ -617,7 +639,7 @@ end
 local function rebuild_definitions()
   for i = #definitions, 1, -1 do definitions[i] = nil end
   all_defs, all_order, def_source, event_errors = {}, {}, {}, {}
-  for i, def in ipairs(EVENTS) do
+  for i, def in ipairs(seeded and {} or EVENTS) do
     if type(def) == "table" and def.id and def.target then
       local id = tostring(def.id)
       if not all_defs[id] then all_order[#all_order + 1] = id end
@@ -1393,7 +1415,7 @@ local function editable(def)
   end
   return {
     id = tostring(def.id), title = def.title, target = def.target, duration = def.duration, names = def.names, types = def.types,
-    area = def.area, areas = def.areas, where = def.where, text = def.text, unit = def.unit, min_contribution = def.min_contribution,
+    area = def.area, areas = def.areas, sectors = def.sectors, where = def.where, text = def.text, unit = def.unit, min_contribution = def.min_contribution,
     created = def.created,
     reward = { gold = reward.gold, gold_each = reward.gold_each, item = reward.item, top_item = reward.top_item, milestones = milestones, on_fail = reward.on_fail },
   }

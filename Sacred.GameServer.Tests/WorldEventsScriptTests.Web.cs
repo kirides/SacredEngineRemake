@@ -56,13 +56,15 @@ public partial class WorldEventsScriptTests
         using var folder = new Folder();
         folder.Write("world_events.lua", Source());
         var (host, server) = Start(folder);
-        Put(host, """{"mod":"world_events","set":{"events_off":{"orc-hunt":true},"events":{"bad id":{"target":5,"duration":600},"ok":{"target":0,"duration":600}}}}""");
+        Put(host, """{"mod":"world_events","set":{"events_off":{"orc-hunt":true}}}""");
+        server.Tick(host);
+        Assert.IsFalse(Find(Events(host), "orc-hunt").GetProperty("enabled").GetBoolean(), "the seeded defaults are stored events like any other");
+        Assert.IsFalse(State(host).GetProperty("events").EnumerateArray().Any(e => e.GetProperty("id").GetString() == "orc-hunt"));
+        Put(host, """{"mod":"world_events","set":{"events":{"bad id":{"target":5,"duration":600},"ok":{"target":0,"duration":600}}}}""");
         server.Tick(host);
         var events = Events(host);
-        Assert.IsFalse(Find(events, "orc-hunt").GetProperty("enabled").GetBoolean());
         StringAssert.Contains(Find(events, "bad id").GetProperty("invalid").GetString(), "id must be");
         StringAssert.Contains(Find(events, "ok").GetProperty("invalid").GetString(), "target");
-        Assert.IsFalse(State(host).GetProperty("events").EnumerateArray().Any(e => e.GetProperty("id").GetString() == "orc-hunt"));
         StringAssert.DoesNotMatch(server.Said.FirstOrDefault() ?? "", new System.Text.RegularExpressions.Regex("Orc hunt begins"));
     }
 
@@ -76,7 +78,7 @@ public partial class WorldEventsScriptTests
         Assert.AreEqual("orc-hunt", State(host).GetProperty("active").GetProperty("id").GetString());
         Put(host, """{"mod":"world_events","set":{"events":{"orc-hunt":{"title":"Changed","target":99,"duration":600}}}}""");
         server.Tick(host);
-        Assert.AreEqual("override", Find(Events(host), "orc-hunt").GetProperty("source").GetString());
+        Assert.AreEqual("web", Find(Events(host), "orc-hunt").GetProperty("source").GetString(), "the file only seeded the storage");
         Assert.AreEqual(4, State(host).GetProperty("active").GetProperty("target").GetInt32());
         Assert.AreEqual("Orc hunt", State(host).GetProperty("active").GetProperty("title").GetString());
     }
