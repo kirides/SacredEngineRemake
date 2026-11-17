@@ -29,6 +29,7 @@ public sealed class WebUiServer : IAsyncDisposable
     private readonly Action<string> _log;
     private readonly byte[] _passwordHash;
     private WebApplication? _app;
+    private CancellationToken _stopping;
 
     public WebUiServer(WebUiOptions options, IServerAdmin admin, Action<string> log)
     {
@@ -64,12 +65,15 @@ public sealed class WebUiServer : IAsyncDisposable
             foreach (var address in ResolveBindAddresses(_options.Hostname))
                 kestrel.Listen(address, _options.Port, listen => listen.Protocols = HttpProtocols.Http1AndHttp2);
         });
+        builder.Services.Configure<Microsoft.Extensions.Hosting.HostOptions>(o => o.ShutdownTimeout = TimeSpan.Zero);   // never wait for browsers
         var app = builder.Build();
         if (_options.PathBase.Length > 0) app.UsePathBase(_options.PathBase);
         app.Use(Gate);
         MapEndpoints(app);
         await app.StartAsync().ConfigureAwait(false);
         _app = app;
+        _stopping = app.Lifetime.ApplicationStopping;
+        _admin.StopRequested.Register(() => { try { app.Lifetime.StopApplication(); } catch (ObjectDisposedException) { } });
         var ports = new List<int>();
         foreach (var address in app.Urls) if (Uri.TryCreate(address, UriKind.Absolute, out var uri)) ports.Add(uri.Port);
         Ports = ports;
@@ -86,7 +90,10 @@ public sealed class WebUiServer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_app is not null) { await _app.StopAsync().ConfigureAwait(false); await _app.DisposeAsync().ConfigureAwait(false); }
+        if (_app is null) return;
+        using var limit = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+        try { await _app.StopAsync(limit.Token).ConfigureAwait(false); } catch (OperationCanceledException) { }
+        await _app.DisposeAsync().ConfigureAwait(false);
     }
 
     // ---- endpoints ----------------------------------------------------------------------------------------------------
@@ -131,7 +138,8 @@ public sealed class WebUiServer : IAsyncDisposable
         response.Headers["X-Accel-Buffering"] = "no";
         var last = long.TryParse(context.Request.Headers["Last-Event-ID"], out var resume) ? resume
             : long.TryParse(context.Request.Query["after"], out var after) && after >= 0 ? after : Math.Max(0, _admin.ChatHead - 50);
-        var cancel = context.RequestAborted;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, _stopping, _admin.StopRequested);
+        var cancel = linked.Token;
         var idle = 0;
         try
         {

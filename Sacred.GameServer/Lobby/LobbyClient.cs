@@ -28,7 +28,8 @@ public sealed class LobbyClient : IDisposable
     private readonly object _gate = new();
     private LobbyProtocol.GameRecord _game, _sentGame;
     private bool _gameChanged;
-    private volatile bool _stop;
+    private readonly CancellationTokenSource _cts = new();
+    private bool _stop => _cts.IsCancellationRequested;
     private volatile bool _online;
     private Socket? _socket;
 
@@ -97,7 +98,7 @@ public sealed class LobbyClient : IDisposable
                 Session();
                 backoff = 2_000;
             }
-            catch (Exception e) when (e is SocketException or IOException or InvalidDataException or ObjectDisposedException)
+            catch (Exception e) when (e is SocketException or IOException or InvalidDataException or ObjectDisposedException or OperationCanceledException)
             {
                 if (_stop) break;
                 Log.Info($"LOBBY: {e.Message}");
@@ -105,7 +106,8 @@ public sealed class LobbyClient : IDisposable
             if (_online) { _online = false; Events.Enqueue(new LobbyEvent(LobbyEventKind.Offline)); }
             _socket?.Dispose(); _socket = null;
             while (_outbox.TryDequeue(out _)) { } // announcements are repeated after the next login
-            for (var waited = 0; waited < backoff && !_stop; waited += 100) Thread.Sleep(100);
+            if (_stop) break;
+            _cts.Token.WaitHandle.WaitOne(backoff);
             backoff = Math.Min(backoff * 2, MaxBackoffMs);
         }
     }
@@ -116,7 +118,7 @@ public sealed class LobbyClient : IDisposable
         var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
         _socket = socket;
-        socket.Connect(_host, _port);
+        socket.ConnectAsync(_host, _port, _cts.Token).AsTask().GetAwaiter().GetResult();
         var reader = new FrameReader(socket);
 
         // TinCat logon (the game logs on as user/passwor, the lobby assigns the id).
@@ -259,10 +261,16 @@ public sealed class LobbyClient : IDisposable
         return BinaryPrimitives.ReadUInt32BigEndian(b);
     }
 
+    /// <summary>Stops the lobby at once: no further connect or retry; one best-effort logout if the link is up. Never waits.</summary>
+    public void RequestStop()
+    {
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
     public void Dispose()
     {
-        _stop = true;
-        if (_thread.IsAlive && !_thread.Join(3000)) _socket?.Dispose();
+        RequestStop();
+        if (_thread.IsAlive && !_thread.Join(300)) _socket?.Dispose();
         _socket?.Dispose();
     }
 

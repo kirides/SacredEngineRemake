@@ -55,7 +55,12 @@ public sealed partial class GameServerHost : IDisposable
         InitializeSession();
     }
 
-    public void Stop() => _stop = true;
+    private readonly CancellationTokenSource _stopCts = new();
+
+    /// <summary>Cancelled by <see cref="Stop"/>: every background part (lobby, web UI streams) ends on it at once.</summary>
+    public CancellationToken StopToken => _stopCts.Token;
+
+    public void Stop() { _stop = true; try { _stopCts.Cancel(); } catch (ObjectDisposedException) { } }
 
     /// <summary>Adds another transport (for example reliable UDP); it feeds the same inbox, so sessions work the same on it.
     /// Call before <see cref="Start"/>.</summary>
@@ -82,8 +87,30 @@ public sealed partial class GameServerHost : IDisposable
             else if (wait < -250) next = _clock.ElapsedMilliseconds; // fell behind: do not spiral
             while (_clock.ElapsedMilliseconds < next && !_stop) Thread.SpinWait(50);
         }
+        EndSessionForPlayers();
         foreach (var s in _sessions) s.Connection.Close();
         Log.Info("--- Gameserver Shutdown ---");
+    }
+
+    /// <summary>
+    /// Stopping with players connected ends the session the way the original does (FUN_004d6c50: 0x009 0x68, 0x008, 0x157 to each
+    /// player; in authoritative mode every hero is saved), then waits a bounded time (at most 1.5 s) for the frames to leave. Nothing else
+    /// is waited for: no players, no wait.
+    /// </summary>
+    private void EndSessionForPlayers()
+    {
+        if (PlayerCount == 0) return;
+        ShutDownSession();
+        foreach (var s in _sessions) s.Connection.Flush();
+        var until = _clock.ElapsedMilliseconds + 1500;
+        var pending = true;
+        while (pending && _clock.ElapsedMilliseconds < until)
+        {
+            pending = false;
+            foreach (var s in _sessions) if (!s.Connection.IsClosed && s.Connection.PendingBytes > 0) { s.Connection.Flush(); pending = true; }
+            if (pending) Thread.Sleep(5);
+        }
+        Thread.Sleep(100);                                   // the last async sends of the final flush
     }
 
     /// <summary>One loop iteration. Public so tests can single-step the server.</summary>

@@ -78,6 +78,7 @@ if (config.LobbyHost is { } lobbyHost)
     var record = host.LobbyRecord(announcedVersion, publicIp);
     lobby = new LobbyClient(lobbyHost, config.LobbyPort > 0 ? config.LobbyPort : 7066, record);
     host.AttachLobby(lobby, record);
+    host.StopToken.Register(lobby.RequestStop);           // the lobby stops the moment the server stops
     lobby.Start();
 }
 
@@ -87,7 +88,7 @@ if (WebUiLauncher.Enabled(args)) { webUi = WebUiLauncher.Start(args, host, out v
 using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, c => { c.Cancel = true; host.Stop(); });
 using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, c => { c.Cancel = true; host.Stop(); });
 host.Run();
-if (webUi is not null) webUi.DisposeAsync().AsTask().GetAwaiter().GetResult();
 lobby?.Dispose();
+if (webUi is not null) webUi.DisposeAsync().AsTask().GetAwaiter().GetResult();
 host.Dispose();
 return 0;

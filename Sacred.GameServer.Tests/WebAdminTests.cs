@@ -200,6 +200,7 @@ public class WebAdminTests
         public IReadOnlyList<BanEntry> Bans() => [];
         public FloodSettings Flood() => new(true, false, 600, 3000, 2 * 1024 * 1024, 8 * 1024 * 1024, 3, 8, 500, 10, 60, 8, 42, 1, 2);
         public bool Submit(in AdminCommand command) { Commands.Add(command); return true; }
+        public CancellationToken StopRequested => default;
     }
 
     private static async Task<(WebUiServer Server, HttpClient Client, FakeAdmin Admin)> StartWeb(WebUiOptions options)

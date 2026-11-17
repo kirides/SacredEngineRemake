@@ -18,6 +18,8 @@ namespace Sacred.GameServer.Session;
 /// </summary>
 public sealed partial class GameServerHost : IServerAdmin
 {
+    CancellationToken IServerAdmin.StopRequested => _stopCts.Token;
+
     private const int SnapshotIntervalMs = 250, ChatRingSize = 512, ChatTextChars = 128, ChatNameChars = 32, AdminQueueLimit = 256;
 
     private sealed class ChatSlot

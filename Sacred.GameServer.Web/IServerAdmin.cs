@@ -14,6 +14,8 @@ public interface IServerAdmin
     FloodSettings Flood();
     /// <summary>Queues a command for the game loop. False when the queue is full.</summary>
     bool Submit(in AdminCommand command);
+    /// <summary>Cancelled when the server stops: the web UI ends its streaming responses and stops at once (it never waits for browsers).</summary>
+    CancellationToken StopRequested { get; }
 }
 
 public sealed record ServerOverview(
