@@ -1,7 +1,7 @@
 namespace Sacred.GameServer.Simulation;
 
 /// <summary>What the server knows about an item a client is creating: from the 0x16F/0x16E state before it enters the world.</summary>
-public readonly record struct ItemFacts(uint Reference, uint Type, int Level, int Rarity, ushort Sector, int X, int Y, ulong ContentHash)
+public readonly record struct ItemFacts(uint Reference, uint Type, int Level, int Rarity, ushort Sector, int X, int Y, ulong ContentHash, bool Purchase = false, uint Price = 0)
 {
     public bool HasPosition => X != 0 || Y != 0;
 }
@@ -40,6 +40,10 @@ public sealed class ItemWitness
     private readonly Late[] _late = new Late[LateRing];
     private int _lateNext;
     private readonly bool[] _scratchUsed = new bool[PerSlotRing];
+    private readonly long[] _worldBegin = new long[MaxSlots + 1], _worldEnd = new long[MaxSlots + 1];
+    public const int PurchaseRing = 16;
+    private struct Bought { public uint Reference; public uint Price; public long AtMs; }
+    private readonly Bought[][] _bought = new Bought[MaxSlots + 1][];
 
     public ItemWitness(WitnessOptions options)
     {
@@ -49,11 +53,12 @@ public sealed class ItemWitness
             _received[i] = new Receivable[PerSlotRing];
             _remnants[i] = new Remnant[PerSlotRing];
             _sectors[i] = new SectorGrant[SectorRing];
+            _bought[i] = new Bought[PurchaseRing];
         }
     }
 
     /// <summary>Counts per source of the explained creations, and the unexplained ones (index 0).</summary>
-    public readonly int[] Explained = new int[8];
+    public readonly int[] Explained = new int[16];
     /// <summary>Unexplained creations that a kill or container seen afterwards would have explained (the event came after the item).</summary>
     public int ExplainedLate { get; private set; }
 
@@ -110,11 +115,68 @@ public sealed class ItemWitness
         _sectorNext[slot] = (_sectorNext[slot] + 1) % SectorRing;
     }
 
+    /// <summary>The player's client began its world upload (0x016) before it was in the game: it builds the world around the hero now.
+    /// Only the first begin of a session counts (the host calls this with the player not yet in the game).</summary>
+    public void OnWorldStart(byte slot, long now)
+    {
+        if (slot is 0 or > MaxSlots) return;
+        _worldBegin[slot] = now + 1;                                        // 0 marks "none"
+        _worldEnd[slot] = 0;
+    }
+
+    /// <summary>The world start (0x017/0x018) of the player: the window closes after <see cref="WitnessOptions.WorldStartGraceMs"/>.</summary>
+    public void OnWorldEntered(byte slot, long now)
+    {
+        if (slot is 0 or > MaxSlots || _worldBegin[slot] == 0 || _worldEnd[slot] != 0) return;
+        _worldEnd[slot] = now + 1;
+    }
+
+    /// <summary>A purchase was accepted provisionally: the hero gold must drop by its price soon.</summary>
+    public void OnPurchase(byte slot, uint reference, uint price, long now)
+    {
+        if (slot is 0 or > MaxSlots) return;
+        var ring = _bought[slot];
+        var at = 0;
+        for (var i = 0; i < PurchaseRing; i++) { if (ring[i].AtMs == 0) { at = i; break; } if (ring[i].AtMs < ring[at].AtMs) at = i; }
+        ring[at] = new Bought { Reference = reference, Price = price, AtMs = now + 1 };
+    }
+
+    /// <summary>The hero gold dropped by <paramref name="amount"/>: pays for pending purchases (oldest first, each at least
+    /// <see cref="WitnessOptions.PurchasePercent"/> percent of its price).</summary>
+    public void OnGoldSpent(byte slot, long amount, long now)
+    {
+        if (slot is 0 or > MaxSlots) return;
+        var ring = _bought[slot];
+        while (amount > 0)
+        {
+            var best = -1;
+            for (var i = 0; i < PurchaseRing; i++)
+                if (ring[i].AtMs != 0 && amount * 100 >= (long)ring[i].Price * _options.PurchasePercent && (best < 0 || ring[i].AtMs < ring[best].AtMs)) best = i;
+            if (best < 0) return;
+            amount -= Math.Max(1, (long)ring[best].Price * _options.PurchasePercent / 100);
+            ring[best] = default;
+        }
+    }
+
+    /// <summary>Purchases nobody paid for within <see cref="WitnessOptions.PurchaseWindowMs"/>: their references go into
+    /// <paramref name="refs"/> (at most its length) and are forgotten.</summary>
+    public int TakeUnpaid(byte slot, long now, Span<uint> refs)
+    {
+        if (slot is 0 or > MaxSlots) return 0;
+        var ring = _bought[slot];
+        var n = 0;
+        for (var i = 0; i < PurchaseRing && n < refs.Length; i++)
+            if (ring[i].AtMs != 0 && now + 1 - ring[i].AtMs > _options.PurchaseWindowMs) { refs[n++] = ring[i].Reference; ring[i] = default; }
+        return n;
+    }
+
     /// <summary>A player left: its own rings are cleared (a new player in the slot starts empty).</summary>
     public void Forget(byte slot)
     {
         if (slot is 0 or > MaxSlots) return;
         Array.Clear(_received[slot]); Array.Clear(_remnants[slot]); Array.Clear(_sectors[slot]);
+        _worldBegin[slot] = _worldEnd[slot] = 0;
+        Array.Clear(_bought[slot]);
         _receivedNext[slot] = _remnantNext[slot] = _sectorNext[slot] = 0;
     }
 
@@ -149,6 +211,8 @@ public sealed class ItemWitness
             if (_options.Accepts(ItemSource.Container) && TakeContainer(item, now)) return ItemSource.Container;
             if (_options.Accepts(ItemSource.Sector) && InOwnedSector(slot, item.Sector, now)) return ItemSource.Sector;
         }
+        if (_options.Accepts(ItemSource.WorldStart) && InWorldStart(slot, now)) return ItemSource.WorldStart;
+        if (item.Purchase && _options.Accepts(ItemSource.Purchase)) return ItemSource.Purchase;     // paid for later (OnGoldSpent / TakeUnpaid)
         return ItemSource.Unexplained;
     }
 
@@ -235,6 +299,15 @@ public sealed class ItemWitness
             return true;
         }
         return false;
+    }
+
+    /// <summary>Between the begin of the world upload and the world start plus the grace (or the maximum after the begin).</summary>
+    private bool InWorldStart(byte slot, long now)
+    {
+        var begin = _worldBegin[slot];
+        if (begin == 0 || now < begin) return false;
+        if (_worldEnd[slot] != 0) return now - _worldEnd[slot] <= _options.WorldStartGraceMs;
+        return now - begin <= _options.WorldStartMaxMs;
     }
 
     private bool InOwnedSector(byte slot, ushort sector, long now)

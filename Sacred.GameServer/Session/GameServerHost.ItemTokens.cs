@@ -75,7 +75,7 @@ public sealed partial class GameServerHost
     /// <summary>The gate: true when the item state is refused (log mode: only counted and logged, so false). Order: a script token, an item of
     /// the hero's baseline block, then the witness (GameServerHost.Witness.cs: trade, rebuilt from destroyed items, loot of a kill, a container's
     /// content, a sector the player took over). Each source can be switched off with AUTH_ITEM_SOURCES.</summary>
-    private bool StrictRefuses(PlayerSession s, uint reference, ReadOnlySpan<byte> body, ReadOnlySpan<byte> payload, int prefix)
+    private bool StrictRefuses(PlayerSession s, uint reference, ReadOnlySpan<byte> body, ReadOnlySpan<byte> payload, int prefix, bool purchase = false)
     {
         var mode = _config.Auth.StrictItems;
         if (mode == StrictItemsMode.Off || !HeroSavedByServer(s.Slot) || _world.TryGet(reference, out _)) return false;
@@ -95,11 +95,11 @@ public sealed partial class GameServerHost
             }
             if (held.Counts.TryGetValue(content, out var left) && left > 0) { held.Counts[content] = left - 1; Witness!.Explained[(int)ItemSource.Baseline]++; return false; }
         }
-        var source = ExplainCreation(s, reference, type, payload, prefix, body, records);
+        var source = ExplainCreation(s, reference, type, payload, prefix, body, records, purchase);
         if (source != ItemSource.Unexplained) return false;
         StrictItemsRefused++;
         Log.Info($"AUTH: strict items: {s.Describe()}: item 0x{reference:X} (type 0x{type:X}, {records} records) created by the client is explained by nothing "
-            + $"(no token, baseline item, trade, destroyed item, kill, container or new sector; last messages: {Trail(s)})"
+            + $"(no token, baseline item, trade, destroyed item, kill, container, new sector, world start or paid purchase; last messages: {Trail(s)})"
             + (mode == StrictItemsMode.On ? ", refused." : " (log mode, accepted)."));
         if (mode == StrictItemsMode.On && witness.CountViolations) Violation(s, $"item 0x{reference:X} without a source");
         return mode == StrictItemsMode.On;

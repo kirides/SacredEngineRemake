@@ -38,7 +38,7 @@ public sealed class ObjectMirror
     public int Count => _objects.Count;
     public Dictionary<uint, Entry>.ValueCollection Objects => _objects.Values;
 
-    public static bool IsState(ushort opcode) => opcode is 0x169 or 0x16B or 0x16C or 0x16E or 0x16F;
+    public static bool IsState(ushort opcode) => opcode is 0x169 or 0x16B or 0x16C or 0x16D or 0x16E or 0x16F;
     public static bool IsRemoval(ushort opcode) => opcode is 0x166 or 0x167;
 
     /// <summary>Stores an object state; <paramref name="knownBy"/> are the players that receive it with this message.</summary>

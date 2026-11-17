@@ -35,6 +35,32 @@ public sealed partial class GameServerHost
     public int GoldClamped { get; private set; }
 
     private ushort _nextCaptureLink;
+    private readonly long[] _goldSeen = new long[MaxSlots + 1];
+    private readonly uint[] _unpaid = new uint[ItemWitness.PurchaseRing];
+
+    /// <summary>PumpAuthoritative: purchases (items announced with 0x16D) that the hero gold did not pay for in time: logged, and with
+    /// AUTH_STRICT_ITEMS=on removed from the server world, so they are never saved.</summary>
+    private void PumpPurchases(long now)
+    {
+        if (_witness is null || _config.Auth.StrictItems == StrictItemsMode.Off) return;
+        for (byte slot = 1; slot <= MaxSlots; slot++)
+        {
+            if (_slots[slot] is not { InGame: true } s) continue;
+            var n = _witness.TakeUnpaid(slot, now, _unpaid);
+            for (var i = 0; i < n; i++)
+            {
+                StrictItemsRefused++;
+                Log.Info($"AUTH: strict items: {s.Describe()}: purchase 0x{_unpaid[i]:X} was not paid for by the hero gold in time (last messages: {Trail(s)})"
+                    + (_config.Auth.StrictItems == StrictItemsMode.On ? ", removed." : " (log mode, kept)."));
+                if (_config.Auth.StrictItems == StrictItemsMode.On)
+                {
+                    Span<byte> reference = stackalloc byte[4];
+                    BinaryPrimitives.WriteUInt32LittleEndian(reference, _unpaid[i]);
+                    _world.Remove(reference);
+                }
+            }
+        }
+    }
 
     /// <summary>Handle: every frame a client sends goes into the capture (its connection numbered on the first frame).</summary>
     private void CaptureFrame(PlayerSession s, in Net.InboundFrame frame, long now)
@@ -70,6 +96,12 @@ public sealed partial class GameServerHost
                 Witness!.OnKill(victim, sector, x, y, CompactLevel(entry.Payload[(entry.LongPrefix ? 24 : 8)..]), now);
                 return;
             }
+            case 0x016 when !s.InGame:
+                Witness!.OnWorldStart(s.Slot, now);                         // the client builds the world around the hero (WorldStart source)
+                return;
+            case 0x017 or 0x018:
+                Witness!.OnWorldEntered(s.Slot, now);
+                return;
             case GoldContainerActivationCodec.Opcode when p.Length >= 4:
             {
                 var container = BinaryPrimitives.ReadUInt32LittleEndian(p) & 0x7FFFFFFF;
@@ -132,12 +164,13 @@ public sealed partial class GameServerHost
     private void WitnessLeave(PlayerSession s)
     {
         _witness?.Forget(s.Slot);
+        _goldSeen[s.Slot] = 0;
         _goldLedger?.Forget(s.Slot);
         _trail.Forget(s.Slot);
     }
 
     /// <summary>The strict item gate asks: where does this client-created item come from? Logged when nothing explains it.</summary>
-    private ItemSource ExplainCreation(PlayerSession s, uint reference, uint type, ReadOnlySpan<byte> payload, int prefix, ReadOnlySpan<byte> body, int records)
+    private ItemSource ExplainCreation(PlayerSession s, uint reference, uint type, ReadOnlySpan<byte> payload, int prefix, ReadOnlySpan<byte> body, int records, bool purchase = false)
     {
         var content = SavedObjects.LiveContent(body, records);
         var data = content[(records * ItemWitness.RecordBytes)..];
@@ -146,8 +179,12 @@ public sealed partial class GameServerHost
             (sector, x, y) = ((ushort)BinaryPrimitives.ReadUInt32LittleEndian(payload[20..]), BinaryPrimitives.ReadInt32LittleEndian(payload[8..]), BinaryPrimitives.ReadInt32LittleEndian(payload[12..]));
         else (sector, x, y) = (BinaryPrimitives.ReadUInt16LittleEndian(body[GoldObjectStateLayout.SectorOffset..]), BinaryPrimitives.ReadInt32LittleEndian(body[GoldObjectStateLayout.XOffset..]),
             BinaryPrimitives.ReadInt32LittleEndian(body[GoldObjectStateLayout.YOffset..]));
-        var facts = new ItemFacts(reference, type, data[25], data[6] & 15, sector, x, y, ItemWitness.Fnv(content));
-        return Witness!.Classify(s.Slot, facts, content, _clock.ElapsedMilliseconds);
+        var price = BinaryPrimitives.ReadUInt32LittleEndian(data[8..]);
+        var facts = new ItemFacts(reference, type, data[25], data[6] & 15, sector, x, y, ItemWitness.Fnv(content), purchase, price);
+        var now = _clock.ElapsedMilliseconds;
+        var source = Witness!.Classify(s.Slot, facts, content, now);
+        if (source == ItemSource.Purchase) Witness.OnPurchase(s.Slot, reference, price, now);
+        return source;
     }
 
     private string Trail(PlayerSession s) => _trail.Describe(s.Slot, _clock.ElapsedMilliseconds);
@@ -157,11 +194,16 @@ public sealed partial class GameServerHost
     private void WitnessHeroGold(PlayerSession s, LiveHero live, bool full)
     {
         var mode = WitnessConfig.StrictGold;
-        if (mode == StrictItemsMode.Off || !HeroSavedByServer(s.Slot)) return;
+        if (!HeroSavedByServer(s.Slot)) return;
         var body = full ? live.FullBody.AsSpan(0, live.FullBodyLength) : live.Body.AsSpan(0, live.BodyLength);
         var at = GoldOffset(body, full);
         if (at < 0) return;
         var reported = BinaryPrimitives.ReadUInt32LittleEndian(body[at..]);
+        // gold the hero spent pays for the purchases it announced (PumpPurchases below), whatever AUTH_STRICT_GOLD says
+        var before = _goldSeen[s.Slot];
+        _goldSeen[s.Slot] = reported;
+        if (before > 0 && reported < before) Witness!.OnGoldSpent(s.Slot, before - reported, _clock.ElapsedMilliseconds);
+        if (mode == StrictItemsMode.Off) return;
         var ledger = Gold!;
         var unexplained = ledger.Report(s.Slot, reported, _clock.ElapsedMilliseconds);
         if (unexplained > 0)

@@ -22,6 +22,11 @@ public enum ItemSource : byte
     Rebuild,
     /// <summary>An item lying in a sector the player just took over (the owner streams the sector's ground items).</summary>
     Sector,
+    /// <summary>An object of the world the player's client builds while it starts the game (between its upload begin 0x016 and the world start
+    /// 0x017/0x018 plus a short grace): the ground items, creature equipment and merchant stock of the sectors it loads first.</summary>
+    WorldStart,
+    /// <summary>An item the client announced with 0x16D (a merchant purchase) and that the hero gold then paid for (checked later).</summary>
+    Purchase,
 }
 
 /// <summary>
@@ -30,7 +35,7 @@ public enum ItemSource : byte
 /// <list type="bullet">
 /// <item><c>AUTH_STRICT_ITEMS=off|log|on</c> (in <see cref="AuthoritativeOptions"/>): what happens to an item creation nothing explains.</item>
 /// <item><c>AUTH_ITEM_SOURCES</c>: the sources the server accepts as an explanation, comma separated (default all:
-/// <c>token,baseline,kill,container,trade,rebuild,sector</c>). A source left out explains nothing, so its items fall under
+/// <c>token,baseline,kill,container,trade,rebuild,sector,worldstart,purchase</c>). A source left out explains nothing, so its items fall under
 /// <c>AUTH_STRICT_ITEMS</c>.</item>
 /// <item>Windows, ranges and budgets of each source (below).</item>
 /// <item><c>AUTH_STRICT_GOLD=off|log|on</c>: a gold increase of the hero nothing explains (gold piles picked up, trades) is ignored,
@@ -42,7 +47,7 @@ public enum ItemSource : byte
 public sealed class WitnessOptions
 {
     public const ItemSourceSet AllSources = ItemSourceSet.Token | ItemSourceSet.Baseline | ItemSourceSet.Kill | ItemSourceSet.Container
-        | ItemSourceSet.Trade | ItemSourceSet.Rebuild | ItemSourceSet.Sector;
+        | ItemSourceSet.Trade | ItemSourceSet.Rebuild | ItemSourceSet.Sector | ItemSourceSet.WorldStart | ItemSourceSet.Purchase;
 
     /// <summary>Sources accepted as an explanation.</summary>
     public ItemSourceSet Sources { get; set; } = AllSources;
@@ -65,6 +70,14 @@ public sealed class WitnessOptions
     public int RebuildWindowMs { get; set; } = 30_000;
     /// <summary>Ground items of a sector the player just took over count for this time.</summary>
     public int SectorWindowMs { get; set; } = 4000;
+    /// <summary>The world start window stays open this long after the world start (0x017/0x018) was answered ...</summary>
+    public int WorldStartGraceMs { get; set; } = 3000;
+    /// <summary>... and closes by itself this long after its begin (0x016) if the world start never comes.</summary>
+    public int WorldStartMaxMs { get; set; } = 120_000;
+    /// <summary>A purchase must be paid for by a drop of the hero gold within this time ...</summary>
+    public int PurchaseWindowMs { get; set; } = 15_000;
+    /// <summary>... of at least this percentage of the item price.</summary>
+    public int PurchasePercent { get; set; } = 25;
 
     public StrictItemsMode StrictGold { get; set; }
     /// <summary>Gold credits (piles picked up, trade gold) expire after this time without a matching increase.</summary>
@@ -82,6 +95,8 @@ public sealed class WitnessOptions
         ItemSource.Trade => (Sources & ItemSourceSet.Trade) != 0,
         ItemSource.Rebuild => (Sources & ItemSourceSet.Rebuild) != 0,
         ItemSource.Sector => (Sources & ItemSourceSet.Sector) != 0,
+        ItemSource.WorldStart => (Sources & ItemSourceSet.WorldStart) != 0,
+        ItemSource.Purchase => (Sources & ItemSourceSet.Purchase) != 0,
         _ => false,
     };
 
@@ -109,6 +124,8 @@ public sealed class WitnessOptions
                 case "trade": sources |= ItemSourceSet.Trade; break;
                 case "rebuild" or "craft": sources |= ItemSourceSet.Rebuild; break;
                 case "sector": sources |= ItemSourceSet.Sector; break;
+                case "worldstart" or "start": sources |= ItemSourceSet.WorldStart; break;
+                case "purchase" or "merchant" or "buy": sources |= ItemSourceSet.Purchase; break;
                 default: return false;
             }
         }
@@ -134,6 +151,10 @@ public sealed class WitnessOptions
             case "AUTH_TRADE_WINDOW_MS": TradeWindowMs = NonNegative(value, TradeWindowMs); return true;
             case "AUTH_REBUILD_WINDOW_MS": RebuildWindowMs = NonNegative(value, RebuildWindowMs); return true;
             case "AUTH_SECTOR_WINDOW_MS": SectorWindowMs = NonNegative(value, SectorWindowMs); return true;
+            case "AUTH_WORLDSTART_GRACE_MS": WorldStartGraceMs = NonNegative(value, WorldStartGraceMs); return true;
+            case "AUTH_WORLDSTART_MAX_MS": WorldStartMaxMs = NonNegative(value, WorldStartMaxMs); return true;
+            case "AUTH_PURCHASE_WINDOW_MS": PurchaseWindowMs = NonNegative(value, PurchaseWindowMs); return true;
+            case "AUTH_PURCHASE_PERCENT": PurchasePercent = NonNegative(value, PurchasePercent); return true;
             case "AUTH_STRICT_GOLD": StrictGold = ParseMode(value); return true;
             case "AUTH_GOLD_WINDOW_MS": GoldWindowMs = NonNegative(value, GoldWindowMs); return true;
             case "AUTH_STRICT_VIOLATIONS": CountViolations = NonNegative(value, 1) != 0; return true;
@@ -148,5 +169,5 @@ public sealed class WitnessOptions
 [Flags]
 public enum ItemSourceSet : ushort
 {
-    Token = 1, Baseline = 2, Kill = 4, Container = 8, Trade = 16, Rebuild = 32, Sector = 64,
+    Token = 1, Baseline = 2, Kill = 4, Container = 8, Trade = 16, Rebuild = 32, Sector = 64, WorldStart = 128, Purchase = 256,
 }
