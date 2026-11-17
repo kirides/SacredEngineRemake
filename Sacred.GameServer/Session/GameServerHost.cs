@@ -115,6 +115,7 @@ public sealed partial class GameServerHost : IDisposable
         }
         EndSessionForPlayers();
         StopScripts();
+        CloseCapture();
         foreach (var s in _sessions) s.Connection.Close();
         Log.Info("--- Gameserver Shutdown ---");
     }
@@ -167,6 +168,7 @@ public sealed partial class GameServerHost : IDisposable
         PumpScripts(now);
         PumpNetOps(now);
         PumpHeroes(now);
+        PumpCapture(now);
         foreach (var s in _sessions) s.Connection.Flush();
         for (var i = _retired.Count - 1; i >= 0; i--)
             if (now >= _retired[i].Due) { _retired[i].Connection.ReleaseBuffers(); _retired.RemoveAt(i); }
@@ -409,6 +411,7 @@ public sealed partial class GameServerHost : IDisposable
 
     public void Dispose()
     {
+        CloseCapture();
         foreach (var listener in _listeners) listener.Dispose();
         _lan?.Dispose();
     }

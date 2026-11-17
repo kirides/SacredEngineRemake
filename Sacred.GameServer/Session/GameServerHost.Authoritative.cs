@@ -38,12 +38,14 @@ public sealed partial class GameServerHost
     {
         SaveHero(s, "leave");
         ForgetHeroState(s.Slot);
+        WitnessLeave(s);
     }
 
     /// <summary>Returns true when the message may continue through the normal routing.</summary>
     private bool AuthoritativeFilter(PlayerSession s, in GoldMessageView m)
     {
         var options = _config.Auth;
+        WitnessObserve(s, m);                                            // kills, containers, pick-ups (GameServerHost.Witness.cs)
         if (m.Opcode is 0x169 or 0x16B or 0x16C or 0x16E or 0x16F && !PlausibleState(s, m)) return false;
         CaptureHeroState(s, m);
         switch (m.Opcode)
@@ -101,7 +103,7 @@ public sealed partial class GameServerHost
             if (s.State != SessionState.Closed) RemovePlayer(s, ReasonCheat, notifyVictim: true);
             return false;
         }
-        if (m.Opcode is 0x16F or 0x16E && StrictRefuses(s, reference, body)) return false;
+        if (m.Opcode is 0x16F or 0x16E && StrictRefuses(s, reference, body, m.Payload, prefix)) return false;
         if (!_config.Auth.CheckItems || ItemGuard.Check(body, ItemFootprints) is not { } why) return true;
         RejectedItems++;
         Violation(s, $"0x{m.Opcode:X3} 0x{reference:X}: {why}");

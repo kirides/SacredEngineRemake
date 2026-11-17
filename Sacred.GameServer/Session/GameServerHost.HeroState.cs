@@ -67,6 +67,7 @@ public sealed partial class GameServerHost
                 if (m.Opcode == 0x16B) { LiveHero.Store(ref live.FullBody, ref live.FullBodyLength, p[prefix..]); live.FullIsNewer = true; }
                 else { LiveHero.Store(ref live.Body, ref live.BodyLength, p[prefix..]); live.FullIsNewer = false; }
                 live.EquipmentKnown = false;                                 // the new state carries the equipment
+                WitnessHeroGold(s, live, m.Opcode == 0x16B);                 // gold ledger (GameServerHost.Witness.cs)
                 return;
             }
             case 0x11D: case 0x11E:

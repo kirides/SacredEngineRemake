@@ -28,6 +28,7 @@ public sealed partial class GameServerHost
         list.RemoveAll(g => g.Reference == reference);
         if (list.Count >= GoneItemsKept) list.RemoveAt(0);
         list.Add(new GoneItem(reference, type, Convert.ToHexStringLower(SavedObjects.LiveContent(body, records)), _clock.ElapsedMilliseconds));
+        WitnessDestroyed(s, reference, type, SavedObjects.LiveContent(body, records));   // GameServerHost.Witness.cs
     }
 
     private List<GoneItem> GoneList(PlayerSession s)

@@ -439,6 +439,36 @@ consumes the matching token once the item is in the hero (true once); `server.re
 and no baseline item of the hero covers is refused: no state in the server's world, so it is never saved. `log` counts and logs only (default off).
 Not known yet, so the gate is opt-in: loot of creatures the client simulates, merchant purchases, crafting/socketing results, quest rewards and trades.
 
+**Witness: where client-created items and gold come from (`Simulation/`, plan M0..M2, `docs/authoritative-world-plan.md`).** Behind the gate, the
+server explains a creation with what it saw before it, in this order: a script token, a baseline item, then the witness (`Simulation/ItemWitness.cs`):
+an item the trade partner offered in a trade the server completed (`trade`), an item rebuilt from items the same player destroyed shortly before
+(`rebuild`: every value record must be one of them, the data block one of them or, for socketing, of a destroyed item of the same type), loot within
+range of a creature the server saw die (`kill`, with a per-creature budget), the content of a container opened next to it (`container`, once per
+container) and the ground items of a sector the player just took over (`sector`). Every knob is configurable:
+
+| Key / option | Default | |
+|---|---|---|
+| `AUTH_STRICT_ITEMS` / `--auth-strict-items` | off | `off`, `log` (count and log the unexplained), `on` (refuse them: no state, never saved) |
+| `AUTH_ITEM_SOURCES` | all | sources that explain a creation: `token,baseline,kill,container,trade,rebuild,sector` (`all`, `none`) |
+| `AUTH_LOOT_WINDOW_MS`, `AUTH_LOOT_RANGE`, `AUTH_LOOT_PER_KILL` | 5000, 1500, 8 | after a kill: how long, how far (world units, a sector is ~3435), how many |
+| `AUTH_LOOT_LEVEL_MARGIN` | 0 | item level at most creature level + margin (0 = not checked; the level mapping is unverified) |
+| `AUTH_CONTAINER_WINDOW_MS`, `AUTH_CONTAINER_RANGE`, `AUTH_CONTAINER_PER_OPEN` | 5000, 800, 8 | the same for opened containers (0x18C) |
+| `AUTH_TRADE_WINDOW_MS`, `AUTH_REBUILD_WINDOW_MS`, `AUTH_SECTOR_WINDOW_MS` | 30000, 30000, 4000 | windows of the other sources |
+| `AUTH_STRICT_GOLD` | off | gold ledger (`Simulation/GoldLedger.cs`): an increase of the hero's gold that no picked-up gold pile (0x141/0x142 or the owner's 0x167 of a pile, its price, once per pile) or trade gold covers is ignored, logged, or (`on`) not saved: the server's copy of the hero keeps the explained figure |
+| `AUTH_GOLD_WINDOW_MS` | 60000 | credits expire |
+| `AUTH_STRICT_VIOLATIONS` | 0 | 1: refused items and gold count towards `AUTH_MAX_VIOLATIONS` (kick) |
+
+A refused or logged item names the player's last 16 messages (opcode and age) in its log line, and a kill or container seen *after* an unexplained
+item near it is logged as "near an event ... later" and counted (`Witness.ExplainedLate`): both are there to find the paths that are still unknown
+(merchant purchases, quest rewards, crafting) from real sessions. **Known limits:** the client that owns a sector rolls its loot, so the witness
+bounds outcomes (where, when, how many) but cannot reproduce them; merchant sales and quest gold are not covered by the gold ledger yet (so
+`AUTH_STRICT_GOLD=on` also keeps legitimately earned merchant gold out of the save); none of the source rules is verified with a real client yet,
+which is why everything defaults to off.
+
+**Captures (`--capture=<folder>`, key `CAPTURE`).** Every message an admitted player sends goes into `capture-<time>.sgcap` in that folder (format in
+`Simulation/Capture.cs`, reader `CaptureReader`): real sessions with stock clients as replayable test input. The game loop only copies into a
+pooled buffer, a worker thread writes. The files hold everything players send (chat, names); the folder gets a `.gitignore` of `*`.
+
 **Shared stash (Closed Net).** `scripts-examples/shared_stash.lua` keeps the stash of the Sacred Gear mod shared-stash per `player.account` on channel `shared-stash`, with the hero custody checks above (deposits count after the item left the hero and the hero was saved; withdrawals are removed after the item arrived and the hero was saved). Outside `--authoritative` it offers nothing. Hot reload: everything is stored at every change; the join times go through the unload hook (reason reload), tokens live in the C# host, in-flight checks are resumed by the clients' resends (same rid). Tunables (`max_items`, `max_data`, `verify_seconds`, `retry_seconds`, `token_seconds`, `rate_per_minute`, ...) can be overridden at run time by a table under the key `config` in the mod's storage (applies within 30 s). Tests: `SharedStashScriptTests.cs`.
 
 **Auction house in Closed Net.** `scripts-examples/auction_house.lua` follows the shared stash's gate. *Tokens:* before the market tells a client to create an item (a mailbox `collect` of a bought, expired or cancelled item) it mints a token for exactly that item (`server.item_token`, label `auction:<rid>`, `token_seconds`, default 120); a repeated rid reuses the token while it lives, a delivery that is released or abandoned (the player left) revokes it, and the arrival's `claim_item` consumes it. Where no token can be minted the delivery works as before. *Gold:* the client adds withdrawn gold itself (`add_gold`), and the server has no gold hook in the item gate, so this check lives in the script and is **not a general gold gate**: it notes the hero's gold (the server's own copy) at the withdrawal and the lowest value since (so gold spent before the report does not hide the increase) and counts the withdrawal as done once the gold rose by the amount (or stands at the old value plus the amount) and the hero save is confirmed. After `gold_timeout` (default 120 s) without it the hero is saved and the saved copy decides: an increase confirms, none credits the wallet back (the rid then answers `refunded`). Not covered: gold that is picked up or earned in the same moment looks like the withdrawal, and a client that adds the gold after the refund keeps both. *Rules as data:* the script's `config` only seeds the storage on the first run; durations, `fee_per_day`, `fee_min`, `sale_cut`, `max_per_seller`, `max_listings` (total cap), `allow_special`, `sweep_seconds` (expiry interval), `verify_seconds`, `token_seconds`, `gold_timeout` and the price limits live under the storage key `config`, polled through `config_rev` (applies within 2 s, no reload), edited on the web UI's **Auction** page (`/auction`) and shown on `/mods/auction_house/` and the JSON `/mods/auction_house/rules`. *Hot reload:* the market is stored at every change; the unload hook stores the gold watches (always) and, for a reload, the join times, token ids and prepared deposits; clients resend in-flight checks with the same rid; the item sale is claimed only after the hero save so a reload in between loses nothing. The info reply says `closed = true` when `server.authoritative(player)`. Tests: `AuctionHouseScriptTests.cs`.

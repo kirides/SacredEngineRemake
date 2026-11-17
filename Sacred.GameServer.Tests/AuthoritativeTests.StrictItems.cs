@@ -46,7 +46,7 @@ public partial class AuthoritativeTests
         return null;
     }
 
-    private static void StrictRun(StrictItemsMode mode, Action<GameServerHost, RawClient> test, Dictionary<string, string>? scripts = null)
+    private static void StrictRun(StrictItemsMode mode, Action<GameServerHost, RawClient> test, Dictionary<string, string>? scripts = null, Action<GameServerConfig>? configure = null)
     {
         using var fake = new LobbyTests.FakeLobby();
         var folder = Directory.CreateTempSubdirectory("strict-").FullName;
@@ -60,6 +60,7 @@ public partial class AuthoritativeTests
             var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5, LobbyChannel = 1 };
             config.Auth.Enabled = true; config.Auth.SaveIntervalSeconds = 0; config.Auth.SaveDebounceMilliseconds = 60_000; config.Flood.Enabled = false;
             config.Auth.StrictItems = mode;
+            configure?.Invoke(config);
             config.Scripts.Directory = Path.Combine(folder, "scripts"); config.Scripts.DataDirectory = Path.Combine(folder, "data");
             var host = new GameServerHost(config, new AdmissionRules(null), null) { HeroSerializer = new FixedSerializer(block) };
             host.Start();
