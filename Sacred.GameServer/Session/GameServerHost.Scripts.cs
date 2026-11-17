@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Text;
 using Sacred.GameServer.Scripting;
 using Sacred.GameServer.Wire;
+using Sacred.Core.Pax.Hero.Inventory;
 using Sacred.Network.Gameplay;
 
 namespace Sacred.GameServer.Session;
@@ -236,6 +237,24 @@ public sealed partial class GameServerHost : IScriptServer
     void IScriptServer.Message(int slot, string text) { if (PlayerAt(slot) is { } p) AdminSay(p, text); }
 
     void IScriptServer.Kick(int slot, string reason) { if (slot is >= 1 and <= MaxSlots) _scriptKicks.Add((slot, reason)); }
+
+    ScriptHero? IScriptServer.Hero(int slot)
+    {
+        if (!KeepsHeroState || PlayerAt(slot) is not { } p || _live[slot] is not { } live) return null;
+        var pairs = new List<(uint, uint)>();
+        var stream = live.InventoryStream;
+        if (stream.Length >= SacredSavedInventoryLayout.MinimumSize)
+        {
+            var count = BinaryPrimitives.ReadUInt32LittleEndian(stream[SacredSavedInventoryLayout.QuestCountOffset..]);
+            for (var i = 0; i < count && i < 4096; i++)
+            {
+                var at = SacredSavedInventoryLayout.QuestRecordsOffset + i * SacredSavedInventoryLayout.QuestRecordSize;
+                if (at + SacredSavedInventoryLayout.QuestRecordSize > stream.Length) break;
+                pairs.Add((BinaryPrimitives.ReadUInt32LittleEndian(stream[at..]), BinaryPrimitives.ReadUInt32LittleEndian(stream[(at + 4)..])));
+            }
+        }
+        return new ScriptHero(HeroOf(p, _clock.ElapsedMilliseconds), pairs.ToArray());
+    }
 
     string? IScriptServer.CreatureName(uint type) => Names?.Creature(type);
 

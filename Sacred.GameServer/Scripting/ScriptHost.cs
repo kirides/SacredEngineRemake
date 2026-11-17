@@ -24,6 +24,10 @@ public readonly record struct ScriptLootRequest(int Level, int HeroClass, uint? 
 /// <summary>An item a script dropped: reference, type, quality, generated name and category.</summary>
 public sealed record ScriptDrop(uint Reference, uint Type, uint Quality, string Name, string Category);
 
+/// <summary>A hero as <c>server.hero</c> gives it to scripts: the server's own view (<see cref="Sacred.GameServer.Web.HeroInfo"/>, the
+/// same data as the web UI's /api/heroes) and the hero's quest pairs (the inventory stream's <c>[key][word04]</c> records).</summary>
+public sealed record ScriptHero(Sacred.GameServer.Web.HeroInfo Info, (uint Key, uint Value)[] QuestPairs);
+
 /// <summary>What scripts can do on the server. Implemented by the game server; called on the game loop thread only.</summary>
 public interface IScriptServer
 {
@@ -44,6 +48,9 @@ public interface IScriptServer
     string? ItemName(uint type) => null;
     /// <summary>Drops a gold pile of <paramref name="amount"/> (1..<see cref="GoldPile.MaximumAmount"/>) next to the player's hero.</summary>
     ScriptDrop? DropGold(int slot, uint amount, out string? error);
+    /// <summary>The server's view of the hero in <paramref name="slot"/> (skills, equipment, quest pairs); null when the server does not keep
+    /// hero state (it needs the web UI or --authoritative) or has nothing of this hero yet.</summary>
+    ScriptHero? Hero(int slot) => null;
     // ---- custom net messages (the net table; the defaults: not available) ----------------------------------------------------
     /// <summary>Registers a channel for scripts; returns its id. Throws ArgumentException for a bad name or an id collision.</summary>
     uint NetRegister(string name, bool serverOnly) => throw new NotSupportedException("custom net messages are not available");
@@ -75,6 +82,7 @@ public interface IScriptServer
 /// server.random([m [, n]])
 /// server.top(key, n) -> { { name, value }, ... }   (per-hero numbers of this mod, also offline heroes; names are safe)
 /// server.creature_name(type) / server.item_name(type)  -- the game's names for a type number, or nil
+/// server.hero(player or slot) -> table or nil, message  -- the server's view of a hero: skills, equipment, quest pairs (needs the web UI or --authoritative)
 /// server.endpoint(path, fn [, { public = true, description = "..." }])  -- GET /mods/{script}/{path} (ScriptEndpoints.cs)
 /// server.page(path, html or fn [, { public = true, title = "..." }])  -- a sandboxed single-file HTML page at the same address
 /// server.describe(text)  -- the mod's short description for the web UI (default: the first sentence of the file's leading comment)
@@ -460,6 +468,12 @@ public sealed partial class ScriptHost
             return c.Return(table);
         });
         server["player"] = Fn("player", c => c.Return(_server.Player((int)c.GetArgument<double>(0)) is { } p ? PlayerTable(p) : LuaValue.Nil));
+        server["hero"] = Fn("hero", c =>
+        {
+            if (SlotOf(c.GetArgument(0)) is not (var slot and > 0)) return c.Return(LuaValue.Nil, "a player or a slot is needed");
+            return _server.Hero(slot) is { } hero ? c.Return(HeroTable(hero))
+                : c.Return(LuaValue.Nil, "no hero data (the server keeps it with the web UI or --authoritative, once the client sent its hero)");
+        });
         server["get"] = Fn("get", c =>
         {
             var key = c.GetArgument(1).ToString();
@@ -712,6 +726,58 @@ public sealed partial class ScriptHost
             ["slot"] = p.Slot, ["name"] = character, ["character"] = character, ["uid"] = Uid(p.Key), ["class"] = p.Class, ["level"] = p.Level,
             ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds, ["sector"] = p.Sector,
         };
+    }
+
+    /// <summary>A hero for Lua (read only: a fresh copy on every call). No account name; names are the game's text or absent.</summary>
+    private static LuaTable HeroTable(ScriptHero hero)
+    {
+        var h = hero.Info;
+        var table = new LuaTable(0, 16)
+        {
+            ["character"] = ModStore.DisplayName(h.Character), ["class"] = h.Class, ["level"] = h.Level, ["experience"] = (double)h.Experience,
+            ["gold"] = (double)h.Gold, ["skill_points"] = h.SkillPointsLeft, ["combos"] = h.Combos, ["in_game"] = h.InGame,
+        };
+        var skills = new LuaTable(h.Skills.Length, 0);
+        for (var i = 0; i < h.Skills.Length; i++)
+        {
+            var s = h.Skills[i];
+            var row = new LuaTable(0, 4) { ["id"] = s.Id, ["level"] = s.Level, ["bonus"] = s.Bonus };
+            if (s.Name is { } name) row["name"] = name;
+            skills[i + 1] = row;
+        }
+        table["skills"] = skills;
+        var spent = new LuaTable(h.AttributePoints.Length, 0);
+        for (var i = 0; i < h.AttributePoints.Length; i++) spent[i + 1] = h.AttributePoints[i];
+        table["attribute_points"] = spent;
+        if (h.Attributes is { } attributes)
+        {
+            var total = new LuaTable(attributes.Length, 0);
+            for (var i = 0; i < attributes.Length; i++) total[i + 1] = attributes[i];
+            table["attributes"] = total;
+        }
+        var arts = new LuaTable(h.CombatArts.Length, 0);
+        for (var i = 0; i < h.CombatArts.Length; i++)
+        {
+            var a = h.CombatArts[i];
+            var row = new LuaTable(0, 4) { ["kind"] = a.Kind, ["id"] = a.Id, ["rank"] = a.Rank };
+            if (a.Name is { } name) row["name"] = name;
+            arts[i + 1] = row;
+        }
+        table["arts"] = arts;
+        var equipment = new LuaTable(h.Equipment.Length, 0);
+        for (var i = 0; i < h.Equipment.Length; i++)
+        {
+            var e = h.Equipment[i];
+            var row = new LuaTable(0, 6) { ["slot"] = e.Slot, ["type"] = e.Item.Type, ["level"] = e.Item.Level, ["rarity"] = e.Item.Rarity, ["sockets"] = e.Item.Sockets };
+            if (e.Item.Name is { } name) row["name"] = name;
+            equipment[i + 1] = row;
+        }
+        table["equipment"] = equipment;
+        table["inventory_items"] = h.Inventory.Length;
+        var quests = new LuaTable(hero.QuestPairs.Length, 0);
+        for (var i = 0; i < hero.QuestPairs.Length; i++) quests[i + 1] = new LuaTable(0, 2) { ["key"] = (double)hero.QuestPairs[i].Key, ["value"] = (double)hero.QuestPairs[i].Value };
+        table["quest_pairs"] = quests;
+        return table;
     }
 
     private byte[]? _uidSecret;
