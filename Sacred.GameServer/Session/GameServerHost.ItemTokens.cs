@@ -62,6 +62,18 @@ public sealed partial class GameServerHost
         return null;
     }
 
+    /// <summary>The client makes an item with sockets in two steps: the creation (0x16F / 0x16E) holds the item's own record only (0 entries), a
+    /// later update adds the socket entries. A token of such an item (n entries, then the own record) covers the creation when the creation
+    /// is its own record; the token stays until claim_item finds the whole item in the hero.</summary>
+    private ItemToken? FindTokenOfSocketedItem(PlayerSession s, uint type, string ownRecord)
+    {
+        var now = _clock.ElapsedMilliseconds;
+        foreach (var t in _tokens)
+            if (t.Owner == s && t.Account == s.LobbyIdentity && t.Block == s.CharacterBlock && t.ExpiresMs >= now && t.Type == type
+                && t.Records.Length > ownRecord.Length && t.Records.EndsWith(ownRecord, StringComparison.Ordinal)) return t;
+        return null;
+    }
+
     /// <summary>claim_item for an item that is in the hero (not destroyed): consumes the token minted for it.</summary>
     private bool ClaimArrivedItem(PlayerSession s, uint reference)
     {
@@ -79,7 +91,7 @@ public sealed partial class GameServerHost
         if (!SavedObjects.ReadLiveItem(body, out var records, out _)) return false;
         var type = BinaryPrimitives.ReadUInt32LittleEndian(body[GoldObjectStateLayout.TypeOffset..]);
         var content = Convert.ToHexStringLower(SavedObjects.LiveContent(body, records));
-        if (FindToken(s, type, content) is not null) return false;
+        if (FindToken(s, type, content) is not null || (records == 0 && FindTokenOfSocketedItem(s, type, content) is not null)) return false;
         if (_baselineItems[s.Slot] is not { } held || !ReferenceEquals(held.Owner, s))
         {
             var counts = new Dictionary<string, int>();
