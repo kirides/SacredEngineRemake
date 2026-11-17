@@ -3,7 +3,8 @@
 -- show a movable progress bar. Copy into the server's scripts folder (default ./scripts) to use it.
 --
 --   !event                       progress of the running event (or the next one) to the player who asked
---   !sector                      the number of the sector the player stands in (for the `sectors` lists below)
+--   !sector / !here              the sector the player stands in (id, grid cell), the position and the areas it is in
+--   !area ...                    (admins) record named areas by walking: see "areas" below
 --   /mods/world_events/          the public dashboard page (character names only)
 --   /mods/world_events/state     the same as JSON (public, with WebUi:PublicApi=true also under /public/mods/...)
 --
@@ -25,6 +26,30 @@ local CONFIG = {
   milestones = { 25, 50, 75 },
   announce = true,          -- broadcast start, milestones and result to everybody
   max_contributors = 2000,  -- heroes remembered per event (more still count for the total, but get no share)
+  where = "victim",         -- where a kill counts, unless an event says otherwise: "victim" = where the creature died (where the
+                            -- player stands when the server never saw the creature), "player" = where the killer stands,
+                            -- "either" = either place is in the area
+  margin = 1,               -- the client shows the event this many sector cells beyond the area too (needs --game-dir)
+  circle_margin = 1500,     -- ... and this many world units beyond a circle
+  max_area_sectors = 1500,  -- an area is cut off at this many sectors
+  admins = {},              -- character names that may record areas with !area (empty: the host player)
+  debug_kills = false,      -- log every kill with the creature's sector and position (to read sector numbers off)
+}
+
+-- Named AREAS: sets of sectors an event can be tied to (`area = "silver_creek"` in an event, or `areas = {...}` for several).
+-- Sector ids are slots of the game's sector table, NOT coordinates: neighbours in the world are not neighbours in the numbers. To
+-- find the numbers: stand in a place and type !sector (or !here), or set debug_kills = true and read the log, or record an area by
+-- walking with !area start, or use the area editor page of the web UI. An area is the UNION of its parts:
+--   sectors   sector ids and inclusive ranges: { 2909, 2910, { 2915, 2920 } }   (`ranges` = { { 2915, 2920 } } is the same)
+--   rect      { x1, y1, x2, y2 }: every sector of those cells of the 128 x 128 sector grid (needs --game-dir)
+--   near      n: plus every sector within n grid cells of the ones above (needs --game-dir)
+--   circle    { x = , y = , r = } in world units: a point inside it counts (a tile is 53.67 units, a sector 64 tiles = 3435 units);
+--             finer than sectors, for a village inside a big sector. !here prints your x and y.
+-- Areas recorded in game (!area) and by the area editor are kept in this mod's storage (key "areas") in this same format; a
+-- recorded one wins over one here with the same id.
+local AREAS = {
+  -- Fill in the real numbers (see above); the "Thief hunt" below is offered once this area has sectors:
+  silver_creek = { name = "Silver Creek", sectors = {}, near = 1 },
 }
 
 -- One entry per event. Rotation goes through the list; an event ends when its target is reached (success) or its time is up (fail).
@@ -34,7 +59,9 @@ local CONFIG = {
 --   duration       seconds
 --   names          only creatures whose name contains one of these words count (needs --game-dir; any case)
 --   types          or creature types (numbers), when the server has no game data
---   sectors        only kills in these sectors count, and the client bar shows only there (find the numbers with !sector)
+--   area / areas   only kills in these named AREAS count (see above), and the client's indicator shows only in or near them
+--   sectors        or a list of sector ids and ranges right here, for an area of its own
+--   where          "victim", "player" or "either" for this event (default: CONFIG.where)
 --   text           the goal in words (default: built from the above)
 --   unit           what is counted, for the clients' two-line label ("370 / 1,000 orcs"; default: the first name + s, else creatures)
 --   min_contribution  kills a hero needs to share the reward (default 1)
@@ -48,6 +75,11 @@ local EVENTS = {
   { id = "great-cull", title = "The great cull", goal = "kill", target = 3000, duration = 3 * 3600,
     text = "Defeat 3000 creatures of any kind", min_contribution = 20,
     reward = { gold = 150000, gold_each = 1000, item = { quality = 6 }, top_item = { quality = 10 } } },
+  -- Dormant until the area silver_creek above has sectors. The names are matched in any case against the game's creature names
+  -- (check them with debug_kills = true).
+  { id = "thief-hunt", title = "Thief hunt", goal = "kill", target = 500, duration = 2 * 3600, area = "silver_creek",
+    names = { "thief", "bandit", "brigand", "robber" }, unit = "thieves", text = "Defeat 500 thieves around Silver Creek",
+    min_contribution = 5, reward = { gold = 40000, gold_each = 400, item = { quality = 3 }, top_item = { quality = 8 } } },
 }
 
 -- ---- helpers -----------------------------------------------------------------------------------------------------------
@@ -84,7 +116,7 @@ local function snapshot(def)
   return {
     id = tostring(def.id), title = tostring(def.title or def.id), goal = "kill",
     target = math.max(1, math.floor(tonumber(def.target) or 100)), duration = math.max(1, tonumber(def.duration) or 3600),
-    names = copy_list(def.names, lower_of), types = copy_list(def.types, number_of), sectors = copy_list(def.sectors, number_of),
+    names = copy_list(def.names, lower_of), types = copy_list(def.types, number_of), where = def.where,
     text = def.text and tostring(def.text) or nil, unit = def.unit and tostring(def.unit) or nil, min_contribution = math.max(1, math.floor(tonumber(def.min_contribution) or 1)),
     reward = {
       gold = math.max(0, math.floor(tonumber(reward.gold) or 0)), gold_each = math.max(0, math.floor(tonumber(reward.gold_each) or 0)),
@@ -110,7 +142,7 @@ local function goal_text(def)
   local what = "creatures"
   if def.names then what = table.concat(def.names, "/") .. " creatures" end
   local text = "Defeat " .. def.target .. " " .. what
-  if def.sectors then text = text .. " in sector " .. table.concat(def.sectors, "/") end
+  if def.region and def.region.name then text = text .. " around " .. def.region.name end
   return text
 end
 
@@ -128,13 +160,169 @@ local function in_set(list, value)
   return false
 end
 
--- Is the player where the event happens? (Events without sectors happen everywhere.)
+-- ---- areas: where an event happens ------------------------------------------------------------------------------------------
+
+local function clean_name(text)
+  return (tostring(text or ""):gsub("[%c\\]", " "):sub(1, 40))
+end
+
+local function add_range(set, a, b)
+  a, b = math.floor(a), math.floor(b)
+  if b < a then a, b = b, a end
+  if b - a >= CONFIG.max_area_sectors then b = a + CONFIG.max_area_sectors - 1 end
+  for id = a, b do set[id] = true end
+end
+
+local function set_size(set)
+  local n = 0
+  for _ in pairs(set) do n = n + 1 end
+  return n
+end
+
+-- Every sector within n grid cells of the ones in `set` (the set itself included); needs the sector grid.
+local function grow(set, n)
+  if n <= 0 or set_size(set) > CONFIG.max_area_sectors then return set end
+  local out = {}
+  for id in pairs(set) do
+    out[id] = true
+    local cell = server.sector_cell(id)
+    if cell then
+      for dx = -n, n do
+        for dy = -n, n do
+          local other = server.sector_at(cell.x + dx, cell.y + dy)
+          if other then out[other] = true end
+        end
+      end
+    end
+  end
+  return out
+end
+
+-- The sectors and circles of one area definition (a config or a recorded one) added to `ids` / `circles`.
+local function add_parts(def, ids, circles)
+  local own = {}
+  for _, part in ipairs(def.sectors or {}) do
+    if type(part) == "table" then add_range(own, tonumber(part[1]) or 0, tonumber(part[2]) or tonumber(part[1]) or 0)
+    elseif tonumber(part) then own[math.floor(tonumber(part))] = true end
+  end
+  for _, part in ipairs(def.ranges or {}) do
+    if type(part) == "table" then add_range(own, tonumber(part[1]) or 0, tonumber(part[2]) or tonumber(part[1]) or 0) end
+  end
+  if type(def.rect) == "table" and #def.rect >= 4 then
+    local x1, y1 = math.min(def.rect[1], def.rect[3]), math.min(def.rect[2], def.rect[4])
+    local x2, y2 = math.max(def.rect[1], def.rect[3]), math.max(def.rect[2], def.rect[4])
+    local count = 0
+    for cx = x1, x2 do
+      for cy = y1, y2 do
+        local id = count < CONFIG.max_area_sectors and server.sector_at(cx, cy)
+        if id then own[id] = true; count = count + 1 end
+      end
+    end
+  end
+  if tonumber(def.near) and def.near > 0 then own = grow(own, math.floor(def.near)) end
+  for id in pairs(own) do ids[id] = true end
+  local c = def.circle
+  if type(c) == "table" and tonumber(c.x) and tonumber(c.y) and tonumber(c.r) and c.r > 0 then
+    circles[#circles + 1] = { x = c.x, y = c.y, r = c.r }
+  end
+end
+
+local recorded = (function()
+  local ok, value = pcall(server.load, "areas", nil)
+  return ok and type(value) == "table" and value or {}
+end)()
+local areas_rev = (function() local ok, v = pcall(server.load, "areas_rev", 0); return ok and tonumber(v) or 0 end)()
+
+local function area_def(id)
+  return recorded[id] or AREAS[id]
+end
+
+local function sorted_ids(set)
+  local list = {}
+  for id in pairs(set) do list[#list + 1] = id end
+  table.sort(list)
+  return list
+end
+
+-- The region of an event definition as it is stored with the event: { name, ids = {sorted}, margin = {sorted}, circles = {..} },
+-- or nil for "everywhere". A region with no sector and no circle is empty: it matches nothing (the event is not offered).
+local function region_of(def)
+  local names, ids, circles = {}, {}, {}
+  local wanted = {}
+  if def.area then wanted[#wanted + 1] = def.area end
+  for _, id in ipairs(def.areas or {}) do wanted[#wanted + 1] = id end
+  for _, id in ipairs(wanted) do
+    local a = area_def(id)
+    if a then
+      names[#names + 1] = clean_name(a.name or id)
+      add_parts(a, ids, circles)
+    else
+      server.log("event " .. tostring(def.id) .. ": unknown area '" .. tostring(id) .. "'")
+    end
+  end
+  if def.sectors then add_parts({ sectors = def.sectors }, ids, circles) end
+  if #wanted == 0 and not def.sectors then return nil end
+  local region = { ids = sorted_ids(ids), circles = circles }
+  if #names > 0 then region.name = table.concat(names, " & ") end
+  region.margin = sorted_ids(grow(ids, CONFIG.margin))
+  return region
+end
+
+-- The sets behind a stored region, built once per stored table.
+local runtime = setmetatable({}, { __mode = "k" })
+local function sets_of(region)
+  local r = runtime[region]
+  if not r then
+    r = { ids = {}, margin = {} }
+    for _, id in ipairs(region.ids or {}) do r.ids[id] = true end
+    for _, id in ipairs(region.margin or {}) do r.margin[id] = true end
+    runtime[region] = r
+  end
+  return r
+end
+
+local function in_circle(c, x, y)
+  if not x or not y then return false end
+  local dx, dy = x - c.x, y - c.y
+  return dx * dx + dy * dy <= c.r * c.r
+end
+
+-- Is the point inside the region (or, with `slack`, close to it)?
+local function contains(region, sector, x, y, slack)
+  local r = sets_of(region)
+  if sector and (r.ids[sector] or (slack and r.margin[sector])) then return true end
+  for _, c in ipairs(region.circles or {}) do
+    if in_circle({ x = c.x, y = c.y, r = c.r + (slack and CONFIG.circle_margin or 0) }, x, y) then return true end
+  end
+  return false
+end
+
+local function region_empty(region)
+  return region ~= nil and #region.ids == 0 and #(region.circles or {}) == 0
+end
+
+-- Is the player where the event happens (or near it: the indicator shows a little beyond)? Events without an area happen everywhere.
 local function in_area(def, player)
-  return not def.sectors or in_set(def.sectors, player.sector or 0)
+  local region = def.region
+  if not region then return true end
+  return contains(region, player.sector, player.x, player.y, true)
+end
+
+-- Does the kill happen in the event's area? See CONFIG.where.
+local function kill_in_area(def, player, monster)
+  local region = def.region
+  if not region then return true end
+  local where = def.where or CONFIG.where
+  local function victim() return monster.sector ~= nil and contains(region, monster.sector, monster.x, monster.y) end
+  local function killer() return contains(region, player.sector, player.x, player.y) end
+  if where == "player" then return killer() end
+  if where == "either" then return victim() or killer() end
+  if monster.sector ~= nil then return victim() end       -- "victim": the creature's place, the player's when it is unknown
+  return killer()
 end
 
 local function counts(def, player, monster)
-  if not in_area(def, player) then return false end
+  if not kill_in_area(def, player, monster) then return false end
   if not def.names and not def.types then return true end
   if def.names and monster.name then
     local name = monster.name:lower()
@@ -142,6 +330,38 @@ local function counts(def, player, monster)
   end
   if def.types and in_set(def.types, monster.type) then return true end
   return false
+end
+
+-- Compact text of a sorted list of sector ids: runs of three or more become ranges: 2909, {2911, 2913}.
+local function compact(ids)
+  local out, i = {}, 1
+  while i <= #ids do
+    local j = i
+    while ids[j + 1] == ids[j] + 1 do j = j + 1 end
+    if j - i >= 2 then out[#out + 1] = "{" .. ids[i] .. ", " .. ids[j] .. "}"
+    else for k = i, j do out[#out + 1] = tostring(ids[k]) end end
+    i = j + 1
+  end
+  return table.concat(out, ", ")
+end
+
+local function lua_string(text)
+  local escaped = tostring(text):gsub("%c", " "):gsub("\\", "\\\\"):gsub('"', '\\"')
+  return '"' .. escaped .. '"'
+end
+
+-- The Lua line for an area (what !area show prints and the area editor copies).
+local function snippet(id, a)
+  local parts = { "name = " .. lua_string(a.name or id) }
+  local ids = {}
+  for _, part in ipairs(a.sectors or {}) do
+    if type(part) == "table" then for n = part[1], part[2] do ids[#ids + 1] = n end else ids[#ids + 1] = part end
+  end
+  table.sort(ids)
+  if #ids > 0 then parts[#parts + 1] = "sectors = {" .. compact(ids) .. "}" end
+  if a.near then parts[#parts + 1] = "near = " .. a.near end
+  if a.circle then parts[#parts + 1] = string.format("circle = { x = %d, y = %d, r = %d }", a.circle.x, a.circle.y, a.circle.r) end
+  return id .. " = { " .. table.concat(parts, ", ") .. " },"
 end
 
 -- ---- state (kept in this mod's storage) ---------------------------------------------------------------------------------------
@@ -211,7 +431,7 @@ local function payload_for(player)
     return {
       v = 1, st = "active", n = ev.n, title = def.title, text = goal_text(def), unit = unit_of(def), count = ev.count, target = def.target,
       left = math.floor(math.max(0, ev.ends - t)), dur = def.duration, here = in_area(def, player), mine = mine and mine.n or 0,
-      need = def.min_contribution, people = participants(ev), reward = reward_text(def),
+      need = def.min_contribution, people = participants(ev), reward = reward_text(def), area = def.region and def.region.name or nil,
     }
   end
   local last = state.last
@@ -219,6 +439,7 @@ local function payload_for(player)
     return {
       v = 1, st = last.success and "won" or "failed", n = last.n, title = last.title, text = last.text, unit = last.unit, count = last.count,
       target = last.target, hold = math.floor(CONFIG.result_hold - (t - last.finished)), here = in_area(last, player), people = last.people,
+      area = last.region and last.region.name or nil,
     }
   end
   return { v = 1, st = "idle", next_in = math.floor(math.max(0, (state.next_start or t) - t)), here = false }
@@ -314,7 +535,7 @@ local function finish(success)
   local def, top = ev.def, ranked(ev)
   local record = {
     n = ev.n, id = def.id, title = def.title, text = goal_text(def), unit = unit_of(def), success = success, count = ev.count, target = def.target,
-    started = ev.started, finished = NOW(), people = #top, sectors = def.sectors, top = {},
+    started = ev.started, finished = NOW(), people = #top, region = def.region, top = {},
   }
   for i = 1, math.min(5, #top) do record.top[i] = { name = top[i].name, n = top[i].n } end
   state.last = record
@@ -345,15 +566,34 @@ local function finish(success)
   push_all()
 end
 
+-- Is the event offered? Not when its area has no sector and no circle yet.
+local function offered(index)
+  local def = definitions[index]
+  if not def or not (def.area or def.areas or def.sectors) then return def ~= nil end
+  local region = region_of(def)
+  if region_empty(region) then
+    server.log("event " .. tostring(def.id) .. " is not offered: its area has no sector yet")
+    return false
+  end
+  return true
+end
+
 local function next_index()
   local n = #definitions
   if n == 0 then return nil end
+  local from = state.index or 0
   if CONFIG.order == "random" and n > 1 then
-    local pick = server.random(n - 1)
-    if (state.index or 0) > 0 and pick >= state.index then pick = pick + 1 end
-    return pick
+    for _ = 1, 8 do
+      local pick = server.random(n - 1)
+      if from > 0 and pick >= from then pick = pick + 1 end
+      if offered(pick) then return pick end
+    end
   end
-  return ((state.index or 0) % n) + 1
+  for step = 1, n do
+    local index = ((from + step - 1) % n) + 1
+    if offered(index) then return index end
+  end
+  return nil
 end
 
 local function start_event(index)
@@ -362,6 +602,7 @@ local function start_event(index)
   state.seq = state.seq + 1
   state.index = index
   local snap, t = snapshot(def), NOW()
+  snap.region = region_of(def)
   state.current = { n = state.seq, def = snap, started = t, ends = t + snap.duration, count = 0, players = {}, marks = {} }
   say(snap.title .. " begins: " .. goal_text(snap) .. " within " .. duration_text(snap.duration) .. "! Reward: "
     .. (reward_text(snap) ~= "" and reward_text(snap) or "glory") .. ". Type !event for the progress.")
@@ -394,6 +635,10 @@ end
 -- ---- events ------------------------------------------------------------------------------------------------------------------
 
 server.on("kill", function(player, monster)
+  if CONFIG.debug_kills then
+    server.log(string.format("kill: %s (type %s) at sector %s x %s y %s by %s in sector %s", tostring(monster.name), tostring(monster.type),
+      tostring(monster.sector), tostring(monster.x), tostring(monster.y), player.character, tostring(player.sector)))
+  end
   local ev = state.current
   if not ev or not counts(ev.def, player, monster) then return end
   ev.count = ev.count + 1
@@ -422,14 +667,163 @@ server.on("enter", function(player)
   push(player)
 end)
 
-server.on("sector", push)
+-- ---- finding and recording areas (chat) -------------------------------------------------------------------------------------
+
+local function is_admin(player)
+  if #CONFIG.admins == 0 then return player.host end
+  local name = (player.character or ""):lower()
+  for _, admin in ipairs(CONFIG.admins) do if tostring(admin):lower() == name then return true end end
+  return false
+end
+
+local recording = {}          -- slot -> { id, name, ids = set, circle }
+
+local function areas_containing(player)
+  local found = {}
+  local seen = {}
+  for _, source in ipairs({ recorded, AREAS }) do
+    for id, a in pairs(source) do
+      if not seen[id] then
+        seen[id] = true
+        local ids, circles = {}, {}
+        add_parts(a, ids, circles)
+        if ids[player.sector or 0] then found[#found + 1] = id
+        else for _, c in ipairs(circles) do if in_circle(c, player.x, player.y) then found[#found + 1] = id; break end end end
+      end
+    end
+  end
+  table.sort(found)
+  return found
+end
+
+local function where_text(player)
+  local text = "You are in sector " .. (player.sector or 0)
+  local cell = player.sector and server.sector_cell(player.sector)
+  if cell then text = text .. " (grid cell " .. cell.x .. "," .. cell.y .. ")" end
+  if (player.x or 0) ~= 0 or (player.y or 0) ~= 0 then text = text .. ", position x " .. player.x .. " y " .. player.y end
+  local in_areas = areas_containing(player)
+  if #in_areas > 0 then text = text .. ", area " .. table.concat(in_areas, ", ") end
+  return text .. "."
+end
+
+local function save_areas()
+  local ok, err = pcall(server.save, "areas", recorded)
+  if ok then
+    areas_rev = areas_rev + 1
+    pcall(server.save, "areas_rev", areas_rev)
+  else
+    server.log("cannot save the areas: " .. tostring(err))
+  end
+end
+
+local function recording_area(rec)
+  local ids = sorted_ids(rec.ids)
+  local a = { name = rec.name, sectors = {} }
+  local i = 1
+  while i <= #ids do
+    local j = i
+    while ids[j + 1] == ids[j] + 1 do j = j + 1 end
+    if j - i >= 2 then a.sectors[#a.sectors + 1] = { ids[i], ids[j] }
+    else for k = i, j do a.sectors[#a.sectors + 1] = ids[k] end end
+    i = j + 1
+  end
+  if rec.circle then a.circle = rec.circle end
+  if rec.near then a.near = rec.near end
+  return a
+end
+
+local function finish_recording(player, rec)
+  recorded[rec.id] = recording_area(rec)
+  save_areas()
+  local line = snippet(rec.id, recorded[rec.id])
+  server.log("area recorded: " .. line)
+  server.message(player, "Area " .. rec.id .. " saved (" .. set_size(rec.ids) .. " sectors" .. (rec.circle and ", a circle" or "") .. ").")
+  server.message(player, line)
+end
+
+local HELP = "!area start <id> [name] | add | remove | circle [radius] | near <n> | stop | cancel | show <id> | list | drop <id>"
+
+local function area_command(player, args)
+  if not is_admin(player) then server.message(player, "Only the admins may record areas."); return end
+  local cmd, rest = args:match("^(%S*)%s*(.-)%s*$")
+  local rec = recording[player.slot]
+  if cmd == "start" then
+    local id, name = rest:match("^([%w_%-]+)%s*(.-)$")
+    if not id then server.message(player, "!area start <id> [name]"); return end
+    rec = { id = id:lower(), name = name ~= "" and clean_name(name) or id, ids = {} }
+    local old = recorded[rec.id]
+    if old then add_parts(old, rec.ids, {}); rec.circle = old.circle; rec.near = old.near; rec.name = old.name or rec.name end
+    if (player.sector or 0) ~= 0 then rec.ids[player.sector] = true end
+    recording[player.slot] = rec
+    server.message(player, "Recording " .. rec.id .. ": every sector you walk into is added. !area stop saves it. " .. set_size(rec.ids) .. " sectors so far.")
+  elseif not rec and (cmd == "add" or cmd == "remove" or cmd == "circle" or cmd == "near" or cmd == "stop" or cmd == "cancel") then
+    server.message(player, "Not recording: !area start <id> [name] first.")
+  elseif cmd == "add" then
+    if (player.sector or 0) ~= 0 then rec.ids[player.sector] = true end
+    server.message(player, "Sector " .. (player.sector or 0) .. " added, " .. set_size(rec.ids) .. " sectors.")
+  elseif cmd == "remove" then
+    rec.ids[player.sector or 0] = nil
+    server.message(player, "Sector " .. (player.sector or 0) .. " removed, " .. set_size(rec.ids) .. " sectors.")
+  elseif cmd == "circle" then
+    local radius = tonumber(rest) or (rec.circle and rec.circle.r) or 1500
+    if (player.x or 0) == 0 and (player.y or 0) == 0 then
+      server.message(player, "The server does not know your position yet (it may lag: move a little, or use the sector-tools mod to read it).")
+    else
+      rec.circle = { x = player.x, y = player.y, r = math.floor(radius) }
+      server.message(player, "Circle at x " .. player.x .. " y " .. player.y .. ", radius " .. math.floor(radius) .. ".")
+    end
+  elseif cmd == "near" then
+    rec.near = math.max(0, math.min(5, math.floor(tonumber(rest) or 0)))
+    if rec.near == 0 then rec.near = nil end
+    server.message(player, "Neighbours within " .. (rec.near or 0) .. " sector cells " .. (rec.near and "included." or "not included."))
+  elseif cmd == "stop" then
+    recording[player.slot] = nil
+    finish_recording(player, rec)
+  elseif cmd == "cancel" then
+    recording[player.slot] = nil
+    server.message(player, "Recording of " .. rec.id .. " dropped.")
+  elseif cmd == "show" then
+    local a = area_def(rest:lower())
+    server.message(player, a and snippet(rest:lower(), a) or ("No area " .. rest))
+  elseif cmd == "drop" then
+    if recorded[rest:lower()] then
+      recorded[rest:lower()] = nil
+      save_areas()
+      server.message(player, "Area " .. rest:lower() .. " dropped.")
+    else
+      server.message(player, "No recorded area " .. rest .. " (areas in the script file are edited there).")
+    end
+  elseif cmd == "list" then
+    local names = {}
+    for id in pairs(recorded) do names[#names + 1] = id .. "*" end
+    for id in pairs(AREAS) do if not recorded[id] then names[#names + 1] = id end end
+    table.sort(names)
+    server.message(player, "Areas (* recorded in game): " .. (#names > 0 and table.concat(names, ", ") or "none"))
+  else
+    server.message(player, HELP)
+  end
+end
+
+server.on("sector", function(player)
+  local rec = recording[player.slot]
+  if rec and (player.sector or 0) ~= 0 and not rec.ids[player.sector] then
+    rec.ids[player.sector] = true
+    server.message(player, "Area " .. rec.id .. ": sector " .. player.sector .. " added (" .. set_size(rec.ids) .. ").")
+  end
+  push(player)
+end)
+
+server.on("leave", function(player) recording[player.slot] = nil end)
 
 server.on("chat", function(player, text)
   if text == "!event" then
     for _, line in ipairs(status_lines(player)) do server.message(player, PREFIX .. line) end
     return true
-  elseif text == "!sector" then
-    server.message(player, "You are in sector " .. (player.sector or 0) .. ".")
+  elseif text == "!sector" or text == "!here" then
+    server.message(player, where_text(player))
+    return true
+  elseif text == "!area" or text:sub(1, 6) == "!area " then
+    area_command(player, text:sub(7))
     return true
   end
 end)
@@ -455,6 +849,14 @@ local function tick()
     start_event(next_index())
   end
   deliver_pending()
+  if ticks % 5 == 0 then
+    local ok, rev = pcall(server.load, "areas_rev", 0)
+    if ok and tonumber(rev) and rev ~= areas_rev then
+      areas_rev = rev
+      local loaded = server.load("areas", {})
+      recorded = type(loaded) == "table" and loaded or {}
+    end
+  end
   if dirty or pending_dirty then save_state() end
   if push_due or (state.current and ticks % 3 == 0) then push_all() end
 end
@@ -484,7 +886,7 @@ local function public_state()
     out.active = {
       n = ev.n, id = ev.def.id, title = ev.def.title, text = goal_text(ev.def), count = ev.count, target = ev.def.target,
       percent = math.min(100, math.floor(ev.count * 100 / ev.def.target)), left = math.floor(math.max(0, ev.ends - t)), ends = ev.ends,
-      sectors = ev.def.sectors, participants = participants(ev), top = top, reward = reward_text(ev.def),
+      area = ev.def.region and ev.def.region.name or nil, participants = participants(ev), top = top, reward = reward_text(ev.def),
     }
   else
     out.next_in = math.floor(math.max(0, (state.next_start or t) - t))

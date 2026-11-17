@@ -136,7 +136,7 @@ server.on("join", function(player) end)          -- admitted
 server.on("enter", function(player) end)         -- in the world (0x017/0x018 answered)
 server.on("leave", function(player) end)
 server.on("chat", function(player, text) return true end)   -- public chat; true = not relayed (commands like "!kills")
-server.on("kill", function(player, monster) end) -- monster = { ref, type, level, name }
+server.on("kill", function(player, monster) end) -- monster = { ref, type, level, name, sector, x, y }
 server.on("death", function(player, by) end)     -- a hero died; by = { player } or { ref, type, level }
 server.on("sector", function(player, sector) end) -- the hero moved into another sector (player.sector is the same number)
 server.on("drop", function(item, reporter) end)  -- a new item lies on the ground; item = { ref, type, level, rarity 0..15, sockets, price, name, sector, x, y }
@@ -151,6 +151,7 @@ server.drop_gold(player, amount)       -- { ref, type, amount } or nil, error: a
 server.random()  server.random(n)  server.random(m, n)
 server.creature_name(type or monster)  server.item_name(type or item)   -- the game's name, or nil
 server.hero(player or slot)            -- table, or nil + reason: the server's view of a hero (see "Hero data for scripts")
+server.sector_cell(id)  server.sector_at(cellX, cellY)   -- the sector grid { x, y } / id (needs --game-dir), or nil
 server.top(key, n)                     -- { { name, value }, ... }: this mod's per-hero numbers, also offline heroes
 server.endpoint(path, fn [, { public = true, description = "..." }])   -- GET /mods/{script}/{path}
 server.page(path, html or fn [, { public = true, title = "..." }])     -- a single-file HTML page at the same address
@@ -192,7 +193,7 @@ with an error instead of silently becoming a folder of that name. The game serve
 mods: ladders, recent deaths, statistics live in the mod that needs them, so mods can grow without growing the server. (JSON,
 not SQLite: SQLite needs a native library, which would end the single-file Native AOT binary.)
 
-* `player` = `{ slot, name, character, uid, class, level, in_game, host, online, sector }`. **Privacy:** scripts never see lobby ids,
+* `player` = `{ slot, name, character, uid, class, level, in_game, host, online, sector, x, y }`. **Privacy:** scripts never see lobby ids,
   owner keys or account names. `name` and `character` are the character name (the server strips the `account.` prefix of
   lobby names, and only of lobby names: a LAN name like `Mr.X` stays), `uid` is an opaque per-server identity of the hero
   (HMAC-SHA256 of its lobby identity with a secret kept in `{scripts-data}/.uid-secret`): stable across sessions on this
@@ -228,8 +229,8 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
   objects) and how `class` maps to the game's 0..9 selector (the player's FIRSTCONTACT class byte is passed as is).
 * Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
   kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
-  shows the kill ladder in chat. `player.online` is the current session in seconds. `player.sector` is the sector number the hero stands in (first word of its last 0x148 sector entry; 0 until the server has seen one); the `"sector"` event fires when it changes.
-* World events: `scripts-examples/world_events.lua` runs server-wide timed goals ("slay 1000 orcs in 2 hours", optionally only in some sectors, filtered by creature name or type) from a config table at the top of the file: a rotation with a cooldown, 25/50/75 % and result broadcasts, a reward shared by contribution (`drop_gold`, `drop_item`; heroes who are offline get theirs when they enter), `!event` and `!sector` in chat, a public dashboard page and `/mods/world_events/state` (JSON, character names only), and the state pushed over the net channel `worldevents:state` to the Sacred Gear mod `world-events` (a movable progress bar). Everything, including an event that ran out while the server was down, lives in `script-data/world_events.json`. Uses `player.sector` and the `"sector"` event.
+  shows the kill ladder in chat. `player.online` is the current session in seconds. `player.sector` is the sector number the hero stands in (first word of its last 0x148 sector entry; 0 until the server has seen one); the `"sector"` event fires when it changes. `player.x`/`y` are the hero's world position from its last state the server saw (0 when none; it can lag behind a moving hero: position updates are not applied yet). A kill's `monster.sector`, `x`, `y` come the same way from the victim's last state in the object world (absent when the server never saw it). **Sector ids are slots of the game's sector table, not coordinates**: `server.sector_cell(id)` gives the id's cell of the 128 x 128 sector grid and `server.sector_at(cx, cy)` the id at a cell, from `World/sectors.keyx` of `--game-dir` (nil without it). One tile is 53.67 world units and a sector 64 tiles, about 3435 units.
+* World events: `scripts-examples/world_events.lua` runs server-wide timed goals ("slay 1000 orcs in 2 hours", optionally only in some sectors, filtered by creature name or type) from a config table at the top of the file: a rotation with a cooldown, 25/50/75 % and result broadcasts, a reward shared by contribution (`drop_gold`, `drop_item`; heroes who are offline get theirs when they enter), `!event` and `!sector` in chat, a public dashboard page and `/mods/world_events/state` (JSON, character names only), and the state pushed over the net channel `worldevents:state` to the Sacred Gear mod `world-events` (a movable progress bar). Everything, including an event that ran out while the server was down, lives in `script-data/world_events.json`. Uses `player.sector` and the `"sector"` event. Events can be tied to named **areas** (sector lists and ranges, a grid rectangle, `near` neighbours, a world-unit circle; a kill counts where the creature died, `where = victim|player|either`); admins record areas by walking with `!area start/stop` and read the numbers off with `!sector`/`!here`; recorded areas live in the mod's storage (`areas`). See the comments at the top of the script.
 * Bounty board: `scripts-examples/bounty_board.lua` posts a few bounties at a time ("kill N creatures whose name contains ...", optionally only in some sectors, `min_level`), each hero works on them separately, finishing one pays gold (`drop_gold`) and/or an item (`drop_item`) once; bounties expire and are replaced from a pool in the file. `!bounty` lists them, `!where` tells the sector number; a public dashboard at `/mods/bounty_board/` and JSON at `/mods/bounty_board/state`; the net channel `bounty:state` pushes each hero's own progress to Sacred Gear clients (client mod `gear/examples/bounty`, panel on F8). Everything is in the mod's own storage; no host API was added.
   shows the kill ladder in chat. `player.online` is the current session in seconds.
 * Achievements and login streak: `scripts-examples/achievements.lua` unlocks 31 achievements from kills, distinct creature types,

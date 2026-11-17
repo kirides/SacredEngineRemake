@@ -8,11 +8,11 @@ namespace Sacred.GameServer.Scripting;
 /// reach Lua. Scripts get <see cref="Character"/> (the host strips the "account." prefix of lobby names) and an opaque per-server
 /// <c>uid</c> derived from <see cref="Key"/>.</remarks>
 public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId, double OnlineSeconds = 0,
-    string? Character = null, int Sector = 0);
+    string? Character = null, int Sector = 0, int X = 0, int Y = 0);
 
 /// <summary>A defeated creature: its object reference, its type (Items.pak type), level and name (the game's text: the creature's own
 /// name, else its type's; null without --game-dir) when the server knows them.</summary>
-public readonly record struct ScriptMonster(uint Reference, uint Type, int Level, string? Name = null);
+public readonly record struct ScriptMonster(uint Reference, uint Type, int Level, string? Name = null, int Sector = 0, int X = 0, int Y = 0);
 
 /// <summary>An item that appeared on the ground (<c>server.on("drop")</c>): reference, type, level, rarity tier (0..15), filled sockets, price,
 /// name (the item's own name, else its type's; null without --game-dir) and where (sector, x, y).</summary>
@@ -46,6 +46,10 @@ public interface IScriptServer
     string? CreatureName(uint type) => null;
     /// <summary>The game's (base) name of an item type, null when unknown or the game's tables were not read.</summary>
     string? ItemName(uint type) => null;
+    /// <summary>The sector grid cell (x, y) of a sector id from the game's sector index; null without --game-dir or for an unknown id.</summary>
+    (int X, int Y)? SectorCell(uint id) => null;
+    /// <summary>The sector id at a grid cell, 0 for none (or without --game-dir).</summary>
+    uint SectorAt(int cellX, int cellY) => 0;
     /// <summary>Drops a gold pile of <paramref name="amount"/> (1..<see cref="GoldPile.MaximumAmount"/>) next to the player's hero.</summary>
     ScriptDrop? DropGold(int slot, uint amount, out string? error);
     /// <summary>The server's view of the hero in <paramref name="slot"/> (skills, equipment, quest pairs); null when the server does not keep
@@ -83,6 +87,7 @@ public interface IScriptServer
 /// server.top(key, n) -> { { name, value }, ... }   (per-hero numbers of this mod, also offline heroes; names are safe)
 /// server.creature_name(type) / server.item_name(type)  -- the game's names for a type number, or nil
 /// server.hero(player or slot) -> table or nil, message  -- the server's view of a hero: skills, equipment, quest pairs (needs the web UI or --authoritative)
+/// server.sector_cell(id) -> { x, y } / server.sector_at(x, y) -> id  -- the sector grid (needs --game-dir), or nil
 /// server.endpoint(path, fn [, { public = true, description = "..." }])  -- GET /mods/{script}/{path} (ScriptEndpoints.cs)
 /// server.page(path, html or fn [, { public = true, title = "..." }])  -- a sandboxed single-file HTML page at the same address
 /// server.describe(text)  -- the mod's short description for the web UI (default: the first sentence of the file's leading comment)
@@ -299,8 +304,9 @@ public sealed partial class ScriptHost
     public bool FireKill(ScriptPlayer player, ScriptMonster monster)
     {
         if (!Has("kill")) return false;
-        var table = new LuaTable(0, 4) { ["ref"] = monster.Reference, ["type"] = monster.Type, ["level"] = monster.Level };
+        var table = new LuaTable(0, 7) { ["ref"] = monster.Reference, ["type"] = monster.Type, ["level"] = monster.Level };
         if (monster.Name is { } name) table["name"] = name;
+        if (monster.Sector != 0) { table["sector"] = monster.Sector; table["x"] = monster.X; table["y"] = monster.Y; }
         return Fire("kill", PlayerTable(player), table, 2);
     }
 
@@ -526,6 +532,13 @@ public sealed partial class ScriptHost
             for (var k = 0; k < keys.Count; k++) table[k + 1] = keys[k];
             return c.Return(table);
         });
+        server["sector_cell"] = Fn("sector_cell", c =>
+        {
+            var id = c.GetArgument<double>(0);
+            return id >= 0 && id <= ushort.MaxValue && _server.SectorCell((uint)id) is { } cell ? c.Return(new LuaTable(0, 2) { ["x"] = cell.X, ["y"] = cell.Y }) : c.Return(LuaValue.Nil);
+        });
+        server["sector_at"] = Fn("sector_at", c =>
+            c.Return(_server.SectorAt((int)c.GetArgument<double>(0), (int)c.GetArgument<double>(1)) is var id and not 0 ? (LuaValue)id : LuaValue.Nil));
         server["creature_name"] = Fn("creature_name", c => c.Return(TypeOf(c) is { } t && _server.CreatureName(t) is { } n ? n : LuaValue.Nil));
         server["item_name"] = Fn("item_name", c => c.Return(TypeOf(c) is { } t && _server.ItemName(t) is { } n ? n : LuaValue.Nil));
         server["drop_item"] = Fn("drop_item", c =>
@@ -721,10 +734,10 @@ public sealed partial class ScriptHost
     private LuaTable PlayerTable(ScriptPlayer p)
     {
         var character = ModStore.DisplayName(p.Character ?? p.Name);
-        return new(0, 10)
+        return new(0, 12)
         {
             ["slot"] = p.Slot, ["name"] = character, ["character"] = character, ["uid"] = Uid(p.Key), ["class"] = p.Class, ["level"] = p.Level,
-            ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds, ["sector"] = p.Sector,
+            ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds, ["sector"] = p.Sector, ["x"] = p.X, ["y"] = p.Y,
         };
     }
 
