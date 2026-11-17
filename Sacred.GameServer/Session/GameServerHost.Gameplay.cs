@@ -80,6 +80,7 @@ public sealed partial class GameServerHost
             case 0x044: case 0x045: ProbeResult(s, m); return;      // 0x4CC4FD / 0x4CC522
             case 0x134: case 0x135: Pause(s, m); return;            // 0x4C4830 / 0x4C47AB
             case 0x156: case 0x157: Kick(s, m); return;             // 0x4C4A5B
+            case 0x150: case 0x01C: OnQuit(s, m); return;           // 0x4CA4F9 -> FUN_004d6ac0 (graceful quit / leave)
             case 0x1B1: case 0x1B2: case 0x1B3: case 0x1B4: StoreWorldBank(s, m); return; // 0x4C4CBB..0x4C4CF4
             case 0x1B5: SendWorldBanks(s); return;                  // 0x4C4C86
         }
@@ -303,7 +304,7 @@ public sealed partial class GameServerHost
     /// first in-game player (FUN_004cdc50: 0x00D to the new host). Without a candidate the session ends: everybody is kicked with
     /// reason 0x10.
     /// </summary>
-    private void RemovePlayer(PlayerSession s, uint reason, bool notifyVictim)
+    private void RemovePlayer(PlayerSession s, uint reason, bool notifyVictim, bool closeConnection = true)
     {
         if (notifyVictim)
         {
@@ -329,7 +330,24 @@ public sealed partial class GameServerHost
         BinaryPrimitives.WriteUInt32LittleEndian(departure, reason);
         if (slot != 0) SendAll(0x150, slot, departure);
         if (wasHost) TransferHost();
-        s.Connection.Close();
+        if (closeConnection) s.Connection.Close();   // a graceful 0x150 leaves the close to the client, like the original
+    }
+
+    /// <summary>
+    /// Client 0x150 and 0x01C [u32 reason] (case 0x4CA4F9, one handler): the player leaves. The original calls
+    /// FUN_004d6ac0(slot, 1, opcode != 0x1C, reason): 0x150 [reason] (origin = player) to everybody connected, no 0x157 to the
+    /// leaver and the connection is left to the client to drop (0x150, the ESC menu's "Quit"); 0x1C additionally sends 0x157 to
+    /// the leaver, tells the others except the leaver and closes the connection itself. The leave path runs once per player
+    /// (flag +0x7D), so the TCP close that follows changes nothing. TODO (address 0x4CA4F9): with reason 7 the original also
+    /// resets the leaver's creature object in its own world (FUN_00510f0c/FUN_004eab00), which this server does not model.
+    /// </summary>
+    private void OnQuit(PlayerSession s, in GoldMessageView m)
+    {
+        if (s.State == SessionState.Closed || s.Slot == 0 || _slots[s.Slot] != s) return;
+        var reason = m.Payload.Length >= 4 ? BinaryPrimitives.ReadUInt32LittleEndian(m.Payload) : 0;
+        var withKick = m.Opcode == 0x01C;
+        Log.Info($"{s.Describe()} left the game (opcode 0x{m.Opcode:X3}, reason {reason}).");
+        RemovePlayer(s, reason, notifyVictim: withKick, closeConnection: withKick);
     }
 
     private void TransferHost()

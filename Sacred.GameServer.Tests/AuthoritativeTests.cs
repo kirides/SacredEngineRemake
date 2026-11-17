@@ -187,6 +187,47 @@ public partial class AuthoritativeTests
     }
 
     [TestMethod]
+    public void GracefulQuitLeavesOnceAndTheHeroIsSavedOnce()
+    {
+        using var fake = new LobbyTests.FakeLobby();
+        var block = new byte[0x300];
+        new Random(11).NextBytes(block);
+        using var server = new Server(c => { c.Auth.SaveDebounceMilliseconds = 20; c.Auth.SaveIntervalSeconds = 0; }, fake, new FixedSerializer(block));
+        var log = new StringWriter();
+        var previous = Console.Out;
+        Console.SetOut(TextWriter.Synchronized(log));
+        try
+        {
+            var player = RawClient.Admit(server.Port, "Hero", 500, block: 2);
+            fake.WaitFor(LobbyProtocol.UserJoinedServer);
+            var push = new byte[18 + 0x300];
+            BinaryPrimitives.WriteInt32LittleEndian(push, 500);
+            BinaryPrimitives.WriteUInt16LittleEndian(push.AsSpan(4), 2);
+            BinaryPrimitives.WriteInt32LittleEndian(push.AsSpan(6), 0x300);
+            BinaryPrimitives.WriteInt32LittleEndian(push.AsSpan(14), 0x300);
+            fake.SendLobby(LobbyProtocol.PublicData, push);
+            player.WaitFor(0x132);
+            player.Send(0x016, default); player.Send(0x018, Word(0x1964)); player.WaitFor(0x018);
+            using var other = RawClient.Admit(server.Port, "Other", 501);
+            other.Send(0x017, default);
+            other.WaitFor(0x017);
+
+            player.Send(0x150, Word(0));                                          // the ESC menu's Quit
+            var left = other.WaitFor(0x150);
+            Assert.AreEqual(player.Slot, left.Origin);
+            Assert.AreEqual(0u, BinaryPrimitives.ReadUInt32LittleEndian(left.Payload));
+            other.WaitFor(0x00D);                                                  // the leaving host hands over
+            fake.WaitFor(LobbyProtocol.ServerDataUpload);
+            player.Dispose();                                                      // the TCP close that follows
+            Thread.Sleep(600);
+            Assert.AreEqual(1, server.Host.HeroSaves, "saved once, not again on the close");
+            Assert.IsTrue(other.Silent(0x150), "no second departure message");
+            Assert.IsFalse(log.ToString().Contains("unhandled opcode"), log.ToString());
+        }
+        finally { Console.SetOut(previous); }
+    }
+
+    [TestMethod]
     public void ClosedNetHeroIsSavedFromTheServersOwnView()
     {
         var save = HeroWriterTests.Saves().FirstOrDefault();
