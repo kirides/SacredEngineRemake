@@ -108,7 +108,7 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/api/flood", (RequestDelegate)(c => Json(c.Response, _admin.Flood(), WebUiJson.Default.FloodSettings)));
         app.MapGet("/api/heroes", (RequestDelegate)(c => Json(c.Response, _admin.Heroes().ToArray(), WebUiJson.Default.HeroInfoArray)));
         app.MapGet("/api/heroes/{slot:int}", (RequestDelegate)(c => HeroEndpoint(c, publicView: false)));
-        app.MapGet("/mods", (RequestDelegate)(c => Html(c.Response, Pages.ModsPage(_admin, _options.PublicApi))));
+        app.MapGet("/mods", (RequestDelegate)(c => Html(c.Response, Pages.ModsPage(_admin, _options.PublicApi, c.Request.Query["notice"].ToString() is { Length: > 0 and <= 200 } n ? n : null))));
         app.MapGet("/areas", (RequestDelegate)(c => Html(c.Response, Pages.AreaEditorPage(_admin))));
         app.MapGet("/api/areas/map", (RequestDelegate)(c => AreaMapEndpoint(c, image: false)));
         app.MapGet("/api/areas/map.png", (RequestDelegate)(c => AreaMapEndpoint(c, image: true)));
@@ -338,7 +338,7 @@ public sealed class WebUiServer : IAsyncDisposable
         if (name == "say") { name = Int(form["to"]) is var to and > 0 ? "message" : "broadcast"; body = body with { Slot = Int(form["to"]) }; }
         if (name == "mode") body = body with { Value = Int(form["mode"]), Slot = Int(form["level"]) };
         var (_, error) = Run(name, body);
-        await Respond(context, error is null ? "Done." : null, error).ConfigureAwait(false);
+        await Respond(context, error is null ? "Done." : null, error, form["back"] == "mods" ? "/mods" : "/").ConfigureAwait(false);
     }
 
     /// <summary>
@@ -400,14 +400,14 @@ public sealed class WebUiServer : IAsyncDisposable
         return error is null ? ("Flood protection: " + string.Join(", ", changed) + " (applied live).", null) : (null, error);
     }
 
-    private async Task Respond(HttpContext context, string? notice, string? error = null)
+    private async Task Respond(HttpContext context, string? notice, string? error = null, string page = "/")
     {
         var request = context.Request; var response = context.Response;
         notice = error ?? notice ?? "Done.";
         var wantsJson = request.Headers.Accept.ToString().Contains("application/json", StringComparison.OrdinalIgnoreCase);
         if (wantsJson) { response.StatusCode = error is null ? 200 : 400; await Json(response, new CommandResult(error is null, error), WebUiJson.Default.CommandResult).ConfigureAwait(false); return; }
         response.StatusCode = StatusCodes.Status303SeeOther;
-        response.Headers.Location = $"{_options.PathBase}/?notice={Uri.EscapeDataString(notice)}";
+        response.Headers.Location = $"{_options.PathBase}{page}?notice={Uri.EscapeDataString(notice)}";
     }
 
     private static int Int(string? value) => int.TryParse(value, out var n) ? n : 0;
@@ -564,11 +564,15 @@ public sealed class WebUiServer : IAsyncDisposable
             case "end-session": return (new(AdminCommandKind.EndSession), null);
             case "shutdown": return (new(AdminCommandKind.Shutdown), null);
             case "flood": return FloodCommand(b.Text);
+            case "reload-mods":
+                return b.Text is null or "" || ModNameOk.IsMatch(b.Text) ? (new(AdminCommandKind.ReloadMods, Text: b.Text ?? ""), null) : (default, "a mod name (a-z 0-9 _ . -) or nothing for all mods");
         }
         return (default, "unknown command");
     }
 
     private static bool Slot(int slot) => slot is >= 1 and <= 16;
+
+    private static readonly System.Text.RegularExpressions.Regex ModNameOk = new("^[A-Za-z0-9_.-]{1,64}$", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>Validates <c>KEY=VALUE</c> pairs for SetFlood: known keys only, whole numbers &gt;= 0.</summary>
     private static (AdminCommand, string?) FloodCommand(string? text)

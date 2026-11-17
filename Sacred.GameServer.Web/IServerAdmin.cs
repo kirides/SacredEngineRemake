@@ -80,6 +80,8 @@ public enum AdminCommandKind
     Shutdown,
     /// <summary>Text = <c>KEY=VALUE</c> pairs separated by ';' or new lines (FLOOD_* keys, MAX_CONNECTIONS_PER_ADDRESS); applied live.</summary>
     SetFlood,
+    /// <summary>Text = mod name (script file without .lua) or empty for every mod: its "unload" handler runs, then it is loaded again from disk.</summary>
+    ReloadMods,
 }
 
 /// <summary>Flood protection as the game loop uses it right now (see Sacred.GameServer README "Flood protection").</summary>
