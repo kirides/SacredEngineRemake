@@ -100,6 +100,14 @@ public sealed partial class GameServerHost : IScriptServer
         catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault(name, e); }
     }
 
+    /// <summary>The hero moved into another sector (<see cref="PlayerSession.CurrentSector"/> is already updated).</summary>
+    private void ScriptSectorChanged(PlayerSession s)
+    {
+        if (_scripts is null || !_scripts.Has("sector")) return;
+        try { _scripts.FireSector(ScriptPlayerOf(s)); ExecuteScriptKicks(); }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("sector", e); }
+    }
+
     private void OnKill(PlayerSession sender, uint victim, uint killerWord)
     {
         if (victim is >= 1 and <= MaxSlots) { OnHeroDeath(victim, killerWord); return; }
@@ -169,7 +177,7 @@ public sealed partial class GameServerHost : IScriptServer
         if (_world.TryGet(s.Slot, out var hero)) level = CompactLevel(hero.Payload[(hero.LongPrefix ? 24 : 8)..]);
         var key = s.LobbyIdentity is not (0 or -1) ? $"id:{s.LobbyIdentity}:{s.CharacterBlock}" : "name:" + s.Name;
         return new ScriptPlayer(s.Slot, s.Name, key, s.RosterEntry[RosterClass], level, s.InGame, s.IsHost, s.LobbyIdentity,
-            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0, CharacterName(s));
+            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0, CharacterName(s), s.CurrentSector);
     }
 
     private void ExecuteScriptKicks()

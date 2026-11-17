@@ -8,7 +8,7 @@ namespace Sacred.GameServer.Scripting;
 /// reach Lua. Scripts get <see cref="Character"/> (the host strips the "account." prefix of lobby names) and an opaque per-server
 /// <c>uid</c> derived from <see cref="Key"/>.</remarks>
 public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId, double OnlineSeconds = 0,
-    string? Character = null);
+    string? Character = null, int Sector = 0);
 
 /// <summary>A defeated creature: its object reference, its type (Items.pak type), level and name (the game's text: the creature's own
 /// name, else its type's; null without --game-dir) when the server knows them.</summary>
@@ -59,6 +59,7 @@ public interface IScriptServer
 /// server.on("join"|"enter"|"leave", function(player) end)
 /// server.on("chat", function(player, text) return true end)   -- true: the line is not relayed
 /// server.on("kill", function(player, monster) end)            -- monster = { ref, type, level, name } (name nil without --game-dir)
+/// server.on("sector", function(player, sector) end)           -- the hero moved into another sector (player.sector is the same number)
 /// server.every(seconds, fn) / server.after(seconds, fn)
 /// server.broadcast(text) / server.message(player or slot, text) / server.kick(player or slot, reason)
 /// server.players() / server.player(slot) / server.time() / server.log(text)
@@ -280,6 +281,7 @@ public sealed partial class ScriptHost
     }
 
     public bool FirePlayer(string name, ScriptPlayer player) => Has(name) && Fire(name, PlayerTable(player), default, 1);
+    public bool FireSector(ScriptPlayer player) => Has("sector") && Fire("sector", PlayerTable(player), player.Sector, 2);
     public bool FireChat(ScriptPlayer player, string text) => Has("chat") && Fire("chat", PlayerTable(player), text, 2);
     public bool FireKill(ScriptPlayer player, ScriptMonster monster)
     {
@@ -687,10 +689,10 @@ public sealed partial class ScriptHost
     private LuaTable PlayerTable(ScriptPlayer p)
     {
         var character = ModStore.DisplayName(p.Character ?? p.Name);
-        return new(0, 9)
+        return new(0, 10)
         {
             ["slot"] = p.Slot, ["name"] = character, ["character"] = character, ["uid"] = Uid(p.Key), ["class"] = p.Class, ["level"] = p.Level,
-            ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds,
+            ["in_game"] = p.InGame, ["host"] = p.IsHost, ["online"] = p.OnlineSeconds, ["sector"] = p.Sector,
         };
     }
 

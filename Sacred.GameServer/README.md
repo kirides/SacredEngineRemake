@@ -138,6 +138,7 @@ server.on("leave", function(player) end)
 server.on("chat", function(player, text) return true end)   -- public chat; true = not relayed (commands like "!kills")
 server.on("kill", function(player, monster) end) -- monster = { ref, type, level, name }
 server.on("death", function(player, by) end)     -- a hero died; by = { player } or { ref, type, level }
+server.on("sector", function(player, sector) end) -- the hero moved into another sector (player.sector is the same number)
 server.on("start", function() end)               -- after (re)loading
 server.every(seconds, fn)  server.after(seconds, fn)
 server.broadcast(text)  server.message(player or slot, text)  server.kick(player or slot, reason)
@@ -189,7 +190,7 @@ with an error instead of silently becoming a folder of that name. The game serve
 mods: ladders, recent deaths, statistics live in the mod that needs them, so mods can grow without growing the server. (JSON,
 not SQLite: SQLite needs a native library, which would end the single-file Native AOT binary.)
 
-* `player` = `{ slot, name, character, uid, class, level, in_game, host, online }`. **Privacy:** scripts never see lobby ids,
+* `player` = `{ slot, name, character, uid, class, level, in_game, host, online, sector }`. **Privacy:** scripts never see lobby ids,
   owner keys or account names. `name` and `character` are the character name (the server strips the `account.` prefix of
   lobby names, and only of lobby names: a LAN name like `Mr.X` stays), `uid` is an opaque per-server identity of the hero
   (HMAC-SHA256 of its lobby identity with a secret kept in `{scripts-data}/.uid-secret`): stable across sessions on this
@@ -225,7 +226,7 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
   objects) and how `class` maps to the game's 0..9 selector (the player's FIRSTCONTACT class byte is passed as is).
 * Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
   kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
-  shows the kill ladder in chat. `player.online` is the current session in seconds.
+  shows the kill ladder in chat. `player.online` is the current session in seconds. `player.sector` is the sector number the hero stands in (first word of its last 0x148 sector entry; 0 until the server has seen one); the `"sector"` event fires when it changes.
 * `drop_gold` drops a gold pile the same way (no `--game-dir` needed). Money is an ordinary item object: resources
   0x140C..0x140F (Gold client table 0x949920 / test 0x43AF50, GameServer.exe 0x5B0274 / 0x409D30), pile size by amount as the
   game picks it when gold is dropped (0x4AEC1E: below 50, 350, 1000, else). The amount is the value block's price (+8, cItemBase

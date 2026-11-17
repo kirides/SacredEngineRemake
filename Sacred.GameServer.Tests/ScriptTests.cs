@@ -746,4 +746,38 @@ public class ScriptTests
             Assert.AreEqual("777", ChatText(host.WaitFor(0x003).Payload));
         }
     }
+
+    [TestMethod]
+    public void PlayerTableCarriesTheSectorAndTheSectorEventFires()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.on("sector", function(p, sector) server.broadcast("sector " .. sector .. "/" .. p.sector .. " " .. p.name) end)
+            server.on("join", function(p) server.broadcast("join " .. p.sector) end)
+            """);
+        var (host, server, _) = Host(folder);
+        host.FirePlayer("join", server.All[0]);
+        host.FireSector(server.All[0] with { Sector = 2909 });
+        CollectionAssert.AreEqual(new[] { "join 0", "sector 2909/2909 Alice" }, server.Said);
+    }
+
+    [TestMethod]
+    public void SectorEventRunsThroughTheGameServerOnlyWhenTheSectorChanges()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.on("sector", function(p, sector) server.message(p, "sector " .. sector .. "/" .. p.sector) end)
+            """);
+        using var server = new Server(folder);
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        host.WaitFor(0x153);
+        var entry = Convert.FromHexString("5d0b00001f0b200b210b5e0b9d0b9c0b9b0b5c0b5d0b" + new string('0', 36 * 2) + "7c080000");
+        host.Send(0x148, entry);
+        host.WaitFor(0x148);
+        Assert.AreEqual("sector 2909/2909", ChatText(host.WaitFor(0x003).Payload));   // 0x0B5D
+        // The same sector again is no change: no second event.
+        host.Send(0x148, entry);
+        host.WaitFor(0x148);
+        Assert.IsTrue(host.Silent(0x003));
+    }
 }
