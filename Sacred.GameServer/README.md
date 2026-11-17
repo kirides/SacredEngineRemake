@@ -454,7 +454,9 @@ container) and the ground items of a sector the player just took over (`sector`)
 | Key / option | Default | |
 |---|---|---|
 | `AUTH_STRICT_ITEMS` / `--auth-strict-items` | off | `off`, `log` (count and log the unexplained), `on` (refuse them: no state, never saved) |
-| `AUTH_ITEM_SOURCES` | all | sources that explain a creation: `token,baseline,kill,container,trade,rebuild,sector` (`all`, `none`) |
+| `AUTH_ITEM_SOURCES` | all | sources that explain a creation: `token,baseline,kill,container,trade,rebuild,sector,worldstart,purchase` (`all`, `none`) |
+| `AUTH_WORLDSTART_GRACE_MS`, `AUTH_WORLDSTART_MAX_MS` | 3000, 120000 | `worldstart`: the objects a client builds while it starts the game (from its 0x016 until the world start 0x017/0x018, plus the grace): ground items, creature gear and merchant stock of the first sectors (found with a real client: ~300 creations in the two seconds before 0x018). Only while the player is not in the game yet; the maximum closes a start that never completes |
+| `AUTH_PURCHASE_WINDOW_MS`, `AUTH_PURCHASE_PERCENT` | 15000, 25 | `purchase`: a merchant purchase announces the bought item with 0x16D (short prefix, then 0x13F). The authoritative server now keeps that state (before, the item was missing from every save: "inventory entries without an item of the player were left out") and accepts it provisionally; the hero's gold must drop by at least this percentage of the item price within the window, else the item is logged (`log`) or removed from the server's world (`on`, never saved) |
 | `AUTH_LOOT_WINDOW_MS`, `AUTH_LOOT_RANGE`, `AUTH_LOOT_PER_KILL` | 5000, 1500, 8 | after a kill: how long, how far (world units, a sector is ~3435), how many |
 | `AUTH_LOOT_LEVEL_MARGIN` | 0 | item level at most creature level + margin (0 = not checked; the level mapping is unverified) |
 | `AUTH_CONTAINER_WINDOW_MS`, `AUTH_CONTAINER_RANGE`, `AUTH_CONTAINER_PER_OPEN` | 5000, 800, 8 | the same for opened containers (0x18C) |
@@ -465,7 +467,9 @@ container) and the ground items of a sector the player just took over (`sector`)
 
 A refused or logged item names the player's last 16 messages (opcode and age) in its log line, and a kill or container seen *after* an unexplained
 item near it is logged as "near an event ... later" and counted (`Witness.ExplainedLate`): both are there to find the paths that are still unknown
-(merchant purchases, quest rewards, crafting) from real sessions. **Known limits:** the client that owns a sector rolls its loot, so the witness
+(merchant purchases, quest rewards, crafting) from real sessions. **Real-client checks (Closed Net, loopback, `gear/examples/closedtest`):** world start, a merchant purchase (right click on a ware) and the shared stash token path run with `--auth-strict-items=on` without a single false refusal, the hero is saved with the bought item and its gold, and a copy of a backpack item made by the client without a token is refused (its updates too: every item state of a reference the world does not have yet counts as a creation) and not present at the next login. Not exercised with a real client yet: kills and their loot, chests, crafting and socketing, quest rewards, trades.
+
+**Known limits:** the client that owns a sector rolls its loot, so the witness
 bounds outcomes (where, when, how many) but cannot reproduce them; merchant sales and quest gold are not covered by the gold ledger yet (so
 `AUTH_STRICT_GOLD=on` also keeps legitimately earned merchant gold out of the save); none of the source rules is verified with a real client yet,
 which is why everything defaults to off.

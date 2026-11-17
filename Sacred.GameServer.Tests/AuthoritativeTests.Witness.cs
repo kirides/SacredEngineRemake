@@ -163,6 +163,7 @@ public partial class AuthoritativeTests
             Assert.IsTrue(types.Contains(Sacred.GameServer.Wire.TinCatWire.LoginRequest), "the login is in the capture");
 
             var config = new Sacred.GameServer.Config.GameServerConfig { TickMilliseconds = 5 };
+            config.Auth.Witness.WorldStartGraceMs = 0;                  // as in the live run: the items of this session come right after the world start
             config.Auth.StrictItems = StrictItemsMode.On;
             config.Flood.Enabled = false;
             var report = CaptureReplay.Run(config, CaptureReader.Open(file));
@@ -174,6 +175,7 @@ public partial class AuthoritativeTests
 
             // other strictness, same session: kills explain nothing
             var strict = new Sacred.GameServer.Config.GameServerConfig { TickMilliseconds = 5 };
+            strict.Auth.Witness.WorldStartGraceMs = 0;
             strict.Auth.StrictItems = StrictItemsMode.On;
             strict.Flood.Enabled = false;
             strict.ApplyLine("AUTH_ITEM_SOURCES=token,baseline,trade,rebuild");
@@ -199,6 +201,41 @@ public partial class AuthoritativeTests
             Assert.AreEqual("world", ItemWhere(host, player, 0x5701), "loot where the creature died, not where it was first seen");
             player.Send(0x16F, Positioned(ItemState(0x5702, 0x12A, 0x42), 10_100, 10_000, 44));
             Assert.AreEqual("nil", ItemWhere(host, player, 0x5702, not: "world"), "nothing died at the first position");
+        });
+    }
+
+    /// <summary>The world a client builds while it starts (between its 0x016 and the world start 0x018) is explained by the WorldStart source;
+    /// the same creation after the start is not (strict items on). A merchant purchase (0x16D, found with a real client: the state of the
+    /// bought item, then 0x13F) is kept by the server, accepted provisionally, and removed when the hero gold does not pay for it.</summary>
+    [TestMethod]
+    public void WorldStartAndPurchaseAreWitnessSources()
+    {
+        StrictRun(StrictItemsMode.On, (host, player) =>
+        {
+            // StrictRun brings the player to the world start already (0x016 and 0x018 were sent): inside the grace, a creation is explained
+            player.Send(0x16F, ItemState(0x6001, 0x12A, 0x41));
+            Assert.AreEqual("world", ItemWhere(host, player, 0x6001), "world start source");
+            Assert.AreEqual(0, host.StrictItemsRefused);
+            Thread.Sleep(700);
+            player.Send(0x16F, ItemState(0x6002, 0x12A, 0x42));
+            Assert.AreEqual("nil", ItemWhere(host, player, 0x6002, not: "world"), "the grace is over");
+            Assert.AreEqual(1, host.StrictItemsRefused);
+
+            // a purchase: a 0x16D state with the short prefix
+            var full = ItemState(0x6003, 0x12A, 0x43);
+            var short8 = new byte[8 + full.Length - 24];
+            full.AsSpan(0, 8).CopyTo(short8);
+            full.AsSpan(24).CopyTo(short8.AsSpan(8));
+            player.Send(0x16D, short8);
+            Assert.AreEqual("world", ItemWhere(host, player, 0x6003, not: "nil"), "kept provisionally");
+            var until = Environment.TickCount64 + 5000;
+            while (Environment.TickCount64 < until && ItemWhere(host, player, 0x6003, not: "world") == "world") Thread.Sleep(50);
+            Assert.AreEqual("nil", ItemWhere(host, player, 0x6003, not: "world"), "removed: no gold paid for it");
+            Assert.AreEqual(2, host.StrictItemsRefused);
+        }, configure: config =>
+        {
+            config.Auth.Witness.WorldStartGraceMs = 500;
+            config.Auth.Witness.PurchaseWindowMs = 800;
         });
     }
 }

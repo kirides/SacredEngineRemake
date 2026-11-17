@@ -268,4 +268,63 @@ public class WitnessTests
         trail.Forget(3);
         Assert.AreEqual("", trail.Describe(3, 200));
     }
+
+    [TestMethod]
+    public void TheWorldAClientBuildsWhileItStartsIsExplainedUntilTheWorldStartPlusGrace()
+    {
+        var options = new WitnessOptions { WorldStartGraceMs = 1000, WorldStartMaxMs = 10_000 };
+        var w = new ItemWitness(options);
+        var c = Content(1);
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(1, c), c, 0), "before the upload begins");
+        w.OnWorldStart(3, 100);
+        Assert.AreEqual(ItemSource.WorldStart, w.Classify(3, Facts(2, c), c, 200), "a held (positionless) item of the world");
+        Assert.AreEqual(ItemSource.WorldStart, w.Classify(3, Facts(3, c, 500, 500, 7), c, 300), "a ground item of the world");
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(4, Facts(4, c), c, 300), "only the player who is starting");
+        w.OnWorldEntered(3, 5000);
+        Assert.AreEqual(ItemSource.WorldStart, w.Classify(3, Facts(5, c), c, 5900), "inside the grace");
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(6, c), c, 6200), "after the grace");
+        // a world start that never completes closes by itself; a second begin after the start does not reopen (the host checks InGame)
+        w.OnWorldStart(5, 0);
+        Assert.AreEqual(ItemSource.WorldStart, w.Classify(5, Facts(7, c), c, 9000));
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(5, Facts(8, c), c, 10_500), "the maximum");
+        w.Forget(3);
+        w.OnWorldStart(3, 20_000);
+        w.Forget(3);
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(9, c), c, 20_100), "forgotten with the player");
+        // the source can be left out
+        var off = new ItemWitness(new WitnessOptions { Sources = WitnessOptions.AllSources & ~ItemSourceSet.WorldStart });
+        off.OnWorldStart(3, 0);
+        Assert.AreEqual(ItemSource.Unexplained, off.Classify(3, Facts(10, c), c, 10), "AUTH_ITEM_SOURCES without worldstart");
+        Assert.IsTrue(WitnessOptions.TryParseSources("token,worldstart,purchase", out var set));
+        Assert.AreEqual(ItemSourceSet.Token | ItemSourceSet.WorldStart | ItemSourceSet.Purchase, set);
+    }
+
+    [TestMethod]
+    public void AMerchantPurchaseIsAcceptedOnlyWhenTheHeroGoldPaysForIt()
+    {
+        var options = new WitnessOptions { PurchaseWindowMs = 1000, PurchasePercent = 50 };
+        var w = new ItemWitness(options);
+        var c = Content(1);
+        ItemFacts Bought(uint reference, uint price) => new(reference, 0x12A, 0, 0, 0, 0, 0, ItemWitness.Fnv(c), Purchase: true, Price: price);
+        Assert.AreEqual(ItemSource.Unexplained, w.Classify(3, Facts(1, c), c, 0), "an ordinary creation is not a purchase");
+        Assert.AreEqual(ItemSource.Purchase, w.Classify(3, Bought(10, 1000), c, 100));
+        w.OnPurchase(3, 10, 1000, 100);
+        w.OnGoldSpent(3, 400, 300);                         // less than 50 % of the price: pays nothing
+        var unpaid = new uint[ItemWitness.PurchaseRing];
+        Assert.AreEqual(0, w.TakeUnpaid(3, 900, unpaid), "inside the window");
+        Assert.AreEqual(1, w.TakeUnpaid(3, 1300, unpaid), "not paid in time");
+        Assert.AreEqual(10u, unpaid[0]);
+        Assert.AreEqual(0, w.TakeUnpaid(3, 1400, unpaid), "reported once");
+
+        w.OnPurchase(3, 11, 1000, 2000);
+        w.OnPurchase(3, 12, 400, 2000);
+        w.OnGoldSpent(3, 1100, 2100);                       // pays the older one (500 needed) and then the other (200 needed)
+        Assert.AreEqual(0, w.TakeUnpaid(3, 9000, unpaid), "both paid");
+
+        w.OnPurchase(4, 13, 1000, 3000);
+        w.OnGoldSpent(3, 5000, 3100);                       // another player's gold pays nothing
+        Assert.AreEqual(1, w.TakeUnpaid(4, 9000, unpaid));
+        var off = new ItemWitness(new WitnessOptions { Sources = WitnessOptions.AllSources & ~ItemSourceSet.Purchase });
+        Assert.AreEqual(ItemSource.Unexplained, off.Classify(3, Bought(14, 1), c, 0), "AUTH_ITEM_SOURCES without purchase");
+    }
 }

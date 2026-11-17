@@ -104,7 +104,8 @@ public sealed partial class GameServerHost
             if (s.State != SessionState.Closed) RemovePlayer(s, ReasonCheat, notifyVictim: true);
             return false;
         }
-        if (m.Opcode is 0x16F or 0x16E or 0x16D && StrictRefuses(s, reference, body, m.Payload, prefix, purchase: m.Opcode == 0x16D)) return false;
+        // every item state of a reference the world does not have yet is a creation: an update (0x16C, 0x169) of a refused item must not bring it in
+        if (m.Opcode is 0x16F or 0x16E or 0x16D or 0x16C or 0x169 && StrictRefuses(s, reference, body, m.Payload, prefix, purchase: m.Opcode == 0x16D)) return false;
         if (!_config.Auth.CheckItems || ItemGuard.Check(body, ItemFootprints) is not { } why) return true;
         RejectedItems++;
         Violation(s, $"0x{m.Opcode:X3} 0x{reference:X}: {why}");
