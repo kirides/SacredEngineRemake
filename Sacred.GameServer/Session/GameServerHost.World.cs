@@ -72,6 +72,7 @@ public sealed partial class GameServerHost
         }
         if (entry.Owner != s.Slot) { entry.KnownBy &= (ushort)~Bit(s.Slot); return; }
         var knownBy = entry.KnownBy;
+        RememberRemovedItem(s, reference, entry);                           // authoritative: items a player destroyed (GameServerHost.ScriptHeroes.cs)
         _world.Remove(m.Payload);
         for (byte slot = 1; slot <= MaxSlots; slot++)
             if (slot != s.Slot && (knownBy & Bit(slot)) != 0 && _slots[slot] is { InGame: true } target)
