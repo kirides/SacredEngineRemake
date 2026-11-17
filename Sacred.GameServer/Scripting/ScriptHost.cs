@@ -29,7 +29,7 @@ public sealed record ScriptDrop(uint Reference, uint Type, uint Quality, string 
 public sealed record ScriptHero(Sacred.GameServer.Web.HeroInfo Info, (uint Key, uint Value)[] QuestPairs);
 
 /// <summary>What scripts can do on the server. Implemented by the game server; called on the game loop thread only.</summary>
-public interface IScriptServer
+public partial interface IScriptServer
 {
     long NowMs { get; }
     IReadOnlyList<ScriptPlayer> Players();

@@ -37,11 +37,13 @@ public sealed partial class ScriptHost
             _durable.Add(new DurableWrite { Task = store.FlushDurable(), Store = store, Function = function, File = _currentFile, State = _state! });
             return c.Return(true);
         });
+        AddHeroes(server);                                                  // hero items and saves (ScriptHost.Heroes.cs)
     }
 
     /// <summary>Game loop: answers finished durable writes in the order they started.</summary>
     private void PumpDurable()
     {
+        PumpHeroSaves();
         while (_durable.Count > 0 && _durable[0].Task.IsCompleted)
         {
             var write = _durable[0];
