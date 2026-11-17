@@ -62,6 +62,7 @@ public static class CaptureReplay
         var clock = new ManualClock();
         ReplayListener? listener = null;
         var host = new GameServerHost(config, new AdmissionRules(null), null, clock) { AssumeHeroCustody = true };
+        if (config.GameDirectory is { } gameDir && config.Auth.Witness.PriceCheck != Auth.StrictItemsMode.Off) host.ItemPrices = Auth.ItemPrices.Load(gameDir, out _);
         host.AddListener(inbox => listener = new ReplayListener(inbox));
         var links = new Dictionary<ushort, ReplayLink>();
         long frames = 0, ticks = 0;

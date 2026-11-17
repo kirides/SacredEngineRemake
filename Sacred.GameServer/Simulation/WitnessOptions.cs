@@ -87,6 +87,9 @@ public sealed class WitnessOptions
     /// <summary>An item admitted on a token with more value records than its creation had (sockets are added by a later update) must match the
     /// token's records within this time.</summary>
     public int TokenCompleteMs { get; set; } = 10_000;
+    /// <summary>The price of a purchase or trader stock item: <c>off</c> trusts the price in the item's data, <c>log</c> (default) logs where it
+    /// differs from the computed one (<c>--game-dir</c> needed), <c>on</c> uses the computed price for the payment check.</summary>
+    public StrictItemsMode PriceCheck { get; set; } = StrictItemsMode.Log;
     /// <summary>A quest event explains up to <see cref="QuestPerEvent"/> item creations of the same player within <see cref="QuestWindowMs"/>.</summary>
     public int QuestWindowMs { get; set; } = 5000;
     public int QuestPerEvent { get; set; } = 4;
@@ -173,6 +176,7 @@ public sealed class WitnessOptions
             case "AUTH_PURCHASE_PERCENT": PurchasePercent = NonNegative(value, PurchasePercent); return true;
             case "AUTH_QUEST_WINDOW_MS": QuestWindowMs = NonNegative(value, QuestWindowMs); return true;
             case "AUTH_QUEST_PER_EVENT": QuestPerEvent = NonNegative(value, QuestPerEvent); return true;
+            case "AUTH_PRICE_CHECK": PriceCheck = ParseMode(value); return true;
             case "AUTH_TOKEN_COMPLETE_MS": TokenCompleteMs = NonNegative(value, TokenCompleteMs); return true;
             case "AUTH_STRICT_GOLD": StrictGold = ParseMode(value); return true;
             case "AUTH_GOLD_WINDOW_MS": GoldWindowMs = NonNegative(value, GoldWindowMs); return true;
