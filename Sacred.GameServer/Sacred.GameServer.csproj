@@ -33,6 +33,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Sacred.Network/Sacred.Network.csproj" />
+    <PackageReference Include="LuaCSharp" Version="0.5.8" />
     <ProjectReference Include="../Sacred.GameServer.Web/Sacred.GameServer.Web.csproj" />
   </ItemGroup>
 </Project>

@@ -43,6 +43,7 @@ public sealed partial class GameServerHost
     private void Route(PlayerSession s, in GoldMessageView m)
     {
         if (_config.Auth.Enabled && !AuthoritativeFilter(s, m)) return;
+        if (_scripts is not null && ScriptMessage(s, m)) return;
         if (WorldMessage(s, m)) return;
         var mode = Routing.Mode(m.Opcode);
         if (mode != RouteMode.None) { Forward(s, m, mode, Routing.IncludeSender(m.Opcode)); return; }
@@ -206,11 +207,13 @@ public sealed partial class GameServerHost
             for (var slot = 1; slot <= MaxSlots; slot++)             // 0x4CA0A4: 1000 refs to every other connected player
                 if (_slots[slot] is { IsHost: false } other && other.State >= SessionState.SlotAssigned) GrantReferences(other, JoinerReferenceGrant);
             Log.Info($"Host: The world has {_sectorCount} sectors. #{s.Slot} is in the game, joiners may follow.");
+            if (_scripts is not null) ScriptPlayerEvent("enter", s);
             return;
         }
         StreamWorldTo(s);
         SendMessage(s, 0x017, 0, s.Slot, default);
         Log.Info($"#{s.Slot} {s.Name} entered the world ({_world.Count} objects)");
+        if (_scripts is not null) ScriptPlayerEvent("enter", s);
     }
 
     private void StoreWorldBank(PlayerSession s, in GoldMessageView m)
@@ -308,6 +311,7 @@ public sealed partial class GameServerHost
             SendMessage(s, 0x157, 0, 0, kick);
             s.Connection.Flush();
         }
+        if (_scripts is not null) ScriptPlayerEvent("leave", s);
         if (_config.Auth.Enabled) AuthoritativeLeave(s);
         var slot = s.Slot;
         if (slot != 0 && _slots[slot] == s) RecordChat(ChatKind.System, s, -1, reason == ReasonLeft ? "left" : $"removed (reason {reason})");

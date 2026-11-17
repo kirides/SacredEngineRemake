@@ -81,6 +81,12 @@ public static class CommandLine
         new("Flood protection", "flood-strike-window", OptionKind.Int, "strike window in seconds", "10", 1),
         new("Flood protection", "flood-upload-grace", OptionKind.Int, "seconds of relaxed limits while a player uploads its world", "60"),
 
+        // ---- server scripts ----
+        new("Scripts", "scripts", OptionKind.Flag, "run the Lua scripts of the scripts folder (default: on when the folder exists; 0 = off)", "1"),
+        new("Scripts", "scripts-dir", OptionKind.Path, "folder with the *.lua scripts, reloaded when a file changes (default scripts)", "scripts"),
+        new("Scripts", "scripts-data", OptionKind.Path, "file with the scripts' saved values (default script-data.json)", "script-data.json"),
+        new("Scripts", "scripts-budget", OptionKind.Int, "Lua instructions one handler or timer may run (default 1000000)", "1000000", 10000, 100000000),
+
         // ---- web UI (value may also follow as the next argument; the same keys exist as --WebUi:Port=..., webui.json, SACRED_GS_WebUi__Port) ----
         new("Web UI", "webserver", OptionKind.Flag, "start the management web UI", "1", WebStyle: true),
         new("Web UI", "webui-enabled", OptionKind.Flag, "same as --webserver", "1", WebStyle: true),

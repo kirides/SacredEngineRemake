@@ -48,6 +48,8 @@ if (config.Auth.Enabled && config.GameDirectory is { } itemDir)
     else if (host.ItemFootprints is { } tables) Log.Info($"Item tables: {tables.FromRows} types with a Weapon.pak footprint (of {Sacred.GameServer.Auth.Hero.ItemFootprints.ResourceCount}) from '{itemDir}'.");
 }
 
+if (config.Scripts.IsEnabled) host.StartScripts();
+
 if (config.UdpPort > 0)
 {
     // Sacred Bild players reach the game over its UDP transport (SBT/KCP) when the host answers, else they fall back to TCP.

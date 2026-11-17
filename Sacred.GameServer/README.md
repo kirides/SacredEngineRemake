@@ -122,6 +122,43 @@ online, lobby kick, Closed Net character, lobby shutdown).
    not full parity with the client API).
 6. Ladder export (`LADDER_EXPORT`).
 
+## Server scripts (Lua)
+
+Lua scripts run on the server itself, with [LuaCSharp](https://github.com/nuskey8/Lua-CSharp) 0.5.8 (pure managed Lua 5.2:
+no native library, Native AOT clean, one binary). Every `*.lua` file of the scripts folder (`--scripts-dir`, default
+`scripts`) is loaded in name order when the server starts and all of them are reloaded half a second after one changes; no
+restart is needed. Without the folder (or with `--scripts=0`) nothing runs. `scripts-examples/kill_milestones.lua` is a
+complete example.
+
+```lua
+server.on("join", function(player) end)          -- admitted
+server.on("enter", function(player) end)         -- in the world (0x017/0x018 answered)
+server.on("leave", function(player) end)
+server.on("chat", function(player, text) return true end)   -- public chat; true = not relayed (commands like "!kills")
+server.on("kill", function(player, monster) end) -- monster = { ref, type, level }
+server.on("start", function() end)               -- after (re)loading
+server.every(seconds, fn)  server.after(seconds, fn)
+server.broadcast(text)  server.message(player or slot, text)  server.kick(player or slot, reason)
+server.players()  server.player(slot)  server.time()  server.log(text)  print(...)
+server.get(player or nil, key [, default])  server.set(player or nil, key, value)  server.add(player or nil, key [, n])
+```
+
+* `player` = `{ slot, name, key, class, level, in_game, host, id }`; `key` identifies the hero across sessions (lobby id and
+  hero block, or the name in LAN games). `get/set/add` keep numbers, strings and booleans per hero (or globally with `nil`)
+  in `--scripts-data` (default `script-data.json`), written through a temporary file and a move, flushed every 10 s and at
+  shutdown.
+* Kills come from 0x17D `[creature ref][killer]` (GameServer.exe case 0x4C647E: native death event 0x208 on its creature). The
+  killer word is a player slot, or an object of a player (credited to its owner), else the sender. Type and level come from
+  the creature's last 0x16E/0x16F state in the server's object world (0 when the server never saw it). Each creature counts once.
+* Messages from scripts are server chat (origin 0), like the web UI's broadcast and private messages.
+* Sandbox: basic (no `dofile`, `loadfile`, `load`, `collectgarbage`), `string`, `table`, `math`, `bit32`; no `io`, `os`,
+  `require` or `debug`. Each handler or timer call may run `--scripts-budget` Lua instructions (default 1,000,000, a few ms);
+  more stops it with an error (an endless loop cannot freeze the game, `pcall` cannot swallow the stop), and a handler that
+  fails 20 times in a row is switched off. Errors are logged with the file name. Scripts are the server owner's code: the
+  sandbox protects against mistakes, not against a hostile author.
+* Runs on the game loop thread; calls into Lua do not allocate, a kick requested by a script runs after the script returns.
+* Not yet: rewards (gold, items) and creature names; see the roadmap.
+
 ## Flood protection (`--flood-protection`, on with `--authoritative`)
 
 GameServer.exe has none, so plain relay games stay unlimited unless `FLOOD_PROTECTION=1` is set; `--authoritative` turns it on

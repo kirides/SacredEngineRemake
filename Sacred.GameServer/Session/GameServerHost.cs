@@ -88,6 +88,7 @@ public sealed partial class GameServerHost : IDisposable
             while (_clock.ElapsedMilliseconds < next && !_stop) Thread.SpinWait(50);
         }
         EndSessionForPlayers();
+        StopScripts();
         foreach (var s in _sessions) s.Connection.Close();
         Log.Info("--- Gameserver Shutdown ---");
     }
@@ -137,6 +138,7 @@ public sealed partial class GameServerHost : IDisposable
         PumpEnvironment(now);
         PumpAdmin(now);
         OnTick?.Invoke(Tick);
+        PumpScripts(now);
         foreach (var s in _sessions) s.Connection.Flush();
         for (var i = _retired.Count - 1; i >= 0; i--)
             if (now >= _retired[i].Due) { _retired[i].Connection.ReleaseBuffers(); _retired.RemoveAt(i); }
@@ -273,6 +275,7 @@ public sealed partial class GameServerHost : IDisposable
         else if (_hostWorldAvailable) GrantReferences(s, JoinerReferenceGrant);
         SendEnvironment(s);
         Broadcast(0x151, s.Slot, default, except: s);
+        if (_scripts is not null) ScriptPlayerEvent("join", s);
     }
 
     private void OnPassword(PlayerSession s, in GoldMessageView m)
