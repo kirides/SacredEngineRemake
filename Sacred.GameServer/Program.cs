@@ -11,27 +11,11 @@ using Sacred.Network.Admission;
 
 if (args.Contains("--help") || args.Contains("-h"))
 {
-    Console.WriteLine("""
-        SacredGameServer - headless drop-in replacement for Sacred's GameServer.exe
-
-        Reads Gameserver.cfg (NETWORK_PORT_TCP, NETWORK_PORT_LISTEN, NETWORK_PASSWORD, NETWORK_PRECONFIG_MODE,
-        NETWORK_PRECONFIG_LEVEL, NETWORK_PRECONFIG_MAXPLAYERS, LADDER_EXPORT). Options use the same keys:
-          --network-port-tcp=2006 --network-port-listen=2005 --network-password=secret   (Gameserver.cfg in the working or game directory)
-          --game-dir=/srv/sacred    directory with Sacred.exe, tincat2.dll and the Pak/Bin data (required unless --accept-any-data)
-          --accept-any-data         do not verify client version/data fingerprints (development only)
-          --announce-version=N      client version to announce when no game data is read
-          --trace                   log every received and sent message (opcode, sender, origin, first 32 bytes)
-          --network-lobby=lobby.example.org --network-lobbyport=7066   register the game in an Open Internet lobby
-          --lobby-channel=5         lobby channel of the game (GameServer.exe uses 5)
-          --closed-net              the lobby is a Closed Internet lobby: fetch every player's hero from it (implied for channels other than 5)
-          --udp-port=2105           Sacred Bild UDP transport (KCP) for players running Sacred Bild; 0 turns it off
-          --webserver --webui-hostname=127.0.0.1 --webui-port=8080 --webui-password=secret   management web UI (see docs: WebUi:* keys,
-                            webui.json, SACRED_GS_WebUi__Port environment variables; command line wins over file over environment)
-          --server-name="My realm"  --public-address=203.0.113.5  --lan-announce=0  --tick-ms=20  --config=path
-        """);
+    Console.Write(CommandLine.HelpText());
     return 0;
 }
 
+if (CommandLine.Validate(args) is { } commandLineError) { Console.Error.WriteLine(commandLineError); return 2; }   // before anything is bound
 var config = GameServerConfig.Load(args);
 Log.Open("Gameserver.log");
 Log.TraceEnabled = config.Trace;

@@ -58,7 +58,7 @@ SacredGameServer --accept-any-data      # development: skip version/fingerprint 
 
 `--game-dir` needs `Sacred.exe`, `tincat2.dll` and the Pak/Bin data of the supported English Gold install (same files the
 client hashes); clients with different data are rejected exactly like the original (reason 6 + mask).
-All `Gameserver.cfg` keys can also be passed as `--key=value`.
+All `Gameserver.cfg` keys can also be passed as `--key=value`. The command line is strict: an unknown option or a bad value is refused with exit code 2 (and a "did you mean" hint) before any port is bound; `quiet` (the original's no-dialog switch) is accepted. `--help` is generated from the same option table (`Config/CommandLine.cs`). Gameserver.cfg lines, `webui.json` and environment variables stay lenient.
 
 ## Lobby
 
