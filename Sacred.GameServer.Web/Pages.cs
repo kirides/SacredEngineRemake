@@ -9,7 +9,7 @@ namespace Sacred.GameServer.Web;
 /// are always HTML encoded. The blocks <c>#head</c>, <c>#players</c>, <c>#bans</c> and <c>#session</c> are what <c>/fragment</c>
 /// returns and the page swaps in every few seconds; chat arrives through the SSE stream.
 /// </summary>
-internal static class Pages
+internal static partial class Pages
 {
     private static readonly string[] Modes = ["Default", "Free game", "Player killer", "Campaign", "Underworld campaign"];
     private static readonly string[] Levels = ["Any level", "Bronze", "Silver", "Gold", "Platinum", "Niobium"];
@@ -178,7 +178,8 @@ internal static class Pages
           .Append("<a href=\"mods\"").Append(current == "mods" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("users")).Append("Mods <span class=\"count\">")
           .Append(mods).Append("</span></a>")
           .Append("<a href=\"areas\"").Append(current == "areas" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Areas</a>")
-          .Append("<a href=\"events\"").Append(current == "events" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Events</a></nav>");
+          .Append("<a href=\"events\"").Append(current == "events" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Events</a>")
+          .Append("<a href=\"auction\"").Append(current == "auction" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Auction</a></nav>");
     }
 
     /// <summary>

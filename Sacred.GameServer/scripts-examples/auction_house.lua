@@ -19,22 +19,33 @@
 
 server.describe("Auction house: players sell items to each other for gold (Sacred Gear mod auction-house); the server keeps the market, a page lists the auctions.")
 
--- ---- market rules (edit here; a reload applies them) -----------------------------------------------------------------------
+-- ---- market rules ------------------------------------------------------------------------------------------------------------
+-- The values below only seed a fresh install: the first run copies them into this mod's storage (key "config") and from then on the
+-- storage is the truth: edit it on the web UI's Auction page (/auction, admin) or in the mod storage; changes apply within 2 s, no
+-- reload. The /mods/auction_house/ page shows the rules in force (and the JSON /rules).
 local config = {
     durations = { 1, 3, 7 },        -- days a listing may run (real time on the server's clock)
     fee_per_day = 0.5,              -- percent of the price per listed day, paid when listing, not returned (0: none)
     fee_min = 1,                    -- gold, when there is a fee
     sale_cut = 5,                   -- percent of the price taken when an item sells (0: none)
     max_per_seller = 20,
-    max_listings = 400,
+    max_listings = 400,             -- the whole market
+    allow_special = false,          -- "special" items (keys, quest items) may be listed
     price_min = 1,
     price_max = 2000000000,
     sweep_seconds = 60,             -- expired listings go back to their sellers' mailboxes this often
     verify_seconds = 30,            -- Closed Net: how long to wait for the server to see an item or gold leave or arrive
+    token_seconds = 120,            -- Closed Net: how long the permission for the client to create a delivered item lives (1..600)
+    gold_timeout = 120,             -- Closed Net: seconds after a gold withdrawal before the server settles it from the saved hero
     recent_sales = 30,              -- sales on the page and in /recent-sales
     chat_notices = true,            -- "your item sold" also as a server chat line
-    page_public = true,             -- the page and the JSON (character names only) without the admin password (WebUi:PublicApi)
 }
+local page_public = true            -- the page and the JSON (character names only) without the admin password (WebUI:PublicApi); read at load
+local RULE_KEYS = { "durations", "fee_per_day", "fee_min", "sale_cut", "max_per_seller", "max_listings", "allow_special", "price_min",
+    "price_max", "sweep_seconds", "verify_seconds", "token_seconds", "gold_timeout", "recent_sales", "chat_notices" }
+local MINIMUM = { max_per_seller = 1, max_listings = 1, price_min = 1, price_max = 1, sweep_seconds = 5, verify_seconds = 5, token_seconds = 1,
+    gold_timeout = 10, recent_sales = 1 }
+local MAXIMUM = { token_seconds = 600, fee_per_day = 100, sale_cut = 100 }
 
 local CHANNEL = "auction"
 
@@ -1031,19 +1042,68 @@ local NOTICES = {
     expired = function(m) return "Auction house: " .. tostring(m.name) .. " did not sell; it is back in your mailbox." end,
 }
 
-local gold_marks = {}       -- uid .. " " .. rid -> the hero's gold (server view) when a gold delivery went out (Closed Net)
+-- Closed Net (the server holds the hero): tokens and the gold check.
+local tokens = {}               -- uid .. " " .. rid -> { id, exp }: the server's permission for the client to create the delivered item
+local gold_watch = {}           -- uid .. " " .. rid -> { mark, low, gold, t, seen }: a gold withdrawal the client is to add with add_gold
+-- The gold check (inside this script; it is not a general gold gate: the server has no gold hook): the hero's gold (the server's own copy) at the
+-- time of the withdrawal (`mark`) and the lowest value seen since (`low`, so gold spent before the client's report does not hide the
+-- increase). The withdrawal counts as done when the gold is seen to have risen by the amount from `low`, or stands at mark + amount.
+
+local function save_gold_watch()
+    if next(gold_watch) == nil then pcall(server.delete, "gold_watch") else pcall(server.save, "gold_watch", gold_watch) end
+end
+
+local function drop_token(key, consumed)
+    local t = tokens[key]
+    if not t then return end
+    tokens[key] = nil
+    if not consumed then server.revoke_item_token(t.id) end
+end
+
+-- A token for exactly the item of this delivery (reused for a repeated rid while it lives, else a new one).
+local function token_for(player, key, rid, data)
+    local now = server.time()
+    local t = tokens[key]
+    if t and t.exp - 5 > now then return t.id end
+    drop_token(key)
+    local id, err = server.item_token(player, { data = data, label = "auction:" .. tostring(rid) }, config.token_seconds)
+    if not id then
+        server.log("auction: " .. tostring(player.name) .. ": no token for delivery " .. tostring(rid) .. " (" .. tostring(err) .. ")")
+        return nil
+    end
+    tokens[key] = { id = id, exp = now + math.min(600, math.max(1, config.token_seconds)) }
+    return id
+end
+
+local function gold_rose(player, w)
+    local hero = server.hero(player)
+    if not hero or type(hero.gold) ~= "number" then return false end
+    return hero.gold - w.low >= w.gold or hero.gold >= w.mark + w.gold
+end
 
 local function send(slot, msg)
     if msg.op == "info" then
         msg.where = "server"
-        msg.authoritative = server.authoritative(slot) or nil
+        local closed = server.authoritative(slot) and true or false
+        msg.authoritative = closed or nil
+        msg.closed = closed
+        if type(msg.rules) == "table" then msg.rules.allow_special = config.allow_special end
     end
-    if msg.op == "deliver" and msg.kind == "gold" and server.authoritative(slot) then
+    if msg.op == "deliver" and server.authoritative(slot) then
         local p = server.player(slot)
-        local key = p and (p.uid .. " " .. tostring(msg.rid))
-        if key and gold_marks[key] == nil then
-            local hero = server.hero(slot)
-            gold_marks[key] = hero and hero.gold or false
+        if p and msg.rid then
+            local key = p.uid .. " " .. tostring(msg.rid)
+            if msg.kind == "gold" then
+                if gold_watch[key] == nil then
+                    local hero = server.hero(slot)
+                    if hero and type(hero.gold) == "number" then
+                        gold_watch[key] = { mark = hero.gold, low = hero.gold, gold = msg.gold or 0, t = server.time() }
+                        save_gold_watch()
+                    end
+                end
+            elseif type(msg.data) == "string" then
+                token_for(p, key, msg.rid, msg.data)
+            end
         end
     end
     if msg.op == "notify" and config.chat_notices and NOTICES[msg.kind] then server.message(slot, NOTICES[msg.kind](msg)) end
@@ -1071,11 +1131,76 @@ market = core.new({
 })
 if market.problem then server.log("auction: " .. market.problem) end
 
+-- Rules as data: the defaults above, then the table under "config" in this mod's storage (invalid values are ignored).
+local defaults = {}
+for _, k in ipairs(RULE_KEYS) do
+    local v = config[k]
+    if type(v) == "table" then v = { table.unpack(v) } end
+    defaults[k] = v
+end
+local function apply_overrides()
+    local o = server.load("config")
+    if type(o) ~= "table" then o = {} end
+    for _, k in ipairs(RULE_KEYS) do
+        local d, v = defaults[k], o[k]
+        local use = d
+        if type(d) == "number" and type(v) == "number" and v == v and v >= (MINIMUM[k] or 0) and v <= (MAXIMUM[k] or 2000000000) then use = v
+        elseif type(d) == "boolean" and type(v) == "boolean" then use = v
+        elseif k == "durations" and type(v) == "table" and #v >= 1 and #v <= 8 then
+            local list = {}
+            for _, x in ipairs(v) do
+                if type(x) == "number" and x >= 1 and x <= 365 and x == math.floor(x) then list[#list + 1] = x end
+            end
+            if #list >= 1 then use = list end
+        end
+        if type(use) == "table" then use = { table.unpack(use) } end
+        config[k] = use
+    end
+    if config.price_max < config.price_min then config.price_max = config.price_min end
+    market:set_rules({ durations = config.durations, fee_per_day = config.fee_per_day, fee_min = config.fee_min, sale_cut = config.sale_cut,
+        max_per_seller = config.max_per_seller, max_listings = config.max_listings, price_min = config.price_min, price_max = config.price_max })
+end
+-- The defaults above are only the first-run seed: the first time this mod runs with no "config" in its storage they are copied there, and
+-- from then on the storage is the truth (edit it on the web UI's Auction page /auction or in the mod storage). A write through
+-- POST /api/mod-store bumps config_rev; it is polled, so a change applies within 2 s without a reload.
+local function rev_of(key)
+    local ok, v = pcall(server.load, key, 0)
+    return ok and tonumber(v) or 0
+end
+if type(server.load("config")) ~= "table" and server.load("config_seeded") ~= true then
+    local seed = {}
+    for _, k in ipairs(RULE_KEYS) do seed[k] = config[k] end
+    if pcall(server.save, "config", seed) and pcall(server.save, "config_seeded", true) then
+        server.log("auction: the rules of the script file were copied into the storage (key config): change them on the Auction page from now on.")
+    end
+end
+apply_overrides()
+local config_rev = rev_of("config_rev")
+server.every(2, function()
+    local rev = rev_of("config_rev")
+    if rev ~= config_rev then config_rev = rev apply_overrides() end
+end)
+
 local function from_of(player) return { slot = player.slot, key = player.uid, name = player.name, verified = true } end
 
 -- ---- Closed Net: the server sees items and gold leave and arrive, and saves the hero (DESIGN.md, section 4) -----------------
 local sessions = {}         -- uid -> server time the hero joined (this run of the server)
 local pending = {}          -- uid .. " " .. rid -> a request waiting for the server to see something
+
+-- Hot reload / shutdown (see the unload hook at the end): the gold watches are stored always, the rest only for a reload.
+do
+    local w = server.load("gold_watch")
+    if type(w) == "table" then gold_watch = w end
+    local r = server.load("reload_state")
+    if r ~= nil then server.delete("reload_state") end
+    if type(r) == "table" then
+        for uid, t in pairs(r.sessions or {}) do sessions[uid] = t end
+        for key, t in pairs(r.tokens or {}) do tokens[key] = t end
+        for key, e in pairs(r.prepared or {}) do
+            pending[key] = { key = key, kind = "prepared", mark = e.mark, gold = e.gold, deadline = server.time() + config.verify_seconds * 4 }
+        end
+    end
+end
 
 local function entries_hex(data)
     -- gear.inv.export: u32 type, u16 entry count, the 130-byte value records, ...: the records as the server keeps them
@@ -1120,8 +1245,8 @@ function CHECKS.sell(e, player, now)
             server.log("auction: " .. player.name .. ": a sale whose item data is not the item that left the hero (ref " .. tostring(e.msg.ref) .. ")")
             return refuse(player.slot, e.msg.rid, "the item data does not match the item that left your inventory")
         end
-        server.claim_item(player, e.msg.ref)
-        return save_then(player, e, function() to_core(player, e.msg) end,
+        -- (claimed after the save, so a reload in between leaves the item to be checked again by the client's resend)
+        return save_then(player, e, function() server.claim_item(player, e.msg.ref) to_core(player, e.msg) end,
             function(err) refuse(player.slot, e.msg.rid, "your hero could not be saved (" .. tostring(err) .. "); the item is yours again") end)
     end
     if now < e.deadline then return end
@@ -1145,25 +1270,70 @@ function CHECKS.deposit(e, player, now)
     refuse(player.slot, e.msg.rid, "the server did not see the gold leave your hero")
 end
 
+local function refund_gold(player, rid)
+    local key = player.uid .. " " .. tostring(rid)
+    local m = market:delivery(player.uid, rid)
+    gold_watch[key] = nil
+    save_gold_watch()
+    if not m then return end
+    market:begin()
+    for i, x in ipairs(market.state.mail) do
+        if x == m then table.remove(market.state.mail, i) break end
+    end
+    local st = market.state
+    st.wallets[player.uid] = math.min(market.rules.wallet_max, market:wallet(player.uid) + (m.gold or 0))
+    local err = "the server did not see the gold arrive in your hero; it is back in your wallet"
+    local reply = { op = "result", rid = rid, ok = false, err = err }
+    local rec = market:rid_record(player.uid, rid)
+    if rec then rec.pending = nil rec.reply = reply rec.refunded = true
+    else market:remember(player.uid, rid, { op = "withdraw", reply = reply, refunded = true }) end
+    market:add_log("refund", ("%s %s: %d gold back in the wallet (not seen in the saved hero)"):format(player.uid, tostring(rid), m.gold or 0))
+    market:flush()
+    send(player.slot, { op = "collected", rid = rid, ok = false, refunded = true, wallet = market:wallet(player.uid), err = err })
+end
+
+-- A gold withdrawal not seen after config.gold_timeout: the hero is saved, then the saved copy decides: an increase confirms it, none
+-- credits the wallet back.
+local function settle_gold(e, player, w)
+    e.stage = "saving"
+    server.save_hero(player, function(ok)
+        if pending[e.key] ~= e then return end
+        e.stage = nil
+        if not ok or market:busy() then return end            -- the next tick tries again
+        if w.seen or gold_rose(player, w) then w.seen = true return end   -- the next tick confirms it
+        pending[e.key] = nil
+        refund_gold(player, e.msg.rid)
+    end)
+end
+
 -- collected: the delivered item (msg.ref) is in the hero with the delivery's records, or the hero's gold rose by the amount.
 function CHECKS.collected(e, player, now)
     local m = e.entry
     local arrived
+    local key = player.uid .. " " .. tostring(e.msg.rid)
+    local w = gold_watch[key]
     if m.kind == "gold" then
-        local hero = server.hero(player)
-        local mark = gold_marks[player.uid .. " " .. e.msg.rid]
-        arrived = hero and mark and hero.gold >= mark + (m.gold or 0)
+        arrived = w and (w.seen or gold_rose(player, w))
     else
         local item = e.msg.ref and server.hero_item(player, e.msg.ref)
         arrived = item and in_hero(item.where) and item.records == entries_hex(m.data)
     end
     if arrived then
+        if m.kind ~= "gold" and not server.claim_item(player, e.msg.ref) then
+            server.log("auction: " .. player.name .. ": delivery " .. tostring(e.msg.rid) .. ": no permission token left for the arrived item (expired?), accepted")
+        end
         return save_then(player, e, function()
-            gold_marks[player.uid .. " " .. e.msg.rid] = nil
+            gold_watch[key] = nil
+            save_gold_watch()
+            drop_token(key, true)
             to_core(player, { op = "collected", rid = e.msg.rid })
         end, function(err) send(player.slot, { op = "collected", rid = e.msg.rid, ok = false, retry = true, err = "your hero could not be saved: " .. tostring(err) }) end)
     end
     if now < e.deadline then return end
+    if m.kind == "gold" and w and now >= w.t + config.gold_timeout then
+        if e.stage ~= "saving" then settle_gold(e, player, w) end
+        return
+    end
     pending[e.key] = nil
     local rec = market:rid_record(player.uid, e.msg.rid)
     local delivered = rec and rec.t or 0
@@ -1175,15 +1345,28 @@ function CHECKS.collected(e, player, now)
     local saved = server.hero_upload_time(player)
     if saved == nil or saved < delivered then
         -- no save of this hero went out since: the lobby's hero cannot have it. Deliver it again.
+        drop_token(key)
+        gold_watch[key] = nil
+        save_gold_watch()
         market:release(player.uid, e.msg.rid)
         market:flush()
         return send(player.slot, { op = "collected", rid = e.msg.rid, ok = false, released = true, err = "it never reached your saved hero; collect it again" })
+    end
+    if m.kind == "gold" and w then
+        -- saved since: the stored watch decides (seen rising before the restart, or the hero's gold shows the increase)
+        if w.seen or gold_rose(player, w) then
+            gold_watch[key] = nil
+            save_gold_watch()
+            return to_core(player, { op = "collected", rid = e.msg.rid })
+        end
+        if not market:busy() then return refund_gold(player, e.msg.rid) end
     end
     if m.kind ~= "gold" then
         local want = entries_hex(m.data)
         for _, item in ipairs(server.hero_items(player)) do
             if item.records == want then
                 -- the saved hero has it (it came back with the hero): the entry goes
+                drop_token(key)
                 return to_core(player, { op = "collected", rid = e.msg.rid })
             end
         end
@@ -1201,6 +1384,15 @@ local function closed_net(player, msg)
         return send(player.slot, { op = "revoked", rid = msg.rid, what = "the server keeps your hero; nothing to undo" })
     end
     if not msg.rid or type(msg.rid) ~= "string" then return to_core(player, msg) end
+    if op == "collected" then
+        local r = market:rid_record(player.uid, msg.rid)
+        if r and r.refunded then
+            return send(player.slot, { op = "collected", rid = msg.rid, ok = false, refunded = true, err = "this withdrawal was credited back to your wallet" })
+        end
+    end
+    if op == "sell" and type(msg.meta) == "table" and msg.meta.category == "special" and not config.allow_special then
+        return refuse(player.slot, msg.rid, "special items are not sold here; rejoin to get the item back")
+    end
     if op == "prepare" then
         local done = market:rid_record(player.uid, msg.rid)
         if done and done.reply then return send(player.slot, done.reply) end
@@ -1233,10 +1425,22 @@ end
 
 server.every(0.5, function()
     local now = server.time()
+    local online = {}
+    for _, p in ipairs(server.players()) do online[p.uid] = p end
+    local dirty = false
+    for key, w in pairs(gold_watch) do
+        local p = online[key:match("^(%S+)")]
+        local hero = p and not w.seen and server.hero(p)
+        if hero and type(hero.gold) == "number" then
+            if hero.gold < w.low then w.low = hero.gold end
+            if gold_rose(p, w) then w.seen = true dirty = true end
+        end
+    end
+    if dirty then save_gold_watch() end
+    for key, t in pairs(tokens) do if t.exp < now then tokens[key] = nil end end
     for key, e in pairs(pending) do
         local uid = key:match("^(%S+)")
-        local player
-        for _, p in ipairs(server.players()) do if p.uid == uid then player = p break end end
+        local player = online[uid]
         if not player then
             pending[key] = nil
         elseif e.kind == "prepared" then
@@ -1252,6 +1456,9 @@ if ch then
     ch:on(function(player, msg)
         if type(msg) ~= "table" or type(msg.op) ~= "string" then return end
         if server.authoritative(player) then return closed_net(player, msg) end
+        if msg.op == "sell" and type(msg.rid) == "string" and type(msg.meta) == "table" and msg.meta.category == "special" and not config.allow_special then
+            return refuse(player.slot, msg.rid, "special items are not sold here")
+        end
         to_core(player, msg)
     end)
 end
@@ -1266,11 +1473,35 @@ server.on("leave", function(player)
     market:left(player.slot)
     sessions[player.uid] = nil
     for key in pairs(pending) do if key:sub(1, #player.uid + 1) == player.uid .. " " then pending[key] = nil end end
+    for key in pairs(tokens) do if key:sub(1, #player.uid + 1) == player.uid .. " " then drop_token(key) end end
 end)
 for _, p in ipairs(server.players()) do arrived(p) end
 
-server.every(config.sweep_seconds, function() market:sweep(true); market:flush() end)
-server.on("start", function() market:sweep(true); market:flush() end)
+local last_sweep = 0
+server.every(5, function()
+    if server.time() - last_sweep < config.sweep_seconds then return end
+    last_sweep = server.time()
+    market:sweep(true)
+    market:flush()
+end)
+server.on("start", function() last_sweep = server.time() market:sweep(true); market:flush() end)
+
+-- Hot reload / shutdown: the market is stored at every change already (listings, mailboxes, wallets, answers by rid); what lives only in
+-- memory is stored here: the gold watches, and for a reload the join times, the token ids (the tokens live in the server and survive) and
+-- the prepared deposits. Checks in flight (sale, deposit, collected) are resumed by the clients' resends with the same rid; saves and
+-- durable writes started before are drained by the host before this runs.
+server.on("unload", function(reason)
+    save_gold_watch()
+    if reason == "reload" then
+        local prepared = {}
+        for key, e in pairs(pending) do
+            if e.kind == "prepared" then prepared[key] = { mark = e.mark, gold = e.gold }
+            elseif e.kind == "deposit" then prepared[key] = { mark = e.mark, gold = e.msg.gold } end
+        end
+        pcall(server.save, "reload_state", { sessions = sessions, tokens = tokens, prepared = prepared })
+    end
+    server.flush(function() end)
+end)
 
 -- ---- web: the page and JSON (character names only) -------------------------------------------------------------------------
 local function public_row(l, now)
@@ -1301,11 +1532,17 @@ local function recent_sales(n)
 end
 
 server.endpoint("listings", function() return listings(math.floor(server.time())) end,
-    { public = config.page_public, description = "current auctions: name, quality, level, price, seller, time left (JSON)" })
+    { public = page_public, description = "current auctions: name, quality, level, price, seller, time left (JSON)" })
 server.endpoint("recent-sales", function(request)
     local n = math.max(1, math.min(200, tonumber(request.query.n) or config.recent_sales))
     return recent_sales(n)
-end, { public = config.page_public, description = "the last sales (JSON)" })
+end, { public = page_public, description = "the last sales (JSON)" })
+local function rules_table()
+    local r = {}
+    for _, k in ipairs(RULE_KEYS) do r[k] = config[k] end
+    return r
+end
+server.endpoint("rules", rules_table, { public = page_public, description = "the market rules in force (JSON; set under config in the mod's storage)" })
 
 local PAGE = [[<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Auction house</title><style>
@@ -1323,7 +1560,9 @@ td.n{text-align:right;font-variant-numeric:tabular-nums}.dim{color:#8f8168}
 <span class="dim" id="n"></span></div>
 <table><thead><tr><th data-k="name">Item</th><th data-k="level">Level</th><th data-k="price">Price</th><th data-k="median">Recent median</th><th data-k="seller">Seller</th><th data-k="left">Time left</th></tr></thead><tbody id="rows"></tbody></table>
 <h2>Recent sales</h2><table><thead><tr><th>Item</th><th>Price</th><th>Seller</th><th>Buyer</th><th>When</th></tr></thead><tbody id="sales"></tbody></table>
-<script>var ROWS={{json rows}},SALES={{json sales}},NOW={{json now}};</script>
+<h2>Rules</h2><table><tbody id="rules"></tbody></table>
+<p class="dim">Set under "config" in this mod's storage (web admin); applied within 30 seconds, no reload needed.</p>
+<script>var ROWS={{json rows}},SALES={{json sales}},NOW={{json now}},RULES={{json rules}};</script>
 <script>
 var key='left',dir=1,q=document.getElementById('q'),qu=document.getElementById('qu');
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
@@ -1345,9 +1584,10 @@ q.oninput=draw;qu.onchange=draw;draw();
 var s=document.getElementById('sales');for(i=0;i<SALES.length;i++){var r=SALES[i],tr=el('tr');tr.appendChild(el('td',r.quality||'normal',r.name));
 tr.appendChild(el('td','n',gold(r.price)));tr.appendChild(el('td','',r.seller));tr.appendChild(el('td','',r.buyer));tr.appendChild(el('td','dim',ago(r.t)));s.appendChild(tr)}
 if(!SALES.length){tr=el('tr');td=el('td','dim','No sales yet.');td.colSpan=5;tr.appendChild(td);s.appendChild(tr)}
+var rb=document.getElementById('rules');for(var k in RULES){var v=RULES[k];tr=el('tr');tr.appendChild(el('td','dim',k));tr.appendChild(el('td','',Array.isArray(v)?v.join(', '):String(v)));rb.appendChild(tr)}
 </script></body></html>]]
 
 server.page("", function()
     local now = math.floor(server.time())
-    return server.render(PAGE, { rows = listings(now), sales = recent_sales(config.recent_sales), now = now })
-end, { public = config.page_public, title = "Auction house" })
+    return server.render(PAGE, { rows = listings(now), sales = recent_sales(config.recent_sales), now = now, rules = rules_table() })
+end, { public = page_public, title = "Auction house" })

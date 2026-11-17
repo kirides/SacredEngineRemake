@@ -111,6 +111,7 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/mods", (RequestDelegate)(c => Html(c.Response, Pages.ModsPage(_admin, _options.PublicApi, c.Request.Query["notice"].ToString() is { Length: > 0 and <= 200 } n ? n : null))));
         app.MapGet("/areas", (RequestDelegate)(c => Html(c.Response, Pages.AreaEditorPage(_admin))));
         app.MapGet("/events", (RequestDelegate)(c => Html(c.Response, Pages.EventsPage(_admin))));
+        app.MapGet("/auction", (RequestDelegate)(c => Html(c.Response, Pages.AuctionPage(_admin))));
         app.MapGet("/api/areas/map", (RequestDelegate)(c => AreaMapEndpoint(c, image: false)));
         app.MapGet("/api/areas/map.png", (RequestDelegate)(c => AreaMapEndpoint(c, image: true)));
         app.MapGet("/api/mod-store", (RequestDelegate)ModStoreRead);

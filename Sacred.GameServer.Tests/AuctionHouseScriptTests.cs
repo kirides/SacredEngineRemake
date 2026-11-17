@@ -64,6 +64,17 @@ public class AuctionHouseScriptTests
         public bool ClaimGoneItem(int slot, uint reference) => Claimed.Add((slot, reference));
         public Task<string?> SaveHeroNow(int slot) { Saves++; return Save(slot); }
         public double? HeroUploadTime(int slot) => UploadTime;
+        public readonly List<(long Id, int Slot, uint Type, string Records, double Ttl, string Label)> Minted = new();
+        public readonly List<long> Revoked = new();
+        public bool NoTokens;
+        public long MintItemToken(int slot, uint type, string records, double ttlSeconds, string label)
+        {
+            if (NoTokens || !Authoritative) return 0;
+            var id = Minted.Count + 1;
+            Minted.Add((id, slot, type, records, ttlSeconds, label));
+            return id;
+        }
+        public bool RevokeItemToken(long id) { Revoked.Add(id); return true; }
         public ScriptPlayer Alice => All[0];
         public ScriptPlayer Bob => All[1];
     }
@@ -419,7 +430,263 @@ public class AuctionHouseScriptTests
         server.Sent.Clear();
         Send(host, server.Alice, new { op = "collected", rid = "w2" });
         Wait(host, server, () => To(server, 1).Count > 0);
-        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("stuck").GetBoolean());
-        Assert.AreEqual(500 - 300, Wallet(Answer(Ask(host, server, server.Alice, new { op = "mine" }), "mine")));
+        // a gold delivery whose gold the server never saw rise, in a hero saved since: credited back to the wallet (never twice)
+        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("refunded").GetBoolean());
+        Assert.AreEqual(500 - 300 + 100, Wallet(Answer(Ask(host, server, server.Alice, new { op = "mine" }), "mine")));
+    }
+
+    // ---- tokens, the gold check, hot reload, rules as data ------------------------------------------------------------------------
+
+    private static Func<string, string> Edit(params (string From, string To)[] edits) =>
+        text => edits.Aggregate(FastChecks(text), (t, e) => { Assert.IsTrue(t.Contains(e.From), e.From); return t.Replace(e.From, e.To); });
+
+    /// <summary>Alice sells an item (Closed Net) and cancels the listing: one item entry in her mailbox; returns its mid.</summary>
+    private static double MailItem(ScriptHost host, Fake server, uint reference)
+    {
+        server.Items[(1, reference)] = new ScriptHeroItem(reference, 0x12A, "gone", Record);
+        Send(host, server.Alice, Sell(Rid(), 100, reference: reference));
+        Wait(host, server, () => Answer(Ask(host, server, server.Bob, new { op = "browse" }), "page").GetProperty("total").GetDouble() == 1);
+        var id = Answer(Ask(host, server, server.Bob, new { op = "browse" }), "page").GetProperty("rows")[0].GetProperty("id").GetDouble();
+        Ask(host, server, server.Alice, new { op = "cancel", rid = Rid(), id });
+        return Answer(Ask(host, server, server.Alice, new { op = "mail" }), "mail").GetProperty("entries")[0].GetProperty("mid").GetDouble();
+    }
+
+    /// <summary>Alice puts 300 gold into her wallet (Closed Net); her hero ends with 700.</summary>
+    private static void Fund(ScriptHost host, Fake server)
+    {
+        server.Gold[1] = 1000;
+        Ask(host, server, server.Alice, new { op = "prepare", rid = "fund", gold = 300 });
+        server.Gold[1] = 700;
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "deposit", rid = "fund", gold = 300 });
+        Wait(host, server, () => To(server, 1).Any(m => m.GetProperty("op").GetString() == "result"));
+        Assert.AreEqual(300, Wallet(Answer(To(server, 1), "result")));
+    }
+
+    [TestMethod]
+    public void TheInfoReplyIsClosedOnlyWhereTheServerHoldsTheHero()
+    {
+        using var folder = new Folder();
+        var (host, server) = Start(folder);
+        var lan = Answer(Ask(host, server, server.Alice, new { op = "hello" }), "info");
+        Assert.IsFalse(lan.GetProperty("closed").GetBoolean());
+        server.Authoritative = true;
+        var closed = Answer(Ask(host, server, server.Alice, new { op = "hello" }), "info");
+        Assert.IsTrue(closed.GetProperty("closed").GetBoolean());
+        Assert.IsFalse(closed.GetProperty("rules").GetProperty("allow_special").GetBoolean());
+    }
+
+    [TestMethod]
+    public void ADeliveredItemGetsATokenReusedForTheSameRidAndConsumedByTheArrival()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true };
+        var (host, _) = Start(folder, server, FastChecks);
+        var mid = MailItem(host, server, 600);
+        Assert.AreEqual(0, server.Minted.Count, "nothing is delivered yet");
+        Assert.AreEqual("deliver", Ask(host, server, server.Alice, new { op = "collect", rid = "i1", mid }).Last().GetProperty("op").GetString());
+        Assert.AreEqual(1, server.Minted.Count);
+        var token = server.Minted[0];
+        Assert.AreEqual("auction:i1", token.Label);
+        Assert.AreEqual(120, token.Ttl);
+        Assert.AreEqual(0x12Au, token.Type);
+        Assert.AreEqual(Record, token.Records, "a token for exactly this item");
+        Ask(host, server, server.Alice, new { op = "collect", rid = "i1", mid });
+        Assert.AreEqual(1, server.Minted.Count, "a repeated rid reuses the token while it is valid");
+        server.Items[(1, 601)] = new ScriptHeroItem(601, 0x12A, "backpack", Record);
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "collected", rid = "i1", @ref = 601 });
+        Wait(host, server, () => To(server, 1).Count > 0);
+        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("removed").GetBoolean());
+        Assert.IsTrue(server.Claimed.Contains((1, 601)), "claim_item consumes the token");
+        Assert.AreEqual(0, server.Revoked.Count, "a consumed token is not revoked");
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void AnExpiredTokenIsReplacedAnAbandonedDeliveryRevokesIt()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true };
+        var (host, _) = Start(folder, server, Edit(("token_seconds = 120,", "token_seconds = 1,")));
+        var mid = MailItem(host, server, 600);
+        Ask(host, server, server.Alice, new { op = "collect", rid = "i1", mid });
+        Ask(host, server, server.Alice, new { op = "collect", rid = "i1", mid });
+        Assert.AreEqual(2, server.Minted.Count, "a token that is about to expire is not reused");
+        CollectionAssert.AreEqual(new long[] { 1 }, server.Revoked, "the replaced one is revoked");
+        host.FirePlayer("leave", server.Alice);
+        CollectionAssert.AreEqual(new long[] { 1, 2 }, server.Revoked, "the player left with the delivery open");
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void ADeliveredItemIsReleasedAndItsTokenRevokedWhenItNeverReachedASavedHero()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true, UploadTime = null };
+        var (host, _) = Start(folder, server, FastChecks);
+        var mid = MailItem(host, server, 600);
+        Ask(host, server, server.Alice, new { op = "collect", rid = "i1", mid });
+        host.FirePlayer("leave", server.Alice);
+        Thread.Sleep(1100);
+        host.FirePlayer("join", server.Alice);
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "collected", rid = "i1" });
+        Wait(host, server, () => To(server, 1).Count > 0);
+        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("released").GetBoolean());
+        CollectionAssert.Contains(server.Revoked, 1L);
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void WithoutATokenTheDeliveryWorksAsBefore()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true, NoTokens = true };
+        var (host, _) = Start(folder, server, FastChecks);
+        var mid = MailItem(host, server, 600);
+        Assert.AreEqual("deliver", Ask(host, server, server.Alice, new { op = "collect", rid = "i1", mid }).Last().GetProperty("op").GetString());
+        server.Items[(1, 601)] = new ScriptHeroItem(601, 0x12A, "backpack", Record);
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "collected", rid = "i1", @ref = 601 });
+        Wait(host, server, () => To(server, 1).Count > 0);
+        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("removed").GetBoolean());
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void AGoldWithdrawalCountsWhenTheHeroSpentGoldBeforeTheReport()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true };
+        var (host, _) = Start(folder, server, FastChecks);
+        Fund(host, server);
+        Assert.AreEqual("deliver", Ask(host, server, server.Alice, new { op = "withdraw", rid = "w1", gold = 100 }).Last().GetProperty("op").GetString());
+        server.Gold[1] = 500;                       // the hero spends 200 before the gold is added
+        Wait(host, server, () => false, 1.3);       // the server notes the low point
+        server.Gold[1] = 600;                       // the client adds the 100: below the gold at the withdrawal (700) + 100, still +100
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "collected", rid = "w1" });
+        Wait(host, server, () => To(server, 1).Count > 0);
+        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("removed").GetBoolean(), string.Join(" ", To(server, 1)));
+        Assert.AreEqual(200, Wallet(Answer(Ask(host, server, server.Alice, new { op = "mine" }), "mine")));
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void AGoldWithdrawalTheServerNeverSawIsCreditedBackAfterTheTimeout()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true };
+        var (host, _) = Start(folder, server, Edit(("gold_timeout = 120,", "gold_timeout = 1,")));
+        Fund(host, server);
+        Ask(host, server, server.Alice, new { op = "withdraw", rid = "w1", gold = 100 });
+        Assert.AreEqual(200, Wallet(Answer(Ask(host, server, server.Alice, new { op = "mine" }), "mine")));
+        var saves = server.Saves;
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "collected", rid = "w1" });                  // the client claims it, the gold never came
+        Wait(host, server, () => To(server, 1).Any(m => m.GetProperty("op").GetString() == "collected" && m.TryGetProperty("refunded", out _)), 6);
+        var answer = Answer(To(server, 1), "collected");
+        Assert.IsTrue(answer.GetProperty("refunded").GetBoolean(), string.Join(" ", To(server, 1)));
+        Assert.IsTrue(server.Saves > saves, "the hero was saved before the verdict");
+        Assert.AreEqual(300, Wallet(Answer(Ask(host, server, server.Alice, new { op = "mine" }), "mine")));
+        Assert.AreEqual(0, Answer(Ask(host, server, server.Alice, new { op = "mail" }), "mail").GetProperty("entries").GetArrayLength());
+        Assert.IsTrue(Answer(Ask(host, server, server.Alice, new { op = "collected", rid = "w1" }), "collected").GetProperty("refunded").GetBoolean(), "never paid twice");
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void ATimedOutGoldWithdrawalIsKeptWhenTheSavedHeroShowsTheIncrease()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true };
+        var (host, _) = Start(folder, server, Edit(("gold_timeout = 120,", "gold_timeout = 1,")));
+        Fund(host, server);
+        Ask(host, server, server.Alice, new { op = "withdraw", rid = "w1", gold = 100 });
+        server.Gold[1] = 800;
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "collected", rid = "w1" });
+        Wait(host, server, () => To(server, 1).Count > 0);
+        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("removed").GetBoolean());
+        Assert.AreEqual(200, Wallet(Answer(Ask(host, server, server.Alice, new { op = "mine" }), "mine")));
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void AReloadInTheMiddleOfAnItemDeliveryKeepsTheDeliveryAndTheToken()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true };
+        var (host, _) = Start(folder, server, FastChecks);
+        var mid = MailItem(host, server, 600);
+        Ask(host, server, server.Alice, new { op = "collect", rid = "i1", mid });
+        Assert.AreEqual(1, server.Minted.Count);
+        Assert.IsTrue(host.Reload("auction_house"));
+        Settle(host, server);
+        var again = Ask(host, server, server.Alice, new { op = "collect", rid = "i1", mid }).Last();
+        Assert.AreEqual("deliver", again.GetProperty("op").GetString());
+        Assert.AreEqual(1, server.Minted.Count, "the token (alive in the server) is reused after the reload");
+        server.Items[(1, 601)] = new ScriptHeroItem(601, 0x12A, "backpack", Record);
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "collected", rid = "i1", @ref = 601 });
+        Wait(host, server, () => To(server, 1).Count > 0);
+        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("removed").GetBoolean());
+        Assert.AreEqual(0, Answer(Ask(host, server, server.Alice, new { op = "mail" }), "mail").GetProperty("entries").GetArrayLength());
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void AReloadInTheMiddleOfAGoldDeliveryAndOfADepositLosesNothing()
+    {
+        using var folder = new Folder();
+        var server = new Fake { Authoritative = true };
+        var (host, _) = Start(folder, server, FastChecks);
+        server.Gold[1] = 1000;
+        Ask(host, server, server.Alice, new { op = "prepare", rid = "d1", gold = 300 });
+        Assert.IsTrue(host.Reload("auction_house"));
+        Settle(host, server);
+        server.Gold[1] = 700;                       // the client takes the gold out, then sends the deposit to the reloaded script
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "deposit", rid = "d1", gold = 300 });
+        Wait(host, server, () => To(server, 1).Any(m => m.GetProperty("op").GetString() == "result"));
+        Assert.AreEqual(300, Wallet(Answer(To(server, 1), "result")), "the prepared deposit survived the reload");
+        Ask(host, server, server.Alice, new { op = "withdraw", rid = "w1", gold = 100 });
+        Assert.IsTrue(host.Reload("auction_house"));
+        Settle(host, server);
+        server.Gold[1] = 800;
+        server.Sent.Clear();
+        Send(host, server.Alice, new { op = "collected", rid = "w1" });
+        Wait(host, server, () => To(server, 1).Count > 0);
+        Assert.IsTrue(Answer(To(server, 1), "collected").GetProperty("removed").GetBoolean(), string.Join(" ", To(server, 1)));
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void TheRulesAreDataSeededOnceAndAppliedWithoutAReload()
+    {
+        using var folder = new Folder();
+        var (host, server) = Start(folder);
+        var rules = JsonDocument.Parse(host.HandleRequest("auction_house", "rules", [], false).Body).RootElement;
+        Assert.AreEqual(5, rules.GetProperty("sale_cut").GetDouble());
+        Assert.AreEqual(3, rules.GetProperty("durations").GetArrayLength());
+        var put = host.StoreRequest("auction_house", null, """{"mod":"auction_house","set":{"config":{"sale_cut":10,"max_per_seller":1,"allow_special":true,"durations":[2],"sweep_seconds":20}}}""");
+        Assert.AreEqual(200, put.Status, put.Body);
+        double Cut() => Answer(Ask(host, server, server.Alice, new { op = "hello" }), "info").GetProperty("rules").GetProperty("sale_cut").GetDouble();
+        Wait(host, server, () => Cut() == 10, 6);
+        var info = Answer(Ask(host, server, server.Alice, new { op = "hello" }), "info").GetProperty("rules");
+        Assert.AreEqual(10, info.GetProperty("sale_cut").GetDouble());
+        Assert.AreEqual(1, info.GetProperty("max_per_seller").GetDouble());
+        Assert.IsTrue(info.GetProperty("allow_special").GetBoolean());
+        Assert.AreEqual(1, info.GetProperty("durations").GetArrayLength());
+        Assert.IsFalse(Ok(Answer(Ask(host, server, server.Alice, Sell(Rid())), "result")), "3 days are no longer offered");
+        StringAssert.Contains(host.HandleRequest("auction_house", "", [], true).Body, "sale_cut");
+        // a reload keeps them (the storage is the truth; the script file's values only seed)
+        Assert.IsTrue(host.Reload("auction_house"));
+        Settle(host, server);
+        Assert.AreEqual(10, Cut());
+        // an invalid value is ignored (back to the script's default for that rule)
+        host.StoreRequest("auction_house", null, """{"mod":"auction_house","set":{"config":{"sale_cut":-5,"durations":["x"]}}}""");
+        Wait(host, server, () => Cut() == 5, 6);
+        Assert.AreEqual(5, Cut());
     }
 }
