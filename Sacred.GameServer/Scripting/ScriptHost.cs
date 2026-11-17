@@ -46,6 +46,8 @@ public interface IScriptServer
     /// <summary>The scripts reloaded: forget the channels they registered.</summary>
     void NetReset() { }
     bool NetSupports(int slot) => false;
+    /// <summary>"custom", "chat" or null: how net channel messages reach the player.</summary>
+    string? NetTransport(int slot) => null;
     /// <summary>Sends a message to the player in <paramref name="slot"/> (0: every player that supports them); the number of players reached.</summary>
     int NetSend(int slot, uint channel, bool json, byte[] data, out string? error) { error = "custom net messages are not available"; return 0; }
     /// <summary>Lua instructions one net handler may run.</summary>

@@ -236,19 +236,23 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
 
 ### Custom net messages for scripts (`net`)
 
-Sacred Gear clients (the mod kit, `gear.net`) talk to scripts through named channels over two message types above the
-original's range (default 0x1E0 control / 0x1E1 data; the original GameServer.exe only logs and drops them). A client
-says HELLO after joining; the server answers with its limits and the list of players that can use the messages. Only
-players that said HELLO ever get them, so plain clients are not affected.
+Sacred Gear clients (the mod kit, `gear.net`) talk to scripts through named channels. The channels work on the chat carrier (private
+chat frames, 64 KB per message) and are upgraded to two message types above the original's range (default 0x1E0 control /
+0x1E1 data; the original GameServer.exe only logs and drops them) when both sides agree. The agreement is made on chat: the client
+announces itself on entering the game (frame `h`), the server queries with the numbers it offers (`q`), the client answers (`a`:
+accepts or declines), then HELLO / HELLO_ACK on the agreed types verify the version and limits. The server never writes to a player
+that did not announce itself (a plain client would show the frames as chat) and never answers a HELLO without an agreement. Players
+that decline, time out or never announce stay on chat (or get nothing): `net.transport(player)` says which.
 
 ```lua
 local ch = net.channel("auction:bid" [, { server_only = true }])  -- the channel, or nil, message (bad name, id collision)
 ch:on(function(player, payload) end)    -- a message for the server; payload is a table (JSON) or a byte string
 ch:send(player | slot | "all", payload) -- string (one byte per character; above 255: UTF-8) or table (JSON) -> true | nil, message
-net.supports(player | slot)             -- true when that player's computer said HELLO
+net.supports(player | slot)             -- true when that player's computer uses the custom message types (said HELLO)
+net.transport(player | slot)           -- "custom", "chat" (channels over the chat carrier only) or nil
 ```
 
-`server_only` keeps clients from relaying through the channel (clients can still address the server, never each other). A
+`server_only` keeps clients from relaying through the channel (clients can still address the server, never each other; on the chat carrier the server reads the channel name from the first frame of a relayed message and drops it). A
 channel id is the FNV-1a hash of its name; two names with the same id are refused at registration. The server stamps the
 real sender slot into the message header and ignores any claim in the payload. Handlers get their own instruction budget
 (`NETOPS_HANDLER_BUDGET`, default 200000), and the usual error accounting (20 errors in a row switch a handler off).
@@ -269,6 +273,7 @@ the data id in the handshake, the control id is configured on their side with `g
 | `NETOPS_REASSEMBLY_SESSION`, `NETOPS_REASSEMBLY_TOTAL` | 1 MB, 8 MB | bytes of unfinished messages held |
 | `NETOPS_FRAGMENT_TIMEOUT` | 10 | seconds until an unfinished message is dropped |
 | `NETOPS_HANDLER_BUDGET` | 200000 | Lua instructions of one handler call |
+| `NETOPS_CHAT_RATE` | 16384 | bytes per second the server sends to one player over the chat carrier |
 
 Everything dropped is counted (`GameServerHost.NetStats`): unknown channels (a message for the server on a channel no script
 registered), rate limit, too many messages in flight, too many channels, too large, reassembly memory, timeouts. Wire layouts:

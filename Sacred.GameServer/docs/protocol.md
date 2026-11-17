@@ -365,3 +365,22 @@ fragments of one message are in order and share the message id (per sender); a m
 header's origin (sender 0 = the server for its own messages), and reassembles only messages for the server. Limits (all
 options): token bucket per session, messages in flight per sender, channels per client, message size, reassembly memory per
 session and in total, fragment timeout. Over the KCP/SBT transport the frames are the same messages.
+
+### Handshake on the chat carrier (net channels)
+
+Channels also work without the custom types, on private chat (0x003) frames of at most 127 UTF-16 units that every server relays
+(`Wire/NetChatWire.cs`): `[0xE1A0][0x4000+message number][0x4000+frame index]`, in the first frame `[0x4000+len>>15][0x4000+len&0x7FFF]`,
+then the bytes packed 15 bits per unit (+0x4000); 228 bytes in the first frame, 232 in each further one; at most 64 KB per message.
+A message is `[u8 kind][u8 name length][name][body]`: `n` bytes / `k` JSON for a channel; for the handshake (name `gear.net`):
+
+```
+h  c->s  [u8 proto]                      the client announces itself (on entering the game; repeated every 5 s up to 6 times)
+q  s->c  [u8 proto][u16 control][u16 data]   the numbers the server offers (sent only to players that announced)
+a  c->s  [u8 proto][u16 control][u16 data][u8 flags: 1 accepts]
+```
+
+Clients send to the server as private chat with target slot 0; the server sends from slot 0 (header origin 0), paced per player
+(`NETOPS_CHAT_RATE`). After an accept with the server's own numbers the client sends HELLO (0x1E0 kind 1, above); the server
+ignores a HELLO from a player that has not agreed, and writes nothing to a player that has not announced itself (plain clients would
+show the frames as chat). The original GameServer.exe ignores the announcement. Frames between players are relayed unchanged by the
+normal private chat path, except those of a `server_only` channel (the first frame names it; the rest of that message is dropped).
