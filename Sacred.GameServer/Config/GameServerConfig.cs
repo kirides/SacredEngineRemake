@@ -46,6 +46,8 @@ public sealed class GameServerConfig
     public Auth.AuthoritativeOptions Auth { get; } = new();
     /// <summary>Flood protection (on with authoritative mode unless FLOOD_PROTECTION says otherwise); see Session/FloodGuard.cs.</summary>
     public Session.FloodOptions Flood { get; } = new();
+    /// <summary>Custom net opcodes for mod channels (Wire/NetOpsWire.cs, Session/GameServerHost.Net.cs).</summary>
+    public Session.NetOpsOptions NetOps { get; } = new();
     /// <summary>Server-side Lua scripts (Scripting/); on when the scripts folder exists.</summary>
     public Scripting.ScriptOptions Scripts { get; } = new();
 
@@ -108,7 +110,7 @@ public sealed class GameServerConfig
             case "CLOSED_NET": ClosedNet = Int(value, 1) != 0; break;
             case "TRACE": Trace = Int(value, 1) != 0; break;
             case "ANNOUNCE_VERSION" or "VERSION": AnnounceVersion = (ushort)Math.Clamp(Int(value, 0), 0, ushort.MaxValue); break;
-            default: if (!Auth.Apply(key, value) && !Flood.Apply(key, value)) Scripts.Apply(key, value); break;
+            default: if (!Auth.Apply(key, value) && !Flood.Apply(key, value) && !NetOps.Apply(key, value)) Scripts.Apply(key, value); break;
         }
     }
 

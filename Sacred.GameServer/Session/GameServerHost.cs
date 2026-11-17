@@ -67,6 +67,7 @@ public sealed partial class GameServerHost : IDisposable
         _acceptor = new TcpAcceptor(config.TcpPort, _inbox);
         _listeners.Add(_acceptor);
         InitializeSession();
+        InitializeNetOps();
     }
 
     private readonly CancellationTokenSource _stopCts = new();
@@ -161,6 +162,7 @@ public sealed partial class GameServerHost : IDisposable
         PumpAdmin(now);
         OnTick?.Invoke(Tick);
         PumpScripts(now);
+        PumpNetOps(now);
         PumpHeroes(now);
         foreach (var s in _sessions) s.Connection.Flush();
         for (var i = _retired.Count - 1; i >= 0; i--)
