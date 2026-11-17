@@ -138,6 +138,7 @@ server.on("leave", function(player) end)
 server.on("chat", function(player, text) return true end)   -- public chat; true = not relayed (commands like "!kills")
 server.on("kill", function(player, monster) end) -- monster = { ref, type, level, name }
 server.on("death", function(player, by) end)     -- a hero died; by = { player } or { ref, type, level }
+server.on("drop", function(item, reporter) end)  -- a new item lies on the ground; item = { ref, type, level, rarity 0..15, sockets, price, name, sector, x, y }
 server.on("start", function() end)               -- after (re)loading
 server.every(seconds, fn)  server.after(seconds, fn)
 server.broadcast(text)  server.message(player or slot, text)  server.kick(player or slot, reason)
@@ -226,6 +227,19 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
 * Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
   kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
   shows the kill ladder in chat. `player.online` is the current session in seconds.
+* Ground items ("drop"): the game has no drop message. Creature loot, chest contents and items a player throws down all show up
+  as a 0x16F state with a position, sent by the client that owns the sector; the first such state of an item object the server's
+  world did not have yet fires `drop` (`item.rarity` is the tier 0..15 of the value block: Sacred Gear shows 0-4 normal, 5-11
+  magic, 12-14 rare, 15 unique; `reporter` is the player whose client reported it, which is not necessarily the killer; items
+  without a position, updates of known objects and the server's own `drop_item`/`drop_gold` objects do not fire it). Items already
+  lying in a sector when its owner enters also arrive this way, so a mod that wants creature loot ties a drop to a recent
+  `kill`, as `rare_drops.lua` does. **Unverified with a real client:** the rarity mapping and that all loot arrives as 0x16F.
+* Statistics mods (`scripts-examples`, each with a public page and JSON endpoints, own storage, tests in `ScriptTests.Mods.cs`):
+  `server_stats.lua` (online, peak, uptime, totals, 24 h charts as inline SVG), `hall_of_fame.lua` (records, first to reach a level
+  or defeat a creature, `!hof`), `seasons.lua` (ladders per season: timer or `/mods/seasons/end-season` (admin), archive of past
+  seasons, `!season`), `rare_drops.lua` (live feed of rare/unique drops from the `drop` event, chat line, Gear client channel
+  `rare_drops:feed`) and `graveyard.lua` (recent deaths with killer names, deadliest killers, `!rip`, channel `graveyard:feed`).
+  The Sacred Gear mod `gear/examples/serverfeed` (sacred-bild) shows the two channels on screen.
 * `drop_gold` drops a gold pile the same way (no `--game-dir` needed). Money is an ordinary item object: resources
   0x140C..0x140F (Gold client table 0x949920 / test 0x43AF50, GameServer.exe 0x5B0274 / 0x409D30), pile size by amount as the
   game picks it when gold is dropped (0x4AEC1E: below 50, 350, 1000, else). The amount is the value block's price (+8, cItemBase
