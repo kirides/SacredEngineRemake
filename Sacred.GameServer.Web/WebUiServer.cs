@@ -318,7 +318,7 @@ public sealed class WebUiServer : IAsyncDisposable
     {
         var headers = response.Headers;
         headers.XContentTypeOptions = "nosniff";
-        headers["Referrer-Policy"] = "no-referrer";
+        headers["Referrer-Policy"] = "same-origin";   // not no-referrer: Chromium then sends "Origin: null" on same-origin form posts
         headers.CacheControl = "no-store";
         var ancestors = FrameAncestors();
         headers.ContentSecurityPolicy = $"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors {ancestors}; base-uri 'none'; form-action 'self'";

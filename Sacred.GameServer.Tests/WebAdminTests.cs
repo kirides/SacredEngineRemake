@@ -322,7 +322,10 @@ public class WebAdminTests
             Assert.AreEqual(HttpStatusCode.SeeOther, (await client.SendAsync(Post("https://gs.example", ("Sec-Fetch-Site", "same-origin")))).StatusCode);
             // Reverse proxy without Sec-Fetch-Site: the original host arrives in X-Forwarded-Host.
             Assert.AreEqual(HttpStatusCode.SeeOther, (await client.SendAsync(Post("https://gs.example", ("X-Forwarded-Host", "gs.example")))).StatusCode);
-            Assert.AreEqual(2, admin.Commands.Count);
+            // Chromium sends "Origin: null" on form posts when the referrer policy is no-referrer; the browser's verdict still says same-origin.
+            Assert.AreEqual(HttpStatusCode.SeeOther, (await client.SendAsync(Post("null", ("Sec-Fetch-Site", "same-origin")))).StatusCode);
+            Assert.AreEqual(3, admin.Commands.Count);
+            Assert.AreEqual("same-origin", (await client.GetAsync("/")).Headers.GetValues("Referrer-Policy").Single());
             var refused = await client.SendAsync(Post("https://evil.example"));
             Assert.AreEqual(HttpStatusCode.Forbidden, refused.StatusCode);
             StringAssert.Contains(await refused.Content.ReadAsStringAsync(), "evil.example");
