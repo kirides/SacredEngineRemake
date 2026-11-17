@@ -196,6 +196,9 @@ with an error instead of silently becoming a folder of that name. The game serve
 mods: ladders, recent deaths, statistics live in the mod that needs them, so mods can grow without growing the server. (JSON,
 not SQLite: SQLite needs a native library, which would end the single-file Native AOT binary.)
 
+**User documentation of the example mods** (install, chat commands, settings, pages and endpoints, Sacred Gear channels,
+limits, screenshots of the web pages): [`docs/mods/README.md`](../docs/mods/README.md).
+
 **Durable writes (`server.flush([fn])`).** For a mod that must not answer a player before its change is on disk (the auction
 house: a delivery that was answered and then lost in a crash before the 10 s flush could be collected twice). The store is
 serialized at once on the game loop thread and written on a worker thread after any write still running: temporary file,
@@ -370,6 +373,26 @@ items also carry a `name` when the server read the game's texts (`--game-dir`, s
 out and only the game's numbers remain. Source: the hero's own object
 states (Gold 0x585C60 values at +445: compact fields, or the full sCharValHero block from 0x16B), 0x11D/0x11E, 0x122, 0x13E/0x13F
 and the items in the object world.
+
+### Area editor (`/areas`, admin)
+
+A page of the web UI to draw the sectors of an area on the game's own world map. It needs `--game-dir`: the server reads
+`World/sectors.keyx` (id, cell of the 128 x 128 sector grid, authored name of every sector) and the Ancaria overview (the 64 textures
+`UI_WORLDMAPX<row><col>.TGA` of Texture.pak, one 2048 x 2048 PNG, about 10 MB, built once on a worker thread and cached by the browser).
+`GET /api/areas/map` answers the sectors and the projection, `GET /api/areas/map.png` the image (`Data/AreaMap.cs`; the projection is
+the game's own world-map one, tiles to map pixels: `x = ox + (tx - ty) * kx`, `y = oy + (tx + ty) * ky`; a sector cell covers 64 x 64
+tiles; the underworld and caves are not on the overview). Sector ids are slots of the sector table, not coordinates: the page works on
+cells and sends ids.
+Tools: move (drag, wheel, pinch), paint and erase (drag), rectangle add / remove, a circle (centre, drag the radius, world units), a list
+of areas (create, rename, delete, zoom to it), "plus neighbours within n cells", a live count, the heroes online as dots (from the
+`world_events` script's `whereabouts` endpoint), hover shows the sector id, its name, the cell and the world position. Mouse and touch
+(pointer events; two fingers pan and zoom), light and dark like the rest of the UI, no outside resources.
+**Saving**: the page posts to `POST /api/mod-store` (admin, JSON only, not from another site, at most 512 KB):
+`{"mod":"world_events","set":{"areas":{...}},"delete":[...]}` writes keys of that mod's storage on the game loop (storage limits apply,
+413 beyond them) and bumps `{key}_rev`; `GET /api/mod-store?mod=...&key=...` reads one key. Keys are `a-z 0-9 _ . -`, per-hero data is out
+of reach. `world_events.lua` reads the key `areas` (the same format as the `AREAS` table in the script file, ranges as `[a, b]`) every few
+seconds and lets it win over the file; events use areas by id (`area = "silver_creek"`). The page also shows the config line to paste
+into the script file ("Copy snippet"). The commands and forms of the web UI keep their 16 KB limit; only this endpoint takes more.
 
 ### Names (`Data/NameService.cs`)
 
