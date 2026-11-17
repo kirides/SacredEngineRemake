@@ -46,10 +46,7 @@ public partial class AuthoritativeTests
     {
         StrictRun(mode, (host, player) =>
         {
-            var hello = new byte[NetOpsWire.HelloBytes];
-            NetOpsWire.WriteHello(hello, new(NetOpsWire.ProtocolVersion, 3, 0xABCD1234));
-            player.Send(NetOpsWire.DefaultControl, hello);
-            while (!NetOpsWire.TryReadHelloAck(player.WaitFor(NetOpsWire.DefaultControl).Payload, out _)) { }
+            NetOpsTests.Handshake(player);      // the chat handshake, then HELLO on the agreed types
 
             AuctionSend(player, new { op = "hello" });
             var info = AuctionNext(player, "info");
@@ -59,7 +56,7 @@ public partial class AuthoritativeTests
             string ModStore(string? key, string? body) => host.ModStoreRequest("auction_house", key, body, CancellationToken.None).GetAwaiter().GetResult().Body;
             var market = JsonNode.Parse(ModStore("market", null))!.AsObject();
             var uid = market["players"]!.AsObject().Single().Key;
-            var data = "2a010000" + "0100" + ItemRecords(0x12A, 0x42) + "00";
+            var data = "2a010000" + "0000" + ItemRecords(0x12A, 0x42) + "00";
             var entry = new JsonObject { ["mid"] = 1, ["owner"] = uid, ["kind"] = "item", ["t"] = 1, ["reason"] = "expired", ["data"] = data, ["type"] = 0x12A,
                 ["name"] = "Tested Sword", ["quality"] = "rare", ["category"] = "weapon", ["w"] = 1, ["h"] = 2, ["price"] = 5 };
             market["_chunks"]!.AsObject()["mail"] = 1;

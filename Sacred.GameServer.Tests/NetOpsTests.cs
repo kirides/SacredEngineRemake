@@ -113,7 +113,7 @@ public partial class NetOpsTests
     }
 
     /// <summary>The chat handshake (the answer accepts the server's numbers), then HELLO on the agreed types.</summary>
-    private static NetOpsWire.HelloAck Handshake(RawClient c, ushort control = NetOpsWire.DefaultControl)
+    internal static NetOpsWire.HelloAck Handshake(RawClient c, ushort control = NetOpsWire.DefaultControl)
     {
         SendChat(c, 0, NetChatWire.KindAnswer, NetChatWire.HandshakeName, AnswerBody(control, (ushort)(control + 1), true));
         c.Send(control, Hello());
