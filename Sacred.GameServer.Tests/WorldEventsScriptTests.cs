@@ -57,6 +57,10 @@ public class WorldEventsScriptTests
             Pushed.Add((slot, JsonDocument.Parse(data).RootElement.Clone()));
             return 1;
         }
+        public bool Grid;
+        // a fake 20 x 20 grid: the id of cell (x, y) is 1000 + y * 100 + x
+        public (int X, int Y)? SectorCell(uint id) => Grid && id >= 1000 && id < 3000 && (id - 1000) % 100 < 20 ? (((int)id - 1000) % 100, ((int)id - 1000) / 100) : null;
+        public uint SectorAt(int cx, int cy) => Grid && cx is >= 0 and < 20 && cy is >= 0 and < 20 ? (uint)(1000 + cy * 100 + cx) : 0;
         public ScriptPlayer Alice => All[0];
         public ScriptPlayer Bob => All[1];
         public void Tick(ScriptHost host) { Now += 2000; host.Pump(Now); }
@@ -388,5 +392,62 @@ public class WorldEventsScriptTests
         for (var i = 0; i < 2; i++) lines.Add(ChatText(host.WaitFor(0x003).Payload));
         Assert.IsTrue(lines.Any(l => l.Contains("2/4 (50%)")), string.Join(" | ", lines));
         Assert.IsTrue(lines.Any(l => l.Contains("Your share: 2")), string.Join(" | ", lines));
+    }
+
+    [TestMethod]
+    public void ScriptsSeeTheVictimsSectorAndPositionAndThePlayersPosition()
+    {
+        using var folder = new Folder();
+        folder.Write("probe.lua", """
+            server.on("kill", function(p, m) server.broadcast("kill " .. tostring(m.sector) .. "," .. tostring(m.x) .. "," .. tostring(m.y)) end)
+            server.on("chat", function(p, t) if t == "!probe" then server.message(p, "player " .. p.sector .. "," .. p.x .. "," .. p.y) return true end end)
+            """);
+        using var server = new LiveServer(folder);
+        using var host = RawClient.Admit(server.Port, "Host", 1);
+        host.Send(0x016, default);
+        host.Send(0x018, BitConverter.GetBytes(0x1964u)); host.WaitFor(0x018);
+        // a creature's 0x16F state: [ref][type][x][y][surface][sector]
+        var state = new byte[24 + 40];
+        BinaryPrimitives.WriteUInt32LittleEndian(state, 9001);
+        BinaryPrimitives.WriteUInt32LittleEndian(state.AsSpan(4), 7);
+        BinaryPrimitives.WriteInt32LittleEndian(state.AsSpan(8), 123456);
+        BinaryPrimitives.WriteInt32LittleEndian(state.AsSpan(12), 654321);
+        state[16] = 1;
+        BinaryPrimitives.WriteUInt32LittleEndian(state.AsSpan(20), 2909);
+        host.Send(0x16F, state);
+        Thread.Sleep(200);
+        var death = new byte[8];
+        BinaryPrimitives.WriteUInt32LittleEndian(death, 9001);
+        BinaryPrimitives.WriteUInt32LittleEndian(death.AsSpan(4), (uint)host.Slot);
+        host.Send(0x17D, death);
+        Assert.AreEqual("kill 2909,123456,654321", ChatText(host.WaitFor(0x005).Payload));
+        // a creature the server never saw: no position
+        var unknown = new byte[8];
+        BinaryPrimitives.WriteUInt32LittleEndian(unknown, 9002);
+        BinaryPrimitives.WriteUInt32LittleEndian(unknown.AsSpan(4), (uint)host.Slot);
+        host.Send(0x17D, unknown);
+        Assert.AreEqual("kill nil,nil,nil", ChatText(host.WaitFor(0x005).Payload));
+    }
+
+    [TestMethod]
+    public void TheSectorGridIsAskedFromTheHostAndAbsentWithoutIt()
+    {
+        using var folder = new Folder();
+        folder.Write("grid.lua", """
+            local c = server.sector_cell(1105)
+            server.save("cell", c and (c.x .. "," .. c.y) or "none")
+            server.save("none", tostring(server.sector_cell(5)))
+            server.save("at", tostring(server.sector_at(5, 1)))
+            server.save("at0", tostring(server.sector_at(99, 99)))
+            """);
+        var server = new Fake { Grid = true };
+        var (host, _) = Start(folder, server);
+        var store = host.StoreOf("grid");
+        Assert.IsTrue(store.TryGet("cell", out var cell)); Assert.AreEqual("5,1", cell);
+        Assert.IsTrue(store.TryGet("none", out var none)); Assert.AreEqual("nil", none);
+        Assert.IsTrue(store.TryGet("at", out var at)); Assert.AreEqual("1105", at);
+        Assert.IsTrue(store.TryGet("at0", out var at0)); Assert.AreEqual("nil", at0);
+        var bare = Start(folder, new Fake()).Host.StoreOf("grid");           // a host without game data
+        Assert.IsTrue(bare.TryGet("cell", out var nogrid)); Assert.AreEqual("none", nogrid);
     }
 }
