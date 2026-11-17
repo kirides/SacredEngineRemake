@@ -1,3 +1,4 @@
+using Sacred.GameServer.Platform;
 using System.Net;
 using System.Runtime.InteropServices;
 using Sacred.GameServer;
@@ -17,7 +18,9 @@ if (args.Contains("--help") || args.Contains("-h"))
 
 if (CommandLine.Validate(args) is { } commandLineError) { Console.Error.WriteLine(commandLineError); return 2; }   // before anything is bound
 var config = GameServerConfig.Load(args);
-if (config.ParentWindow != 0) Log.Info($"Started by the game (window 0x{config.ParentWindow:X}).");   // 'quiet <HWND>' of Sacred.exe; its 0x410 status messages are not sent
+if (config.ParentWindow != 0) Log.Info($"Started by the game (window 0x{config.ParentWindow:X}).");
+GameStatus.Notifier = GameStatus.ForWindow(config.ParentWindow);   // Windows only: PostMessage(hwnd, 0x410, code, value) like the original
+GameStatus.Post(GameStatus.Started);
 Log.Open("Gameserver.log");
 Log.TraceEnabled = config.Trace;
 GoldLanCompatibility? compatibility = null;
@@ -40,8 +43,14 @@ var rules = new AdmissionRules(config.AcceptAnyData ? null : compatibility);
 var advertised = config.PublicAddress is { } text && IPAddress.TryParse(text, out var parsed) ? parsed : IPAddress.Loopback;
 var lan = config.LanAnnounce ? new LanAnnouncer(config, announcedVersion, advertised) : null;
 GameServerHost host;
+GameStatus.Post(GameStatus.TestingPort, 1);
 try { host = new GameServerHost(config, rules, lan); }
-catch (System.Net.Sockets.SocketException e) { Log.Info($"ERROR: The TCP port seems to be already in use! ({e.SocketErrorCode})"); return 3; }
+catch (System.Net.Sockets.SocketException e)
+{
+    Log.Info($"ERROR: The TCP port seems to be already in use! ({e.SocketErrorCode})");
+    GameStatus.Post(GameStatus.InitFailed);
+    return 3;
+}
 if (config.Auth.Enabled && config.GameDirectory is { } itemDir)
 {
     host.ItemFootprints = Sacred.GameServer.Auth.Hero.ItemFootprints.Load(itemDir, out var itemError);
@@ -76,10 +85,12 @@ if (config.LobbyHost is { } lobbyHost)
 {
     var publicIp = advertised.Equals(IPAddress.Loopback) ? 0u : System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(advertised.MapToIPv4().GetAddressBytes());
     var record = host.LobbyRecord(announcedVersion, publicIp);
-    lobby = new LobbyClient(lobbyHost, config.LobbyPort > 0 ? config.LobbyPort : 7066, record, host.StopToken);   // ends on the host's stop token
+    lobby = new LobbyClient(lobbyHost, config.LobbyPort > 0 ? config.LobbyPort : 7066, record, host.StopToken) { Status = GameStatus.Post };   // ends on the host's stop token
     host.AttachLobby(lobby, record);
     lobby.Start();
 }
+
+if (lobby is null) GameStatus.Post(GameStatus.UpAndRunning);          // no lobby to wait for: the listener is open
 
 IAsyncDisposable? webUi = null;
 if (WebUiLauncher.Enabled(args)) { webUi = WebUiLauncher.Start(args, host, out var webError); if (webError is not null) return 2; }
@@ -93,6 +104,7 @@ var lobbyDone = host.ClockMs;
 if (webUi is not null) webUi.DisposeAsync().AsTask().GetAwaiter().GetResult();
 var webDone = host.ClockMs;
 host.Dispose();
+GameStatus.Post(GameStatus.GracefulExit);
 if (host.StopRequestedMs >= 0)
     Log.Info($"Shutdown took {host.ClockMs - host.StopRequestedMs} ms (game loop {loopDone - host.StopRequestedMs}, lobby {lobbyDone - loopDone}, web UI {webDone - lobbyDone}, rest {host.ClockMs - webDone}).");
 return 0;

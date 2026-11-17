@@ -365,3 +365,21 @@ fragments of one message are in order and share the message id (per sender); a m
 header's origin (sender 0 = the server for its own messages), and reassembles only messages for the server. Limits (all
 options): token bucket per session, messages in flight per sender, channels per client, message size, reassembly memory per
 session and in total, fragment timeout. Over the KCP/SBT transport the frames are the same messages.
+
+## Status messages to the game window (0x410)
+
+Sacred.exe starts the server as `CreateProcess("GameServer.exe", "quiet <HWND>[ netlog][ tincatlog]")`; the number is the decimal handle of the game's main window (app object +0xB0). In "quiet" mode the server posts `PostMessageA(hwnd, 0x410, code, value)` to it (GameServer.exe FUN_004C27B0 / FUN_004C3F20); the game handles WM 0x410 in FUN_007EF640 (called from its window procedure at 0x813561): each code logs "Gameserver status: ..." and the error codes show a message. Implemented in `Platform/GameStatus.cs`, Windows only and only with a handle (a no-op elsewhere; blittable `DllImport`, AOT safe).
+
+| Code | Value | Game's text | Sent by the original | Here |
+|---|---|---|---|---|
+| 1 | 0 | started | after start-up checks | at start-up |
+| 2 | attempt 1..5 | testing port | before each try to open the network session | once (attempt 1) before the listener is opened |
+| 3 | 0 | doing full reset | before the session loop restarts | not sent (no restart) |
+| 4 | 0 | up and running | lobby login done / session ready | lobby accepted the game; without a lobby: listener open |
+| 5 | 0 | graceful exit | normal shutdown | at the end of a normal shutdown |
+| 6 | 0 | network failed | the original quits after losing the lobby | not sent (the lobby client keeps retrying) |
+| 7 | 0 | init failed | the session could not be opened (port in use) | TCP port already in use (exit code 3) |
+| 8 | 0 | could not connect to lobby server | lobby unreachable (then quits) | first failed lobby connect, once |
+| 9 | error | lobby login failed, error #n | lobby login refused | lobby result code of the login |
+| 10 | 0 | backconnect failed | the lobby could not reach the game's port | not sent (sacred-lobby has no such result) |
+| 11 | 0 | wrong OS version | OS too old | never |
