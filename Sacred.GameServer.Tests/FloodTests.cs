@@ -11,11 +11,14 @@ public class FloodTests
     {
         public readonly GameServerHost Host;
         private readonly Thread _thread;
-        public Server(Action<GameServerConfig> configure)
+        /// <summary>A clock the test moves by hand (flood buckets only), so refills never depend on how fast the machine is.</summary>
+        public long Now = 1000;
+        public Server(Action<GameServerConfig> configure, bool manualClock = false)
         {
             var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5 };
             configure(config);
             Host = new GameServerHost(config, new AdmissionRules(null), null);
+            if (manualClock) Host.FloodClock = () => Volatile.Read(ref Now);
             _thread = new Thread(Host.Run) { IsBackground = true };
             _thread.Start();
         }
@@ -106,13 +109,17 @@ public class FloodTests
     [TestMethod]
     public void ExcessMessagesAreDroppedAndTheFlooderIsRemoved()
     {
-        using var server = new Server(c => { c.Flood.Enabled = true; c.Flood.MessagesPerSecond = 20; c.Flood.MessageBurst = 20; c.Flood.KickAfterDrops = 50; });
+        using var server = new Server(c => { c.Flood.Enabled = true; c.Flood.MessagesPerSecond = 20; c.Flood.MessageBurst = 60; c.Flood.KickAfterDrops = 50; }, manualClock: true);
         var (host, joiner) = Started(server);
         using (host) using (joiner)
         {
-            for (var i = 0; i < 40; i++) joiner.Send(0x1B0, Word((uint)i));
+            // The clock stands still: the joiner has its burst (60) minus what admission and world entry used, nothing refills.
+            for (var i = 0; i < 80; i++) joiner.Send(0x1B0, Word((uint)i));
             var forwarded = Count(host, 0x1B0);
-            Assert.IsTrue(forwarded is >= 10 and < 40, $"forwarded {forwarded} of 40");
+            Assert.IsTrue(forwarded is > 40 and < 60, $"forwarded {forwarded} of 80");
+            Volatile.Write(ref server.Now, server.Now + 500);                  // half a second later: 10 more
+            for (var i = 0; i < 10; i++) joiner.Send(0x1B0, Word((uint)i));
+            Assert.AreEqual(10, Count(host, 0x1B0));
             Assert.IsTrue(server.Host.FloodDrops > 0);
             for (var i = 0; i < 200; i++) joiner.Send(0x1B0, Word((uint)i));
             joiner.WaitFor(0x157);                                            // kicked
@@ -123,7 +130,7 @@ public class FloodTests
     [TestMethod]
     public void ChatSpamIsMutedNotKicked()
     {
-        using var server = new Server(c => { c.Flood.Enabled = true; c.Flood.ChatPerSecond = 1; c.Flood.ChatBurst = 3; c.Flood.KickAfterDrops = 5; });
+        using var server = new Server(c => { c.Flood.Enabled = true; c.Flood.ChatPerSecond = 1; c.Flood.ChatBurst = 3; c.Flood.KickAfterDrops = 5; }, manualClock: true);
         var (host, joiner) = Started(server);
         using (host) using (joiner)
         {

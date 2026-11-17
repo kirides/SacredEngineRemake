@@ -141,6 +141,8 @@ server.every(seconds, fn)  server.after(seconds, fn)
 server.broadcast(text)  server.message(player or slot, text)  server.kick(player or slot, reason)
 server.players()  server.player(slot)  server.time()  server.log(text)  print(...)
 server.get(player or nil, key [, default])  server.set(player or nil, key, value)  server.add(player or nil, key [, n])
+server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- item or nil, error
+server.random()  server.random(n)  server.random(m, n)
 ```
 
 * `player` = `{ slot, name, key, class, level, in_game, host, id }`; `key` identifies the hero across sessions (lobby id and
@@ -157,7 +159,15 @@ server.get(player or nil, key [, default])  server.set(player or nil, key, value
   fails 20 times in a row is switched off. Errors are logged with the file name. Scripts are the server owner's code: the
   sandbox protects against mistakes, not against a hostile author.
 * Runs on the game loop thread; calls into Lua do not allocate, a kick requested by a script runs after the script returns.
-* Not yet: rewards (gold, items) and creature names; see the roadmap.
+* `drop_item` generates equipment with the remake's port of the original drop code (`Sacred.GameplayHost`
+  `WorldEquipmentDropSimulator`, checked against native replays): category for the class, type for the level, rarity
+  (game weights, or `quality` 0..14), values and name; categories `weapon armor ring shield helmet boots belt amulet shoulders
+  arms legs gloves`. It needs `--game-dir`. The item is a new object with a server reference, owned by the receiving player,
+  placed at its hero's position and sent to every in-game player as 0x16F through the object world. The object's type is the
+  value block's resource (Weapon.pak row +0x80), not the row index. `scripts-examples/loot_rewards.lua` rolls rarities from a
+  weight table on kills. **Unverified with a real client:** that the owner can pick it up (its client handles pick-ups of its own
+  objects) and how `class` maps to the game's 0..9 selector (the player's FIRSTCONTACT class byte is passed as is).
+* Not yet: gold rewards (the money item's amount field is unknown) and creature names.
 
 ## Flood protection (`--flood-protection`, on with `--authoritative`)
 

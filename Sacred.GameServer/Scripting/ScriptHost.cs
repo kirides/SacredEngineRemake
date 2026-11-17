@@ -9,6 +9,12 @@ public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, 
 /// <summary>A defeated creature: its object reference, its type (resource id) and level when the server knows them.</summary>
 public readonly record struct ScriptMonster(uint Reference, uint Type, int Level);
 
+/// <summary>What a script asked for with <c>server.drop_item</c>.</summary>
+public readonly record struct ScriptLootRequest(int Level, int HeroClass, uint? Quality, Sacred.Core.Pak.Items.SacredItemCategory? Category, uint Seed);
+
+/// <summary>An item a script dropped: reference, type, quality, generated name and category.</summary>
+public sealed record ScriptDrop(uint Reference, uint Type, uint Quality, string Name, string Category);
+
 /// <summary>What scripts can do on the server. Implemented by the game server; called on the game loop thread only.</summary>
 public interface IScriptServer
 {
@@ -21,6 +27,8 @@ public interface IScriptServer
     void Message(int slot, string text);
     /// <summary>Runs after the current script call returns (removing a player fires "leave" itself).</summary>
     void Kick(int slot, string reason);
+    /// <summary>Generates equipment for the player and drops it next to its hero; null with <paramref name="error"/> on failure.</summary>
+    ScriptDrop? DropItem(int slot, in ScriptLootRequest request, out string? error);
 }
 
 /// <summary>
@@ -34,6 +42,8 @@ public interface IScriptServer
 /// server.broadcast(text) / server.message(player or slot, text) / server.kick(player or slot, reason)
 /// server.players() / server.player(slot) / server.time() / server.log(text)
 /// server.get(player or nil, key [, default]) / server.set(player or nil, key, value) / server.add(player or nil, key, n)
+/// server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- returns item or nil, error
+/// server.random([m [, n]])
 /// </code>
 /// Sandbox: basic (without dofile/loadfile/load), string, table, math and bit32 libraries only; no io, os, require or debug.
 /// Every handler or timer call gets an instruction budget (<see cref="ScriptOptions.InstructionBudget"/>) enforced through a
@@ -299,6 +309,34 @@ public sealed class ScriptHost
             var total = (_store.TryGet(owner, key, out var value) && value is double d ? d : 0) + amount;
             _store.Set(owner, key, total);
             return c.Return(total);
+        });
+        server["drop_item"] = Fn("drop_item", c =>
+        {
+            var target = c.GetArgument(0);
+            var slot = SlotOf(target);
+            var options = c.HasArgument(1) && c.GetArgument(1).Type == LuaValueType.Table ? c.GetArgument(1).Read<LuaTable>() : null;
+            var player = _server.Player(slot);
+            if (player is null) return c.Return(LuaValue.Nil, "no such player");
+            double Number(string key, double fallback) => options?[key] is { Type: LuaValueType.Number } n ? n.Read<double>() : fallback;
+            Sacred.Core.Pak.Items.SacredItemCategory? category = null;
+            if (options?["category"] is { Type: LuaValueType.String } name)
+            {
+                if (!LootService.Categories.TryGetValue(name.Read<string>(), out var known)) return c.Return(LuaValue.Nil, "unknown category " + name.Read<string>());
+                category = known;
+            }
+            uint? quality = options?["quality"] is { Type: LuaValueType.Number } q ? (uint)Math.Clamp(q.Read<double>(), 0, 14) : null;
+            var request = new ScriptLootRequest((int)Number("level", Math.Max(1, player.Level)), (int)Number("class", player.Class), quality, category,
+                (uint)Number("seed", Random.Shared.Next()));
+            var drop = _server.DropItem(slot, request, out var error);
+            if (drop is null) return c.Return(LuaValue.Nil, error ?? "failed");
+            return c.Return(new LuaTable(0, 5) { ["ref"] = drop.Reference, ["type"] = drop.Type, ["quality"] = drop.Quality, ["name"] = drop.Name, ["category"] = drop.Category });
+        });
+        server["random"] = Fn("random", c =>
+        {
+            if (!c.HasArgument(0)) return c.Return(Random.Shared.NextDouble());
+            var low = c.HasArgument(1) ? (int)c.GetArgument<double>(0) : 1;
+            var high = (int)c.GetArgument<double>(c.HasArgument(1) ? 1 : 0);
+            return c.Return(high < low ? low : Random.Shared.Next(low, high + 1));
         });
         return server;
     }

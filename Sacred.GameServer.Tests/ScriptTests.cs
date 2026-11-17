@@ -33,6 +33,12 @@ public class ScriptTests
         public void Broadcast(string text) => Said.Add(text);
         public void Message(int slot, string text) => Told.Add((slot, text));
         public void Kick(int slot, string reason) => Kicked.Add(slot);
+        public readonly List<ScriptLootRequest> Drops = new();
+        public ScriptDrop? DropItem(int slot, in ScriptLootRequest request, out string? error)
+        {
+            Drops.Add(request); error = null;
+            return new ScriptDrop(100, 200, request.Quality ?? 0, "Test ring", "Ring");
+        }
     }
 
     private static (ScriptHost Host, FakeServer Server, ScriptStore Store) Host(Folder folder, int budget = 1_000_000)
@@ -175,15 +181,59 @@ public class ScriptTests
         Assert.AreEqual("You have defeated 50 creatures.", server.Told.Last().Text);
     }
 
+    private static string? GameDirectory()
+    {
+        var dir = Environment.GetEnvironmentVariable("SACRED_GAME_DIR") ?? @"B:\Spiele\GOG Games\sacred gold GOG";
+        return Directory.Exists(dir) ? dir : null;
+    }
+
+    [TestMethod]
+    public void LootIsGeneratedForClassLevelAndQuality()
+    {
+        if (GameDirectory() is not { } dir) { Assert.Inconclusive("no game folder (SACRED_GAME_DIR)"); return; }
+        var loot = new LootService(dir);
+        var item = loot.Roll(20, 1, 0, 6, Sacred.Core.Pak.Items.SacredItemCategory.Ring, 12345, out var error);
+        Assert.IsNotNull(item, error);
+        Assert.AreEqual(130, item.Values.Length);
+        Assert.AreEqual(Sacred.Core.Pak.Items.SacredItemCategory.Ring, item.Category);
+        Assert.AreEqual(item.Type, BinaryPrimitives.ReadUInt32LittleEndian(item.Values), "the object type is the value block's resource");
+        Assert.IsTrue(item.Row > 0);
+        var same = loot.Roll(20, 1, 0, 6, Sacred.Core.Pak.Items.SacredItemCategory.Ring, 12345, out _);
+        CollectionAssert.AreEqual(item.Values, same!.Values, "a seed repeats the roll");
+        Assert.IsNull(new LootService(null).Roll(20, 1, 0, null, null, 1, out var missing));
+        StringAssert.Contains(missing, "--game-dir");
+    }
+
+    [TestMethod]
+    public void DropItemOptionsReachTheServer()
+    {
+        using var folder = new Folder();
+        folder.Write("a.lua", """
+            server.on("chat", function(p, text)
+              local item, err = server.drop_item(p, { quality = 7, category = "ring", level = 33 })
+              server.message(p, item.name .. " q" .. item.quality)
+              local _, bad = server.drop_item(p, { category = "spoon" })
+              server.message(p, bad)
+              return true
+            end)
+            """);
+        var (host, server, _) = Host(folder);
+        Assert.IsTrue(host.FireChat(server.All[0], "!loot"));
+        var request = server.Drops.Single();
+        Assert.AreEqual(33, request.Level); Assert.AreEqual(2, request.HeroClass); Assert.AreEqual(7u, request.Quality);
+        Assert.AreEqual(Sacred.Core.Pak.Items.SacredItemCategory.Ring, request.Category);
+        CollectionAssert.AreEqual(new[] { "Test ring q7", "unknown category spoon" }, server.Told.Select(t => t.Text).ToArray());
+    }
+
     // ---- through the real server -------------------------------------------------------------------------------------
 
     private sealed class Server : IDisposable
     {
         public readonly GameServerHost Host;
         private readonly Thread _thread;
-        public Server(Folder folder)
+        public Server(Folder folder, string? gameDirectory = null)
         {
-            var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5 };
+            var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5, GameDirectory = gameDirectory };
             config.Scripts.Directory = folder.Scripts; config.Scripts.DataFile = folder.Data;
             Host = new GameServerHost(config, new AdmissionRules(null), null);
             Host.StartScripts();
@@ -234,6 +284,44 @@ public class ScriptTests
             Assert.IsTrue(host.Silent(0x005));
             joiner.Send(0x005, Chat("hi"));
             Assert.AreEqual("hi", ChatText(host.WaitFor(0x005).Payload));
+        }
+    }
+
+    [TestMethod]
+    public void DroppedLootAppearsNextToTheHeroForEverybody()
+    {
+        if (GameDirectory() is not { } dir) { Assert.Inconclusive("no game folder (SACRED_GAME_DIR)"); return; }
+        using var folder = new Folder();
+        folder.Write("a.lua", "server.on('chat', function(p, t) local item, err = server.drop_item(p, { quality = 5, category = 'ring', level = 12, class = 1 }); server.message(p, item and item.name or err); return true end)");
+        using var server = new Server(folder, dir);
+        var host = RawClient.Admit(server.Port, "Host", 1);
+        host.Send(0x016, default); host.Send(0x018, Word(0x1964)); host.WaitFor(0x018);
+        var joiner = RawClient.Admit(server.Port, "Joiner", 2);
+        joiner.Send(0x015, default); joiner.Send(0x017, default); joiner.WaitFor(0x017);
+        using (host) using (joiner)
+        {
+            // The host's hero stands at (5000, 7000) in sector 1234 (a 0x169 state with the 24-byte prefix).
+            var hero = new byte[24 + 64];
+            BinaryPrimitives.WriteUInt32LittleEndian(hero, host.Slot);
+            BinaryPrimitives.WriteInt32LittleEndian(hero.AsSpan(8), 5000);
+            BinaryPrimitives.WriteInt32LittleEndian(hero.AsSpan(12), 7000);
+            BinaryPrimitives.WriteUInt32LittleEndian(hero.AsSpan(20), 1234);
+            host.Send(0x169, hero);
+            host.Send(0x005, Chat("!loot"));
+            foreach (var client in new[] { joiner, host })
+            {
+                var state = client.WaitFor(0x16F).Payload;
+                var reference = BinaryPrimitives.ReadUInt32LittleEndian(state);
+                Assert.IsTrue(reference >= 0x11, "a server reference");
+                Assert.AreEqual(5000, BinaryPrimitives.ReadInt32LittleEndian(state.AsSpan(8)));
+                Assert.AreEqual(7000, BinaryPrimitives.ReadInt32LittleEndian(state.AsSpan(12)));
+                Assert.AreEqual(1234u, BinaryPrimitives.ReadUInt32LittleEndian(state.AsSpan(20)));
+                var item = Sacred.Network.Gameplay.GoldItemState.FromPayload(state.AsSpan(24));
+                Assert.AreEqual(host.Slot, item.PhysicalState.BaseState.Owner, "the receiving player owns the item");
+                Assert.AreEqual(BinaryPrimitives.ReadUInt32LittleEndian(state.AsSpan(4)), item.Instance.ItemType);
+                Assert.AreEqual(0, item.Count);
+            }
+            Assert.IsFalse(string.IsNullOrEmpty(ChatText(host.WaitFor(0x003).Payload)), "the script told the player the item's name");
         }
     }
 }

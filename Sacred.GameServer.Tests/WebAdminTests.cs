@@ -371,6 +371,7 @@ public class WebAdminTests
     public void FloodChangesApplyToTheRunningServerWithoutKicking()
     {
         using var server = new Server();
+        server.Host.FloodClock = () => 1000;                                  // no refill while the test sends
         using var a = RawClient.Admit(server.Port, "Alice", 1);
         using var b = RawClient.Admit(server.Port, "Bob", 2);
         Assert.IsFalse(server.Host.Flood().Enabled);
