@@ -25,24 +25,62 @@ public static class ScriptEndpoints
 
     public static string ModName(string file) => System.IO.Path.GetFileNameWithoutExtension(file).ToLowerInvariant();
 
-    /// <summary>Turns a handler's return values into a response.</summary>
-    public static ScriptResponse Response(ReadOnlySpan<LuaValue> values)
+    /// <summary>Content types a script may answer with; anything else is sent as text/plain. HTML stays inert: the web UI sends
+    /// script answers with a Content-Security-Policy of default-src none.</summary>
+    private static readonly string[] AllowedTypes = ["application/json", "text/plain", "text/csv", "text/html"];
+
+    public static ScriptResponse TooLarge => new(500, "text/plain; charset=utf-8", "response too large");
+
+    /// <summary>
+    /// Turns a handler's return values into a response: status 200..499 only (anything else is a script error, 500), no body for
+    /// 204/304, a whitelisted content type, and at most <paramref name="maxChars"/> characters of body (500 "response too large").
+    /// </summary>
+    public static ScriptResponse Response(ReadOnlySpan<LuaValue> values, int maxChars)
     {
         if (values.Length == 0 || values[0].Type == LuaValueType.Nil) return new(204, "text/plain; charset=utf-8", "");
-        var status = values.Length > 2 && values[2].Type == LuaValueType.Number ? Math.Clamp((int)values[2].Read<double>(), 100, 599) : 200;
+        var status = 200;
+        if (values.Length > 2 && values[2].Type == LuaValueType.Number)
+        {
+            var asked = values[2].Read<double>();
+            if (!(asked >= 200 && asked <= 499) || asked != Math.Floor(asked)) return new(500, "text/plain; charset=utf-8", "script returned an invalid status");
+            status = (int)asked;
+        }
+        string type, body;
         if (values[0].Type == LuaValueType.Table)
-            return new(status, "application/json; charset=utf-8", Json(values[0].Read<LuaTable>()));
-        var type = values.Length > 1 && values[1].Type == LuaValueType.String ? values[1].Read<string>() : "text/plain; charset=utf-8";
-        if (!type.Contains("charset", StringComparison.OrdinalIgnoreCase) && type.StartsWith("text/", StringComparison.OrdinalIgnoreCase)) type += "; charset=utf-8";
-        return new(status, type, values[0].ToString());
+        {
+            type = "application/json";
+            body = Json(values[0].Read<LuaTable>(), maxChars);
+            if (body.Length > maxChars) return TooLarge;
+        }
+        else
+        {
+            var text = values[0].Type == LuaValueType.String ? values[0].Read<string>() : values[0].ToString();
+            if (text.Length > maxChars) return TooLarge;
+            var asked = values.Length > 1 && values[1].Type == LuaValueType.String ? values[1].Read<string>() : "text/plain";
+            var media = asked.Split(';', 2)[0].Trim().ToLowerInvariant();
+            type = Array.IndexOf(AllowedTypes, media) >= 0 ? media : "text/plain";
+            body = text;
+        }
+        if (status is 204 or 304) body = "";
+        return new(status, type + "; charset=utf-8", body);
     }
 
     /// <summary>A Lua table as JSON: a table with only a sequence part (or nothing) is an array, anything else an object. Depth is limited.</summary>
-    public static string Json(LuaTable table)
+    public static string Json(LuaTable table, int maxChars = int.MaxValue)
     {
-        using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream)) Write(writer, table, 0);
-        return Encoding.UTF8.GetString(stream.ToArray());
+        using var stream = new CappedStream(maxChars);
+        try { using (var writer = new Utf8JsonWriter(stream)) Write(writer, table, 0); }
+        catch (CappedStream.FullException) { return new string(' ', maxChars + 1); }   // the caller sees "too large"
+        return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+    }
+
+    /// <summary>A memory stream that refuses to grow past a limit, so a huge table never becomes a huge buffer.</summary>
+    private sealed class CappedStream(int limit) : MemoryStream
+    {
+        public sealed class FullException : Exception;
+        public override void Write(byte[] buffer, int offset, int count) { if (Length + count > limit) throw new FullException(); base.Write(buffer, offset, count); }
+        public override void Write(ReadOnlySpan<byte> buffer) { if (Length + buffer.Length > limit) throw new FullException(); base.Write(buffer); }
+        public override void WriteByte(byte value) { if (Length + 1 > limit) throw new FullException(); base.WriteByte(value); }
     }
 
     private static void Write(Utf8JsonWriter writer, LuaValue value, int depth)
@@ -66,7 +104,8 @@ public static class ScriptEndpoints
         if (table.HashMapCount == 0)                                         // also the empty table: an empty list
         {
             writer.WriteStartArray();
-            for (var i = 1; i <= table.ArrayLength; i++) Write(writer, table[i], depth);
+            var length = table.ArrayLength;                               // not per iteration: it is not O(1)
+            for (var i = 1; i <= length; i++) { Write(writer, table[i], depth); if (writer.BytesPending > 65536) writer.Flush(); }
             writer.WriteEndArray();
             return;
         }
@@ -78,6 +117,7 @@ public static class ScriptEndpoints
             writer.WritePropertyName(pair.Key.Type == LuaValueType.Number
                 ? pair.Key.Read<double>().ToString(CultureInfo.InvariantCulture) : pair.Key.ToString());
             Write(writer, pair.Value, depth);
+            if (writer.BytesPending > 65536) writer.Flush();                // reach the size cap early, not after buffering it all
         }
         writer.WriteEndObject();
     }
@@ -88,16 +128,17 @@ public static class ScriptEndpoints
     {
         var sb = new StringBuilder();
         var names = new List<string>();
-        if (columns is not null) for (var i = 1; i <= columns.ArrayLength; i++) names.Add(columns[i].ToString());
+        if (columns is not null) { var count = columns.ArrayLength; for (var i = 1; i <= count; i++) names.Add(columns[i].ToString()); }
         if (names.Count > 0) { AppendLine(sb, names); }
         var fields = new List<string>();
-        for (var r = 1; r <= rows.ArrayLength; r++)
+        var rowCount = rows.ArrayLength;
+        for (var r = 1; r <= rowCount; r++)
         {
             if (rows[r].Type != LuaValueType.Table) continue;
             var row = rows[r].Read<LuaTable>();
             fields.Clear();
             if (names.Count > 0) foreach (var name in names) fields.Add(Text(row[name]));
-            else for (var i = 1; i <= row.ArrayLength; i++) fields.Add(Text(row[i]));
+            else { var count = row.ArrayLength; for (var i = 1; i <= count; i++) fields.Add(Text(row[i])); }
             AppendLine(sb, fields);
         }
         return sb.ToString();

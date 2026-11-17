@@ -94,7 +94,7 @@ public sealed class ScriptHost
         {
             _currentFile = endpoint.File;
             var values = Run(_state.CallAsync(endpoint.Function, One(request)));
-            return ScriptEndpoints.Response(values);
+            return ScriptEndpoints.Response(values, _options.MaxResponseChars);
         }
         catch (Exception e) when (Contained(e))
         {
@@ -267,6 +267,19 @@ public sealed class ScriptHost
         var state = LuaState.Create();
         state.OpenBasicLibrary(); state.OpenStringLibrary(); state.OpenTableLibrary(); state.OpenMathLibrary(); state.OpenBitwiseLibrary();
         foreach (var name in (ReadOnlySpan<string>)["dofile", "loadfile", "load", "collectgarbage"]) state.Environment[name] = LuaValue.Nil;
+        // string.rep can build a huge string in one instruction: cap its result (the budget cannot see it).
+        var strings = state.Environment["string"].Read<LuaTable>();
+        var rep = strings["rep"].Read<LuaFunction>();
+        strings["rep"] = new LuaFunction("rep", async (c, ct) =>
+        {
+            var length = c.HasArgument(0) ? c.GetArgument(0).ToString().Length : 0;
+            var count = c.HasArgument(1) && c.GetArgument(1).Type == LuaValueType.Number ? c.GetArgument<double>(1) : 0;
+            var separator = c.HasArgument(2) ? c.GetArgument(2).ToString().Length : 0;
+            if (count > 0 && (length + (double)separator) * count > _options.MaxStringChars)
+                throw new ScriptBudgetException($"string.rep result larger than {_options.MaxStringChars:N0} characters");
+            var results = await c.State.CallAsync(rep, c.Arguments, ct).ConfigureAwait(false);
+            return c.Return(results);
+        });
         state.Environment["print"] = Fn("print", c =>
         {
             var parts = new string[c.ArgumentCount];
@@ -407,7 +420,7 @@ public sealed class ScriptHost
             if (c.HasArgument(2) && c.GetArgument(2).Type == LuaValueType.Table)
             {
                 var list = c.GetArgument(2).Read<LuaTable>();
-                for (var i = 1; i <= Math.Min(list.ArrayLength, 1000); i++)
+                for (int i = 1, n = Math.Min(list.ArrayLength, 1000); i <= n; i++)
                     if (list[i].Type == LuaValueType.Table && list[i].Read<LuaTable>() is var row)
                         rows.Add((row["name"].ToString(), row["value"].Type == LuaValueType.Number ? row["value"].Read<double>() : 0));
             }

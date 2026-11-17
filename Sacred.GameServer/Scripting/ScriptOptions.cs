@@ -14,6 +14,11 @@ public sealed class ScriptOptions
     /// <summary>Lua instructions one event handler or timer may run before it is stopped (a mistake such as an endless loop
     /// must not freeze the game).</summary>
     public int InstructionBudget { get; set; } = 1_000_000;
+    /// <summary>Largest answer of a script endpoint in characters (larger: 500 "response too large").</summary>
+    public int MaxResponseChars { get; set; } = 2 * 1024 * 1024;
+    /// <summary>Largest string string.rep may build. Concatenation cannot be capped by LuaCSharp; the instruction budget
+    /// bounds how often a script can double a string in one call.</summary>
+    public int MaxStringChars { get; set; } = 4 * 1024 * 1024;
 
     public bool IsEnabled => Enabled ?? System.IO.Directory.Exists(Directory);
 
@@ -24,6 +29,8 @@ public sealed class ScriptOptions
             case "SCRIPTS": Enabled = Int(value, 1) != 0; return true;
             case "SCRIPTS_DIR" or "SCRIPTS_DIRECTORY": Directory = value; return true;
             case "SCRIPTS_DATA": DataFile = value; return true;
+            case "SCRIPTS_MAX_RESPONSE": MaxResponseChars = Math.Clamp(Int(value, MaxResponseChars), 1024, 64 * 1024 * 1024); return true;
+            case "SCRIPTS_MAX_STRING": MaxStringChars = Math.Clamp(Int(value, MaxStringChars), 1024, 256 * 1024 * 1024); return true;
             case "SCRIPTS_BUDGET": InstructionBudget = Math.Clamp(Int(value, InstructionBudget), 10_000, 100_000_000); return true;
         }
         return false;

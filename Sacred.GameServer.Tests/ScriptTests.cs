@@ -243,6 +243,47 @@ public class ScriptTests
     }
 
     [TestMethod]
+    public void EndpointAnswersAreCappedAndOnlyUseSafeStatusesAndTypes()
+    {
+        using var folder = new Folder();
+        folder.Write("m.lua", """
+            server.endpoint("big", function() return string.rep("x", 3 * 1024 * 1024) end)
+            server.endpoint("concat", function() local s = string.rep("y", 1024 * 1024); return s .. s .. s end)
+            server.endpoint("table", function() local t = {} for i = 1, 300000 do t[i] = "0123456789" end return t end)
+            server.endpoint("ok", function() return string.rep("z", 1000) end)
+            server.endpoint("status", function(r) return "s", "text/plain", tonumber(r.query.s) end)
+            server.endpoint("type", function(r) return "<b>x</b>", r.query.t end)
+            server.endpoint("empty", function() return "body", "text/plain", 204 end)
+            """);
+        var options = new ScriptOptions { Directory = folder.Scripts, DataFile = folder.Data, MaxResponseChars = 2 * 1024 * 1024 };
+        var server = new FakeServer();
+        var host = new ScriptHost(options, server, new ScriptStore(folder.Data));
+        host.Load();
+        foreach (var path in new[] { "big", "concat", "table" })
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var answer = host.HandleRequest("m", path, [], false);
+            Assert.IsTrue(watch.ElapsedMilliseconds < 5000, $"{path} took {watch.ElapsedMilliseconds} ms");
+            Assert.AreEqual(500, answer.Status, path);
+            Assert.IsTrue(answer.Body.Length < 100, path + ": no huge body");
+        }
+        Assert.AreEqual(1000, host.HandleRequest("m", "ok", [], false).Body.Length);
+        foreach (var (asked, expected) in new[] { ("200", 200), ("404", 404), ("499", 499), ("500", 500), ("302", 302), ("100", 500), ("599", 500), ("12.5", 500) })
+            Assert.AreEqual(expected, host.HandleRequest("m", "status", [KeyValuePair.Create("s", asked)], false).Status, asked);
+        Assert.AreEqual("script returned an invalid status", host.HandleRequest("m", "status", [KeyValuePair.Create("s", "503")], false).Body);
+        foreach (var (asked, expected) in new[] { ("text/csv", "text/csv"), ("text/html", "text/html"), ("application/json", "application/json"),
+                     ("application/javascript", "text/plain"), ("image/svg+xml", "text/plain"), ("text/html\r\nX-Evil: 1", "text/plain"), ("TEXT/CSV; charset=latin1", "text/csv") })
+            Assert.AreEqual(expected + "; charset=utf-8", host.HandleRequest("m", "type", [KeyValuePair.Create("t", asked)], false).ContentType, asked);
+        var empty = host.HandleRequest("m", "empty", [], false);
+        Assert.AreEqual(204, empty.Status);
+        Assert.AreEqual("", empty.Body);
+        // string.rep is capped where it builds the string; the error is contained.
+        folder.Write("m.lua", "server.endpoint('rep', function() return string.rep('x', 300 * 1024 * 1024) end)");
+        host.Load();
+        Assert.AreEqual(500, host.HandleRequest("m", "rep", [], false).Status);
+    }
+
+    [TestMethod]
     public void EndpointRequestsRunOnTheGameLoop()
     {
         using var folder = new Folder();
