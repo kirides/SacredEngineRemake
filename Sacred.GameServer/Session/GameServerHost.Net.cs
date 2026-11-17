@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Sacred.GameServer.Scripting;
 using Sacred.GameServer.Wire;
 
 namespace Sacred.GameServer.Session;
@@ -263,6 +264,13 @@ public sealed partial class GameServerHost
     {
         NetStats.Delivered++;
         NetMessage?.Invoke(s, channel, json, data);
+        if (_scripts is null || !_scripts.HasNetHandler(channel.Id)) return;
+        try
+        {
+            if (!_scripts.FireNet(channel.Id, ScriptPlayerOf(s), json, data)) NetStats.Malformed++;
+            ExecuteScriptKicks();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault($"net channel {channel.Name}", e); }
     }
 
     // ---- sending ----------------------------------------------------------------------------------------------------
@@ -308,6 +316,25 @@ public sealed partial class GameServerHost
         for (var slot = 1; slot <= MaxSlots; slot++)
             if (CapablePlayer(slot) is { } target && SendNet(target, channel, json, data, out error) > 0) players++;
         return players;
+    }
+
+    // ---- IScriptServer: the net table of the scripts ---------------------------------------------------------------------------
+
+    uint IScriptServer.NetRegister(string name, bool serverOnly) => RegisterNetChannel(name, serverOnly).Id;
+    void IScriptServer.NetReset() => ClearNetChannels();
+    bool IScriptServer.NetSupports(int slot) => NetSupports(slot);
+    int IScriptServer.NetHandlerBudget => _config.NetOps.HandlerBudget;
+
+    int IScriptServer.NetSend(int slot, uint channel, bool json, byte[] data, out string? error)
+    {
+        error = null;
+        if (slot == 0)
+        {
+            var players = SendNetToAll(channel, json, data, out error);
+            if (players == 0 && error is null) error = "no player can use custom net messages";
+            return players;
+        }
+        return SendNetToSlot(slot, channel, json, data, out error) ? 1 : 0;
     }
 
     // ---- housekeeping -----------------------------------------------------------------------------------------------
