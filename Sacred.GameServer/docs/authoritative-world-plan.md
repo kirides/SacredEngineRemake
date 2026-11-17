@@ -318,3 +318,14 @@ Next round: M0 replay harness and real-client captures (answers Q1..Q8 and calib
   Closed Net with the local test lobby), which are John's runs or need the game on this machine.
 * **M4, first step:** 0x165 position updates applied to the server's world (authoritative mode only). Next: HP 0x128, compact values 0x169/0x16C
   merged instead of replaced, inventory membership, exact forwarding filters for modes 3..8.
+
+### Round 3 (2026-11-17, with real clients)
+
+* Real-client captures (stock Gold driven by Sacred Gear automation, Closed Net with the test lobby): the auction thread's sessions and a
+  53-minute session of my own. With the world-start, purchase, quest and stock sources of the shared stash thread they replay with 0
+  unexplained creations.
+* **What a single real client sends** (53 minutes, by count): 0x16F 3263, 0x16E 2019, 0x11A 404, 0x15C 282, 0x11B 85, 0x174 84, 0x1C2 84,
+  0x14F 59, 0x168 46, 0x18F 45, 0x169 24, ... and **no 0x165 positions, no 0x128 health, no 0x17A/0x17D** (no fight happened). Positions
+  reach the server as repeated full 0x16F states, which the mirror already stores. So M4's next pieces are 0x11A and 0x15C (what they
+  change) and a session with fights and two clients; the 0x165/0x128 handling stays as it is until a capture shows them.
+* Open: the play automation walks but has not landed a hit yet (the isometric click mapping is off), so kill/loot captures are still missing.

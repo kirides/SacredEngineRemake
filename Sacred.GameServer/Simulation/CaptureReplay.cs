@@ -12,7 +12,7 @@ namespace Sacred.GameServer.Simulation;
 /// <summary>What a replay found (docs/authoritative-world-plan.md, M0).</summary>
 public sealed record ReplayReport(int Connections, long Frames, long DurationMs, long Ticks, int[] Explained, int Refused, int ExplainedLate,
     int GoldUnexplained, long GoldUnexplainedAmount, int GoldClamped, int RejectedItems, long ServerFrames, int KillsAlive = 0, long Positions = 0, long HitPointUpdates = 0,
-    IReadOnlyList<(long AtMs, int Refused)>? Bursts = null)
+    IReadOnlyList<(long AtMs, int Refused)>? Bursts = null, IReadOnlyList<(int Opcode, long Count)>? Opcodes = null)
 {
     public string Describe()
     {
@@ -27,6 +27,12 @@ public sealed record ReplayReport(int Connections, long Frames, long DurationMs,
         {
             text.Append("Unexplained creations over time (s:count):");
             foreach (var (at, n) in Bursts) text.Append(' ').Append(at / 1000).Append(':').Append(n);
+            text.AppendLine();
+        }
+        if (Opcodes is { Count: > 0 })
+        {
+            text.Append("Messages from the players by opcode:");
+            foreach (var (op, n) in Opcodes) text.Append(" 0x").Append(op.ToString("X3")).Append(':').Append(n);
             text.AppendLine();
         }
         text.AppendLine($"World: {Positions} position and {HitPointUpdates} health updates applied; {KillsAlive} kills of creatures that still had hit points.");
@@ -98,7 +104,8 @@ public static class CaptureReplay
             var witness = host.Witness!;
             return new ReplayReport(links.Count, frames, last, ticks, (int[])witness.Explained.Clone(), host.StrictItemsRefused, witness.ExplainedLate,
                 host.Gold!.Unexplained, host.Gold.UnexplainedGold, host.GoldClamped, host.RejectedItems, links.Values.Sum(l => l.FramesSent),
-                host.KillsAlive, host.WorldPositions, host.WorldHitPointUpdates, bursts);
+                host.KillsAlive, host.WorldPositions, host.WorldHitPointUpdates, bursts,
+                host.ReceivedByOpcode.Select((n, op) => (op, n)).Where(x => x.n > 0).OrderByDescending(x => x.n).ToList());
         }
         finally { host.Dispose(); }
     }

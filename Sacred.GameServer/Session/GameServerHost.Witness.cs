@@ -33,12 +33,25 @@ public sealed partial class GameServerHost
     public CaptureWriter? Capture => _capture;
     /// <summary>Kill reports (0x17D) of creatures that still had hit points in the server's world (0x128 applied); diagnostics for M5.</summary>
     public int KillsAlive { get; private set; }
+    /// <summary>Game messages received per opcode since the start (admitted players; the replay report lists them).</summary>
+    public readonly long[] ReceivedByOpcode = new long[0x400];
     public long WorldPositions => _world.Positions;
     public long WorldHitPointUpdates => _world.HitPointUpdates;
     /// <summary>Gold increases that were not saved (AUTH_STRICT_GOLD=on).</summary>
     public int GoldClamped { get; private set; }
 
     private ushort _nextCaptureLink;
+
+    /// <summary>An item created in the world start window that is not a baseline item went into the hero's inventory while the window was still open:
+    /// a client that makes an item while it builds the world and puts it into its hero. Logged; with AUTH_STRICT_ITEMS=on removed from the server's world.</summary>
+    private void WorldStartItemInHero(PlayerSession s, uint reference)
+    {
+        if (_config.Auth.StrictItems == StrictItemsMode.Off || !HeroSavedByServer(s.Slot)) return;
+        StrictItemsRefused++;
+        Log.Info($"AUTH: strict items: {s.Describe()}: item 0x{reference:X} was created while the world started and is not an item of the hero's baseline, yet went into the hero's inventory"
+            + (_config.Auth.StrictItems == StrictItemsMode.On ? ", removed." : " (log mode, kept)."));
+        if (_config.Auth.StrictItems == StrictItemsMode.On) _world.Remove(reference);
+    }
     private readonly long[] _goldSeen = new long[MaxSlots + 1];
     private readonly uint[] _unpaid = new uint[ItemWitness.PurchaseRing];
 
@@ -111,6 +124,7 @@ public sealed partial class GameServerHost
                 // an item enters the hero's inventory: trader stock must have been paid for (the gold check removes it otherwise)
                 var reference = BinaryPrimitives.ReadUInt32LittleEndian(p) & 0x7FFFFFFF;
                 if (Witness!.TakeStock(s.Slot, reference, out var price)) Witness.OnPurchase(s.Slot, reference, price, now);
+                else if (Witness.WorldStartItemAnchored(s.Slot, reference, now)) WorldStartItemInHero(s, reference);
                 return;
             }
             case 0x145 or (>= 0x1B8 and <= 0x1BE):
@@ -199,6 +213,7 @@ public sealed partial class GameServerHost
         var source = Witness!.Classify(s.Slot, facts, content, now);
         if (source == ItemSource.Purchase) Witness.OnPurchase(s.Slot, reference, price, now);
         else if (source == ItemSource.Stock) Witness.OnStock(s.Slot, reference, price);
+        else if (source == ItemSource.WorldStart) Witness.OnWorldStartItem(s.Slot, reference);
         else if (source == ItemSource.Unexplained)
             Log.Info($"AUTH: witness: 0x{reference:X} lies in sector {sector} at {x},{y} (the player stands in sector {s.CurrentSector}, which belongs to #{SectorOwnerOf(s.CurrentSector)}), price {price}, level {data[25]}.");
         return source;
