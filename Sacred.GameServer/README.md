@@ -143,6 +143,8 @@ server.players()  server.player(slot)  server.time()  server.log(text)  print(..
 server.get(player or nil, key [, default])  server.set(player or nil, key, value)  server.add(player or nil, key [, n])
 server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- item or nil, error
 server.random()  server.random(n)  server.random(m, n)
+server.top(key, n)                     -- { { key, name, value }, ... }: saved numbers of every hero, also offline
+server.publish(name, title, rows)      -- rows = { { name = "...", value = n }, ... }: a board for the web UI
 ```
 
 * `player` = `{ slot, name, key, class, level, in_game, host, id }`; `key` identifies the hero across sessions (lobby id and
@@ -158,6 +160,9 @@ server.random()  server.random(n)  server.random(m, n)
   more stops it with an error (an endless loop cannot freeze the game, `pcall` cannot swallow the stop), and a handler that
   fails 20 times in a row is switched off. Errors are logged with the file name. Scripts are the server owner's code: the
   sandbox protects against mistakes, not against a hostile author.
+* `Sacred.GameServer` references `Sacred.GameplayHost` for the drop code, which brings `Sacred.Assets` and with it `Sacred.Granny`
+  (the Windows Granny DLL loader). The server never calls it and Native AOT trims it away (no ILC warnings, the native library
+  is never loaded); dropping the reference would need changes in the shared projects.
 * Runs on the game loop thread; calls into Lua do not allocate, a kick requested by a script runs after the script returns.
 * `drop_item` generates equipment with the remake's port of the original drop code (`Sacred.GameplayHost`
   `WorldEquipmentDropSimulator`, checked against native replays): category for the class, type for the level, rarity
@@ -167,7 +172,30 @@ server.random()  server.random(n)  server.random(m, n)
   value block's resource (Weapon.pak row +0x80), not the row index. `scripts-examples/loot_rewards.lua` rolls rarities from a
   weight table on kills. **Unverified with a real client:** that the owner can pick it up (its client handles pick-ups of its own
   objects) and how `class` maps to the game's 0..9 selector (the player's FIRSTCONTACT class byte is passed as is).
+* Ladders: `server.top` ranks a saved number over every hero the server has seen (the server stores each hero's character
+  name under `_name` when it joins), `server.publish` hands a board to the web UI (`/api/boards`, `/public/boards`).
+  `scripts-examples/ladders.lua` keeps most kills, highest level and time online (+60 s per connected hero each minute) and
+  publishes them every 30 s; `!top` shows the kill ladder in chat. `player.online` is the current session in seconds.
 * Not yet: gold rewards (the money item's amount field is unknown) and creature names.
+
+## Player data and boards (web UI)
+
+With the web UI running the server keeps every player's hero state, equipment changes and inventories (also without
+`--authoritative`) and refreshes a snapshot once a second: `GET /api/heroes`, `/api/heroes/{slot}` (admin, with the lobby
+account) and the boards scripts publish, `GET /api/boards`, `/api/boards/{name}`.
+
+`WebUi:PublicApi=true` (`--webui-public-api`) also serves `GET /public/heroes`, `/public/heroes/{character}`, `/public/boards`
+and `/public/boards/{name}` to anybody, with `Access-Control-Allow-Origin: *` and a 2 s cache, for embeds on other sites,
+stream overlays and the like. Read-only (GET), no password; the account part of lobby names and the slot are left out. Off by
+default.
+
+A hero: character, class, level, experience, gold, remaining skill points, skills (game skill id, level, bonus), the six spent
+attribute points, the six attributes (only after the client sent a full 0x16B state, else null), combat arts (kind, art id,
+rank byte), number of combos, equipment (slot 0..18 and item), inventory and shared stash (anchor cell, width, height, item),
+online seconds. An item: reference, type (Items.pak resource), level, rarity tier, filled sockets, price. Names of skills, arts
+and items need the game's text tables and are not resolved yet; ids are the game's own numbers. Source: the hero's own object
+states (Gold 0x585C60 values at +445: compact fields, or the full sCharValHero block from 0x16B), 0x11D/0x11E, 0x122, 0x13E/0x13F
+and the items in the object world.
 
 ## Flood protection (`--flood-protection`, on with `--authoritative`)
 

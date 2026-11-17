@@ -64,6 +64,26 @@ public sealed class ScriptStore
         _dirty = true;
     }
 
+    /// <summary>The <paramref name="count"/> owners with the highest number under <paramref name="key"/> (players only, not "global"),
+    /// with the display name the server keeps under <see cref="NameKey"/>.</summary>
+    public List<(string Owner, string Name, double Value)> Top(string key, int count)
+    {
+        var rows = new List<(string, string, double)>();
+        foreach (var (owner, map) in _values)
+        {
+            if (owner == GlobalKey || !map.TryGetValue(key, out var raw) || raw.Length < 3 || raw[0] != 'n') continue;
+            if (!double.TryParse(raw.AsSpan(2), NumberStyles.Float, CultureInfo.InvariantCulture, out var value)) continue;
+            var name = map.TryGetValue(NameKey, out var n) && n.Length > 2 ? n[2..] : owner;
+            rows.Add((owner, name, value));
+        }
+        rows.Sort((a, b) => b.Item3.CompareTo(a.Item3));
+        if (rows.Count > count) rows.RemoveRange(count, rows.Count - count);
+        return rows;
+    }
+
+    /// <summary>The character name the server stores for every hero it has seen (shown on ladders).</summary>
+    public const string NameKey = "_name";
+
     public void Flush()
     {
         if (!_dirty) return;

@@ -96,6 +96,7 @@ public static class CommandLine
         new("Web UI", "webui-cors-origins", OptionKind.Text, "origins allowed to call the JSON API (comma separated)", "https://example.org", WebStyle: true),
         new("Web UI", "webui-frame-ancestors", OptionKind.Text, "who may frame the page: none, self, * or origins", "self", WebStyle: true),
         new("Web UI", "webui-allowed-hosts", OptionKind.Text, "accepted Host headers (comma separated)", "localhost", WebStyle: true),
+        new("Web UI", "webui-public-api", OptionKind.Flag, "serve read-only /public/heroes and /public/boards to anybody (embeds, overlays)", "1", WebStyle: true),
         new("Web UI", "webui-path-base", OptionKind.Text, "URL prefix behind a reverse proxy", "/sacred", WebStyle: true),
         new("Web UI", "webui-config", OptionKind.Path, "web UI settings file (default webui.json)", "webui.json", WebStyle: true),
     ];

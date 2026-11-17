@@ -12,6 +12,10 @@ public interface IServerAdmin
     IReadOnlyList<BanEntry> Bans();
     /// <summary>Current flood protection limits and counters.</summary>
     FloodSettings Flood();
+    /// <summary>What the server knows about each online hero (refreshed about once a second).</summary>
+    IReadOnlyList<HeroInfo> Heroes();
+    /// <summary>Boards (ladders) published by server scripts.</summary>
+    IReadOnlyList<BoardInfo> Boards();
     /// <summary>Queues a command for the game loop. False when the queue is full.</summary>
     bool Submit(in AdminCommand command);
     /// <summary>Cancelled when the server stops: the web UI ends its streaming responses and stops at once (it never waits for browsers).</summary>
@@ -69,5 +73,24 @@ public enum AdminCommandKind
 public sealed record FloodSettings(
     bool Enabled, bool Explicit, int MessagesPerSecond, int MessageBurst, int BytesPerSecond, int ByteBurst, int ChatPerSecond, int ChatBurst,
     int KickAfterDrops, int StrikeWindowSeconds, int UploadGraceSeconds, int MaxConnectionsPerAddress, long Drops, long Removed, long RefusedConnections);
+
+/// <summary>An online hero. Values come from the hero's own object states and inventory messages; <see cref="Attributes"/> is
+/// null until the client sent a full state (0x16B). Skill, combat art and item ids are the game's numbers (names need its text
+/// tables). <see cref="Account"/> is only filled for the admin API.</summary>
+public sealed record HeroInfo(int Slot, string Character, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Account,
+    int Class, int Level, long Experience, long Gold, int SkillPointsLeft, SkillInfo[] Skills, int[] AttributePoints, int[]? Attributes,
+    ArtInfo[] CombatArts, int Combos, EquippedItem[] Equipment, StoredItem[] Inventory, StoredItem[] Stash, bool InGame, double OnlineSeconds);
+
+public sealed record SkillInfo(int Id, int Level, int Bonus);
+/// <summary>A combat art record (22 bytes): kind word, art id and the byte after it (its rank as far as the saves show).</summary>
+public sealed record ArtInfo(int Kind, int Id, int Rank);
+/// <summary>An item: object reference, type (Items.pak resource), item level, rarity tier, filled sockets, price.</summary>
+public sealed record ItemInfo(uint Ref, uint Type, int Level, int Rarity, int Sockets, long Price);
+public sealed record EquippedItem(int Slot, ItemInfo Item);
+public sealed record StoredItem(int Cell, int Width, int Height, ItemInfo Item);
+
+/// <summary>A board (ladder) a script published with <c>server.publish</c>.</summary>
+public sealed record BoardInfo(string Name, string Title, BoardRow[] Rows, long UpdatedUnixMs);
+public sealed record BoardRow(int Rank, string Name, double Value);
 
 public readonly record struct AdminCommand(AdminCommandKind Kind, int Slot = 0, int Value = 0, string? Text = null);

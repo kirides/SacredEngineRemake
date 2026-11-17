@@ -106,6 +106,17 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/api/players", (RequestDelegate)(c => Json(c.Response, _admin.Players().ToArray(), WebUiJson.Default.PlayerInfoArray)));
         app.MapGet("/api/bans", (RequestDelegate)(c => Json(c.Response, _admin.Bans().ToArray(), WebUiJson.Default.BanEntryArray)));
         app.MapGet("/api/flood", (RequestDelegate)(c => Json(c.Response, _admin.Flood(), WebUiJson.Default.FloodSettings)));
+        app.MapGet("/api/heroes", (RequestDelegate)(c => Json(c.Response, _admin.Heroes().ToArray(), WebUiJson.Default.HeroInfoArray)));
+        app.MapGet("/api/heroes/{slot:int}", (RequestDelegate)(c => HeroEndpoint(c, publicView: false)));
+        app.MapGet("/api/boards", (RequestDelegate)(c => Json(c.Response, _admin.Boards().ToArray(), WebUiJson.Default.BoardInfoArray)));
+        app.MapGet("/api/boards/{name}", (RequestDelegate)BoardEndpoint);
+        if (_options.PublicApi)
+        {
+            app.MapGet("/public/heroes", (RequestDelegate)(c => Json(c.Response, _admin.Heroes().Select(Public).ToArray(), WebUiJson.Default.HeroInfoArray)));
+            app.MapGet("/public/heroes/{name}", (RequestDelegate)(c => HeroEndpoint(c, publicView: true)));
+            app.MapGet("/public/boards", (RequestDelegate)(c => Json(c.Response, _admin.Boards().ToArray(), WebUiJson.Default.BoardInfoArray)));
+            app.MapGet("/public/boards/{name}", (RequestDelegate)BoardEndpoint);
+        }
         app.MapGet("/api/chat", (RequestDelegate)ChatPageEndpoint);
         app.MapGet("/api/chat/stream", (RequestDelegate)ChatStreamEndpoint);
         app.MapPost("/api/{command}", (RequestDelegate)ApiCommandEndpoint);
@@ -120,6 +131,35 @@ public sealed class WebUiServer : IAsyncDisposable
     }
 
     private Task FragmentEndpoint(HttpContext context) => Html(context.Response, Pages.State(_admin));
+
+    /// <summary>The public view never shows the account part of a lobby name nor the slot.</summary>
+    private static HeroInfo Public(HeroInfo hero) => hero with { Account = null, Slot = 0 };
+
+    /// <summary><c>/api/heroes/{slot}</c> (admin) or <c>/public/heroes/{character name}</c>.</summary>
+    private Task HeroEndpoint(HttpContext context, bool publicView)
+    {
+        var heroes = _admin.Heroes();
+        HeroInfo? hero;
+        if (publicView)
+        {
+            var name = (string?)context.GetRouteValue("name") ?? "";
+            hero = heroes.FirstOrDefault(h => h.Character.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (hero is not null) hero = Public(hero);
+        }
+        else
+        {
+            var slot = Convert.ToInt32(context.GetRouteValue("slot"), System.Globalization.CultureInfo.InvariantCulture);
+            hero = heroes.FirstOrDefault(h => h.Slot == slot);
+        }
+        return hero is null ? Fail(context.Response, 404, "no such hero online") : Json(context.Response, hero, WebUiJson.Default.HeroInfo);
+    }
+
+    private Task BoardEndpoint(HttpContext context)
+    {
+        var name = (string?)context.GetRouteValue("name") ?? "";
+        var board = _admin.Boards().FirstOrDefault(b => b.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        return board is null ? Fail(context.Response, 404, "no such board") : Json(context.Response, board, WebUiJson.Default.BoardInfo);
+    }
 
     private async Task ChatPageEndpoint(HttpContext context)
     {
@@ -290,6 +330,16 @@ public sealed class WebUiServer : IAsyncDisposable
         var request = context.Request; var response = context.Response;
         SetSecurityHeaders(response);
         if (_options.PathBase.Length > 0 && !request.PathBase.HasValue) { response.StatusCode = StatusCodes.Status404NotFound; return; }
+        // The public read-only API: anybody may read it, from any page (embeds, overlays); GET only, no credentials.
+        if (_options.PublicApi && request.Path.StartsWithSegments("/public"))
+        {
+            response.Headers.AccessControlAllowOrigin = "*";
+            response.Headers.CacheControl = "public, max-age=2";
+            if (HttpMethods.IsOptions(request.Method)) { response.Headers.AccessControlAllowMethods = "GET"; response.StatusCode = StatusCodes.Status204NoContent; return; }
+            if (!HttpMethods.IsGet(request.Method)) { response.StatusCode = StatusCodes.Status405MethodNotAllowed; return; }
+            await next().ConfigureAwait(false);
+            return;
+        }
         if (!HostAllowed(request.Host.Host)) { response.StatusCode = StatusCodes.Status400BadRequest; return; }
         var origin = request.Headers.Origin.ToString();
         var corsAllowed = origin.Length > 0 && OriginAllowed(origin);

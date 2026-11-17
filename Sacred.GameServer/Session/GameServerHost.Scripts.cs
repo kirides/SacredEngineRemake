@@ -121,7 +121,8 @@ public sealed partial class GameServerHost : IScriptServer
         var level = 0;
         if (_world.TryGet(s.Slot, out var hero)) level = CompactLevel(hero.Payload[(hero.LongPrefix ? 24 : 8)..]);
         var key = s.LobbyIdentity is not (0 or -1) ? $"id:{s.LobbyIdentity}:{s.CharacterBlock}" : "name:" + s.Name;
-        return new ScriptPlayer(s.Slot, s.Name, key, s.RosterEntry[RosterClass], level, s.InGame, s.IsHost, s.LobbyIdentity);
+        return new ScriptPlayer(s.Slot, s.Name, key, s.RosterEntry[RosterClass], level, s.InGame, s.IsHost, s.LobbyIdentity,
+            s.JoinedMs == 0 ? 0 : (_clock.ElapsedMilliseconds - s.JoinedMs) / 1000.0);
     }
 
     private void ExecuteScriptKicks()

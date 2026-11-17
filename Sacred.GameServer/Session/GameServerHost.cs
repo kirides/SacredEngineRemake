@@ -60,7 +60,15 @@ public sealed partial class GameServerHost : IDisposable
     /// <summary>Cancelled by <see cref="Stop"/>: every background part (lobby, web UI streams) ends on it at once.</summary>
     public CancellationToken StopToken => _stopCts.Token;
 
-    public void Stop() { _stop = true; try { _stopCts.Cancel(); } catch (ObjectDisposedException) { } }
+    public void Stop()
+    {
+        if (!_stop) StopRequestedMs = _clock.ElapsedMilliseconds;
+        _stop = true; try { _stopCts.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>Server clock when <see cref="Stop"/> was first called (shutdown timing in the log), -1 before.</summary>
+    public long StopRequestedMs { get; private set; } = -1;
+    public long ClockMs => _clock.ElapsedMilliseconds;
 
     /// <summary>Adds another transport (for example reliable UDP); it feeds the same inbox, so sessions work the same on it.
     /// Call before <see cref="Start"/>.</summary>
@@ -139,6 +147,7 @@ public sealed partial class GameServerHost : IDisposable
         PumpAdmin(now);
         OnTick?.Invoke(Tick);
         PumpScripts(now);
+        PumpHeroes(now);
         foreach (var s in _sessions) s.Connection.Flush();
         for (var i = _retired.Count - 1; i >= 0; i--)
             if (now >= _retired[i].Due) { _retired[i].Connection.ReleaseBuffers(); _retired.RemoveAt(i); }
@@ -275,7 +284,7 @@ public sealed partial class GameServerHost : IDisposable
         else if (_hostWorldAvailable) GrantReferences(s, JoinerReferenceGrant);
         SendEnvironment(s);
         Broadcast(0x151, s.Slot, default, except: s);
-        if (_scripts is not null) ScriptPlayerEvent("join", s);
+        OnPlayerJoined(s);
     }
 
     private void OnPassword(PlayerSession s, in GoldMessageView m)

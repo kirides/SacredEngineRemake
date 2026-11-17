@@ -33,6 +33,8 @@ public class ScriptTests
         public void Broadcast(string text) => Said.Add(text);
         public void Message(int slot, string text) => Told.Add((slot, text));
         public void Kick(int slot, string reason) => Kicked.Add(slot);
+        public readonly Dictionary<string, (string Title, IReadOnlyList<(string Name, double Value)> Rows)> Boards = new();
+        public void Publish(string name, string title, IReadOnlyList<(string Name, double Value)> rows) => Boards[name] = (title, rows);
         public readonly List<ScriptLootRequest> Drops = new();
         public ScriptDrop? DropItem(int slot, in ScriptLootRequest request, out string? error)
         {
@@ -150,6 +152,29 @@ public class ScriptTests
         reloaded.Load();
         Assert.IsTrue(reloaded.TryGet("name:Alice", "kills", out var again));
         Assert.AreEqual(4.0, again);
+    }
+
+    [TestMethod]
+    public void LaddersExampleRanksSavedHeroesAndPublishesBoards()
+    {
+        using var folder = new Folder();
+        folder.Write("ladders.lua", Example("ladders.lua"));
+        var (host, server, store) = Host(folder);
+        // Saved heroes from earlier sessions (names as the server stores them on join).
+        foreach (var (key, name, count, level) in new[] { ("id:1:1", "Bob", 30.0, 20.0), ("id:2:1", "Cara", 70.0, 5.0) })
+        { store.Set(key, ScriptStore.NameKey, name); store.Set(key, "ladder.kills", count); store.Set(key, "ladder.level", level); }
+        store.Set("name:Alice", ScriptStore.NameKey, "Alice");
+        var alice = server.All[0];                                        // level 10
+        for (uint i = 0; i < 50; i++) host.FireKill(alice, new ScriptMonster(100 + i, 551, 3));
+        for (server.Now = 0; server.Now <= 91_000; server.Now += 1000) host.Pump(server.Now);   // online +60 at 60 s, published at 90 s
+        var kills = server.Boards["kills"].Rows;
+        CollectionAssert.AreEqual(new[] { "Cara", "Alice", "Bob" }, kills.Select(r => r.Name).ToArray());
+        Assert.AreEqual(50, kills[1].Value);
+        CollectionAssert.AreEqual(new[] { "Bob", "Alice", "Cara" }, server.Boards["level"].Rows.Select(r => r.Name).ToArray());
+        Assert.AreEqual(60.0 / 3600, server.Boards["online"].Rows.Single().Value, 1e-9);
+        Assert.AreEqual("Highest level", server.Boards["level"].Title);
+        Assert.IsTrue(host.FireChat(alice, "!top"));
+        Assert.AreEqual("1. Cara: 70 kills", server.Told[0].Text);
     }
 
     [TestMethod]

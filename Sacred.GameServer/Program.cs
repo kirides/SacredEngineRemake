@@ -73,7 +73,12 @@ if (WebUiLauncher.Enabled(args)) { webUi = WebUiLauncher.Start(args, host, out v
 using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, c => { c.Cancel = true; host.Stop(); });
 using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, c => { c.Cancel = true; host.Stop(); });
 host.Run();
+var loopDone = host.ClockMs;
 lobby?.Dispose();
+var lobbyDone = host.ClockMs;
 if (webUi is not null) webUi.DisposeAsync().AsTask().GetAwaiter().GetResult();
+var webDone = host.ClockMs;
 host.Dispose();
+if (host.StopRequestedMs >= 0)
+    Log.Info($"Shutdown took {host.ClockMs - host.StopRequestedMs} ms (game loop {loopDone - host.StopRequestedMs}, lobby {lobbyDone - loopDone}, web UI {webDone - lobbyDone}, rest {host.ClockMs - webDone}).");
 return 0;

@@ -198,6 +198,9 @@ public class WebAdminTests
         public long ChatHead => Chat.Count;
         public IReadOnlyList<ChatEntry> ChatSince(long afterId, int max) => Chat.Where(c => c.Id > afterId).Take(max).ToList();
         public IReadOnlyList<BanEntry> Bans() => [];
+        public IReadOnlyList<HeroInfo> Heroes() => [new HeroInfo(1, "Alice", "acct.Alice", 2, 12, 3400, 990, 1, [new SkillInfo(14, 3, 0)], [1, 0, 2, 0, 0, 0], null,
+            [new ArtInfo(2, 1097, 6)], 4, [new EquippedItem(12, new ItemInfo(40, 7452, 11, 2, 1, 500))], [new StoredItem(0, 1, 1, new ItemInfo(41, 5000, 3, 0, 0, 20))], [], true, 75)];
+        public IReadOnlyList<BoardInfo> Boards() => [new BoardInfo("kills", "Most kills", [new BoardRow(1, "Alice", 120)], 1)];
         public FloodSettings Flood() => new(true, false, 600, 3000, 2 * 1024 * 1024, 8 * 1024 * 1024, 3, 8, 500, 10, 60, 8, 42, 1, 2);
         public bool Submit(in AdminCommand command) { Commands.Add(command); return true; }
         public CancellationToken StopRequested => default;
@@ -330,6 +333,36 @@ public class WebAdminTests
             Assert.AreEqual(HttpStatusCode.Forbidden, refused.StatusCode);
             StringAssert.Contains(await refused.Content.ReadAsStringAsync(), "evil.example");
             Assert.AreEqual(HttpStatusCode.Forbidden, (await client.SendAsync(Post("https://gs.example", ("Sec-Fetch-Site", "cross-site")))).StatusCode);
+        }
+    }
+
+    [TestMethod]
+    public async Task HeroesAndBoardsForAdminsAndThePublicApi()
+    {
+        var (server, client, _) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0 });
+        await using (server) using (client)
+        {
+            using var heroes = JsonDocument.Parse(await client.GetStringAsync("/api/heroes"));
+            Assert.AreEqual("acct.Alice", heroes.RootElement[0].GetProperty("account").GetString());
+            Assert.AreEqual(1097, heroes.RootElement[0].GetProperty("combatArts")[0].GetProperty("id").GetInt32());
+            Assert.AreEqual(7452u, JsonDocument.Parse(await client.GetStringAsync("/api/heroes/1")).RootElement.GetProperty("equipment")[0].GetProperty("item").GetProperty("type").GetUInt32());
+            Assert.AreEqual(HttpStatusCode.NotFound, (await client.GetAsync("/api/heroes/9")).StatusCode);
+            Assert.AreEqual(120, JsonDocument.Parse(await client.GetStringAsync("/api/boards/kills")).RootElement.GetProperty("rows")[0].GetProperty("value").GetDouble());
+            Assert.AreEqual(HttpStatusCode.NotFound, (await client.GetAsync("/public/heroes")).StatusCode, "the public API is off by default");
+        }
+        var (open, anonymous, _) = await StartWeb(new WebUiOptions { Enabled = true, Port = 0, PublicApi = true, Password = "secret" });
+        await using (open) using (anonymous)
+        {
+            Assert.AreEqual(HttpStatusCode.Unauthorized, (await anonymous.GetAsync("/api/heroes")).StatusCode, "the admin API still needs the password");
+            var response = await anonymous.GetAsync("/public/heroes/alice");
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            Assert.AreEqual("*", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+            using var hero = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.IsFalse(hero.RootElement.TryGetProperty("account", out _), "no account names in public");
+            Assert.AreEqual(0, hero.RootElement.GetProperty("slot").GetInt32());
+            Assert.AreEqual(12, hero.RootElement.GetProperty("level").GetInt32());
+            Assert.AreEqual("Most kills", JsonDocument.Parse(await anonymous.GetStringAsync("/public/boards")).RootElement[0].GetProperty("title").GetString());
+            Assert.AreEqual(HttpStatusCode.MethodNotAllowed, (await anonymous.PostAsync("/public/heroes", Json("{}"))).StatusCode);
         }
     }
 

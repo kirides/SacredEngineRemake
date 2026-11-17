@@ -115,11 +115,11 @@ public class FloodTests
         {
             // The clock stands still: the joiner has its burst (60) minus what admission and world entry used, nothing refills.
             for (var i = 0; i < 80; i++) joiner.Send(0x1B0, Word((uint)i));
-            var forwarded = Count(host, 0x1B0);
+            var forwarded = Count(host, 0x1B0, 2000);                         // generous: the full test run loads the machine
             Assert.IsTrue(forwarded is > 40 and < 60, $"forwarded {forwarded} of 80");
             Volatile.Write(ref server.Now, server.Now + 500);                  // half a second later: 10 more
             for (var i = 0; i < 10; i++) joiner.Send(0x1B0, Word((uint)i));
-            Assert.AreEqual(10, Count(host, 0x1B0));
+            Assert.AreEqual(10, Count(host, 0x1B0, 2000));
             Assert.IsTrue(server.Host.FloodDrops > 0);
             for (var i = 0; i < 200; i++) joiner.Send(0x1B0, Word((uint)i));
             joiner.WaitFor(0x157);                                            // kicked
@@ -137,7 +137,7 @@ public class FloodTests
             var line = new byte[4 + 6];
             "h\0i\0"u8.CopyTo(line.AsSpan(4));
             for (var i = 0; i < 30; i++) joiner.Send(0x005, line);
-            Assert.AreEqual(3, Count(host, 0x005));
+            Assert.AreEqual(3, Count(host, 0x005, 1500));
             Assert.IsTrue(joiner.Silent(0x157), "a chat spammer is muted, not removed");
         }
     }

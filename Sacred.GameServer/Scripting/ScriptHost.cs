@@ -4,7 +4,7 @@ using Lua.Standard;
 namespace Sacred.GameServer.Scripting;
 
 /// <summary>A player as scripts see it.</summary>
-public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId);
+public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId, double OnlineSeconds = 0);
 
 /// <summary>A defeated creature: its object reference, its type (resource id) and level when the server knows them.</summary>
 public readonly record struct ScriptMonster(uint Reference, uint Type, int Level);
@@ -29,6 +29,8 @@ public interface IScriptServer
     void Kick(int slot, string reason);
     /// <summary>Generates equipment for the player and drops it next to its hero; null with <paramref name="error"/> on failure.</summary>
     ScriptDrop? DropItem(int slot, in ScriptLootRequest request, out string? error);
+    /// <summary>Publishes a board (ladder) for the web UI and its public API.</summary>
+    void Publish(string name, string title, IReadOnlyList<(string Name, double Value)> rows);
 }
 
 /// <summary>
@@ -44,6 +46,8 @@ public interface IScriptServer
 /// server.get(player or nil, key [, default]) / server.set(player or nil, key, value) / server.add(player or nil, key, n)
 /// server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- returns item or nil, error
 /// server.random([m [, n]])
+/// server.top(key, n) -> { { key, name, value }, ... }  (saved numbers of every hero, also offline)
+/// server.publish(name, title, rows)                    -- rows = { { name = "...", value = n }, ... } for the web UI
 /// </code>
 /// Sandbox: basic (without dofile/loadfile/load), string, table, math and bit32 libraries only; no io, os, require or debug.
 /// Every handler or timer call gets an instruction budget (<see cref="ScriptOptions.InstructionBudget"/>) enforced through a
@@ -331,6 +335,30 @@ public sealed class ScriptHost
             if (drop is null) return c.Return(LuaValue.Nil, error ?? "failed");
             return c.Return(new LuaTable(0, 5) { ["ref"] = drop.Reference, ["type"] = drop.Type, ["quality"] = drop.Quality, ["name"] = drop.Name, ["category"] = drop.Category });
         });
+        server["top"] = Fn("top", c =>
+        {
+            var key = c.GetArgument(0).ToString();
+            var count = c.HasArgument(1) ? Math.Clamp((int)c.GetArgument<double>(1), 1, 1000) : 10;
+            var rows = _store.Top(key, count);
+            var table = new LuaTable(rows.Count, 0);
+            for (var i = 0; i < rows.Count; i++) table[i + 1] = new LuaTable(0, 3) { ["key"] = rows[i].Owner, ["name"] = rows[i].Name, ["value"] = rows[i].Value };
+            return c.Return(table);
+        });
+        server["publish"] = Fn("publish", c =>
+        {
+            var name = c.GetArgument(0).ToString();
+            var title = c.HasArgument(1) ? c.GetArgument(1).ToString() : name;
+            var rows = new List<(string, double)>();
+            if (c.HasArgument(2) && c.GetArgument(2).Type == LuaValueType.Table)
+            {
+                var list = c.GetArgument(2).Read<LuaTable>();
+                for (var i = 1; i <= Math.Min(list.ArrayLength, 1000); i++)
+                    if (list[i].Type == LuaValueType.Table && list[i].Read<LuaTable>() is var row)
+                        rows.Add((row["name"].ToString(), row["value"].Type == LuaValueType.Number ? row["value"].Read<double>() : 0));
+            }
+            _server.Publish(name, title, rows);
+            return c.Return();
+        });
         server["random"] = Fn("random", c =>
         {
             if (!c.HasArgument(0)) return c.Return(Random.Shared.NextDouble());
@@ -370,10 +398,10 @@ public sealed class ScriptHost
         _ => value.ToString(),
     };
 
-    private static LuaTable PlayerTable(ScriptPlayer p) => new(0, 8)
+    private static LuaTable PlayerTable(ScriptPlayer p) => new(0, 9)
     {
         ["slot"] = p.Slot, ["name"] = p.Name, ["key"] = p.Key, ["class"] = p.Class, ["level"] = p.Level,
-        ["in_game"] = p.InGame, ["host"] = p.IsHost, ["id"] = p.LobbyId,
+        ["in_game"] = p.InGame, ["host"] = p.IsHost, ["id"] = p.LobbyId, ["online"] = p.OnlineSeconds,
     };
 }
 

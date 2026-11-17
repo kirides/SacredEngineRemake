@@ -26,6 +26,7 @@ in the working directory, or `--webui-config=path`), command line (`--WebUi:Port
 | `FrameAncestors` | none | who may embed the page in a frame: `self`, `*` or origins (CSP `frame-ancestors`; default `none`) |
 | `AllowedHosts` | none | accepted `Host` headers; on password-less loopback only localhost/127.0.0.1/the hostname are accepted (DNS rebinding) |
 | `PathBase` | none | URL prefix behind a reverse proxy |
+| `PublicApi` | `false` | serve read-only `/public/heroes` and `/public/boards` to anybody (CORS `*`) for embeds and stream overlays |
 
 To put the UI on another site, list that origin in `FrameAncestors` and frame the server. `CorsOrigins` is for scripts or pages that call the JSON API directly with `Authorization: Bearer`.
 
