@@ -31,6 +31,10 @@ public sealed partial class GameServerHost
     public GoldLedger? Gold => _config.Auth.Enabled ? _goldLedger ??= new GoldLedger(WitnessConfig) : null;
     /// <summary>The capture writer while <c>--capture</c> is on.</summary>
     public CaptureWriter? Capture => _capture;
+    /// <summary>Kill reports (0x17D) of creatures that still had hit points in the server's world (0x128 applied); diagnostics for M5.</summary>
+    public int KillsAlive { get; private set; }
+    public long WorldPositions => _world.Positions;
+    public long WorldHitPointUpdates => _world.HitPointUpdates;
     /// <summary>Gold increases that were not saved (AUTH_STRICT_GOLD=on).</summary>
     public int GoldClamped { get; private set; }
 
@@ -67,6 +71,11 @@ public sealed partial class GameServerHost
                 var victim = BinaryPrimitives.ReadUInt32LittleEndian(p) & 0x7FFFFFFF;
                 if (victim is >= 1 and <= MaxSlots || !_world.TryGet(victim, out var entry)) return;
                 var (sector, x, y) = Position(entry);
+                if (ObjectMirror.HitPoints(entry, out var hp, out var maxHp) && hp > 0)
+                {
+                    KillsAlive++;                                            // plan M5: a kill the server's health view does not back
+                    Log.Info($"AUTH: witness: {s.Describe()} reports the death of 0x{victim:X}, which has {hp}/{maxHp} hit points in the server's world (last: {Trail(s)}).");
+                }
                 Witness!.OnKill(victim, sector, x, y, CompactLevel(entry.Payload[(entry.LongPrefix ? 24 : 8)..]), now);
                 return;
             }

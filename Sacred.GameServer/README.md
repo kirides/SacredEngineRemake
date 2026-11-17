@@ -484,6 +484,9 @@ unknown, so items the hero brought along count as unexplained unless another sou
 to the server's world in place (the 24-byte prefix and the object's base block, `ObjectMirror.ApplyPosition`), so streamed states, `player.x/y`,
 a kill's position and the witness's loot range use where the object is now, not where it was first seen. Relay mode (no `--authoritative`) is
 unchanged.
+0x128 health `[ref][hit points]` from the owner goes into the creature's values block the same way (`ObjectMirror.ApplyHitPoints`); a kill report
+(0x17D) of a creature that still has hit points in the server's world is logged and counted (`KillsAlive`, also in the replay report), the
+first step towards checking kills against the damage the server accepted (plan M5).
 
 **Shared stash (Closed Net).** `scripts-examples/shared_stash.lua` keeps the stash of the Sacred Gear mod shared-stash per `player.account` on channel `shared-stash`, with the hero custody checks above (deposits count after the item left the hero and the hero was saved; withdrawals are removed after the item arrived and the hero was saved). Outside `--authoritative` it offers nothing. Hot reload: everything is stored at every change; the join times go through the unload hook (reason reload), tokens live in the C# host, in-flight checks are resumed by the clients' resends (same rid). Tunables (`max_items`, `max_data`, `verify_seconds`, `retry_seconds`, `token_seconds`, `rate_per_minute`, ...) can be overridden at run time by a table under the key `config` in the mod's storage (applies within 30 s). Tests: `SharedStashScriptTests.cs`.
 

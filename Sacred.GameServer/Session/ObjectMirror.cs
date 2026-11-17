@@ -104,6 +104,47 @@ public sealed class ObjectMirror
         return true;
     }
 
+    /// <summary>
+    /// 0x128 health [ref][hit points] (Gold 0x549480 copies the absolute TP[2], healing and regeneration included) applied to the
+    /// creature's values block (marker 0xDEADBEEF at body +445: maximum +8, current +12), from the object's owner (plan M4).
+    /// </summary>
+    public bool ApplyHitPoints(byte sender, ReadOnlySpan<byte> update)
+    {
+        if (update.Length < 8) return false;
+        var reference = BinaryPrimitives.ReadUInt32LittleEndian(update) & ReferenceMask;
+        if (!_objects.TryGetValue(reference, out var entry) || entry.Owner != sender) return false;
+        var body = entry.Buffer.AsSpan(entry.LongPrefix ? 24 : 8, entry.Length - (entry.LongPrefix ? 24 : 8));
+        if (!ValuesAt(body, out var values)) return false;
+        BinaryPrimitives.WriteInt32LittleEndian(body[(values + CurrentHitPoints)..], BinaryPrimitives.ReadInt32LittleEndian(update[4..]));
+        HitPointUpdates++;
+        return true;
+    }
+
+    /// <summary>Current and maximum hit points of a creature state, false when it has no values block.</summary>
+    public static bool HitPoints(Entry entry, out int current, out int maximum)
+    {
+        current = maximum = 0;
+        var body = entry.Payload[(entry.LongPrefix ? 24 : 8)..];
+        if (!ValuesAt(body, out var values)) return false;
+        current = BinaryPrimitives.ReadInt32LittleEndian(body[(values + CurrentHitPoints)..]);
+        maximum = BinaryPrimitives.ReadInt32LittleEndian(body[(values + MaximumHitPoints)..]);
+        return true;
+    }
+
+    private const int CreatureValuesAt = 445, CurrentHitPoints = 12, MaximumHitPoints = 8, PhysicalBytes = 121;   // creature marker after the 121-byte physical state
+    private const uint CreatureMarker = 0xC0DEF00D, ValuesMarker = 0xDEADBEEF;
+
+    private static bool ValuesAt(ReadOnlySpan<byte> body, out int values)
+    {
+        values = CreatureValuesAt;
+        return body.Length >= values + 16 && BinaryPrimitives.ReadUInt32LittleEndian(body) == BaseMarker
+            && BinaryPrimitives.ReadUInt32LittleEndian(body[PhysicalBytes..]) == CreatureMarker
+            && BinaryPrimitives.ReadUInt32LittleEndian(body[values..]) == ValuesMarker;
+    }
+
+    /// <summary>Health updates applied (diagnostics).</summary>
+    public long HitPointUpdates { get; private set; }
+
     /// <summary>Position updates applied (diagnostics).</summary>
     public long Positions { get; private set; }
     private const int BaseBlockBytes = 41;

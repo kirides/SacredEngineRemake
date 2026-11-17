@@ -11,7 +11,7 @@ namespace Sacred.GameServer.Simulation;
 
 /// <summary>What a replay found (docs/authoritative-world-plan.md, M0).</summary>
 public sealed record ReplayReport(int Connections, long Frames, long DurationMs, long Ticks, int[] Explained, int Refused, int ExplainedLate,
-    int GoldUnexplained, long GoldUnexplainedAmount, int GoldClamped, int RejectedItems, long ServerFrames)
+    int GoldUnexplained, long GoldUnexplainedAmount, int GoldClamped, int RejectedItems, long ServerFrames, int KillsAlive = 0, long Positions = 0, long HitPointUpdates = 0)
 {
     public string Describe()
     {
@@ -22,6 +22,7 @@ public sealed record ReplayReport(int Connections, long Frames, long DurationMs,
             if (Explained[i] > 0 || i == 0) text.AppendLine($"  {(ItemSource)i,-12} {Explained[i]}");
         text.AppendLine($"Refused by the strict item gate: {Refused}; unexplained items an event explained later: {ExplainedLate}; impossible item states: {RejectedItems}.");
         text.AppendLine($"Gold: {GoldUnexplained} unexplained increases ({GoldUnexplainedAmount} gold), {GoldClamped} not saved.");
+        text.AppendLine($"World: {Positions} position and {HitPointUpdates} health updates applied; {KillsAlive} kills of creatures that still had hit points.");
         return text.ToString();
     }
 }
@@ -78,7 +79,8 @@ public static class CaptureReplay
             for (var i = 0; i < 5; i++) { clock.Now += tick; host.RunTick(); ticks++; }
             var witness = host.Witness!;
             return new ReplayReport(links.Count, frames, last, ticks, (int[])witness.Explained.Clone(), host.StrictItemsRefused, witness.ExplainedLate,
-                host.Gold!.Unexplained, host.Gold.UnexplainedGold, host.GoldClamped, host.RejectedItems, links.Values.Sum(l => l.FramesSent));
+                host.Gold!.Unexplained, host.Gold.UnexplainedGold, host.GoldClamped, host.RejectedItems, links.Values.Sum(l => l.FramesSent),
+                host.KillsAlive, host.WorldPositions, host.WorldHitPointUpdates);
         }
         finally { host.Dispose(); }
     }

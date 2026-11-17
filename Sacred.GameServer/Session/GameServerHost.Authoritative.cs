@@ -47,6 +47,7 @@ public sealed partial class GameServerHost
         var options = _config.Auth;
         WitnessObserve(s, m);                                            // kills, containers, pick-ups (GameServerHost.Witness.cs)
         if (m.Opcode == 0x165) _world.ApplyPosition(s.Slot, m.Payload);  // plan M4: current positions in the server's world
+        else if (m.Opcode == 0x128) _world.ApplyHitPoints(s.Slot, m.Payload);   // and current hit points
         if (m.Opcode is 0x169 or 0x16B or 0x16C or 0x16E or 0x16F && !PlausibleState(s, m)) return false;
         CaptureHeroState(s, m);
         switch (m.Opcode)

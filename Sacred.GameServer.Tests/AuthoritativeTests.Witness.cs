@@ -201,4 +201,37 @@ public partial class AuthoritativeTests
             Assert.AreEqual("nil", ItemWhere(host, player, 0x5702, not: "world"), "nothing died at the first position");
         });
     }
+
+    private static byte[] LivingCreature(uint reference, uint type, int hp, int x, int y, ushort sector)
+    {
+        var body = new byte[445 + 64];
+        BinaryPrimitives.WriteUInt32LittleEndian(body, GoldObjectStateLayout.Marker);
+        BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(GoldObjectStateLayout.TypeOffset), type);
+        BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(GoldCreatureStateLayout.MarkerOffset), GoldCreatureStateLayout.Marker);
+        BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(GoldCreatureStateLayout.PrefixSize), GoldCreatureValuesLayout.Marker);
+        BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(GoldCreatureStateLayout.PrefixSize + GoldCreatureValuesLayout.MaximumHitPointsOffset), hp);
+        BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(GoldCreatureStateLayout.PrefixSize + GoldCreatureValuesLayout.CurrentHitPointsOffset), hp);
+        var payload = new byte[24 + body.Length];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, reference);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(4), type);
+        body.CopyTo(payload.AsSpan(24));
+        return Positioned(payload, x, y, sector);
+    }
+
+    [TestMethod]
+    public void HealthUpdatesBackKillReports()
+    {
+        StrictRun(StrictItemsMode.Off, (host, player) =>
+        {
+            player.Send(0x16F, LivingCreature(0x7301, 0x200, 100, 10_000, 10_000, 44));
+            player.Send(0x16F, LivingCreature(0x7302, 0x200, 100, 10_000, 10_000, 44));
+            player.Send(0x128, [.. Word(0x7302), .. Word(0)]);             // the second one is beaten down
+            player.Send(0x17D, Kill(0x7302, player.Slot));
+            player.Send(0x17D, Kill(0x7301, player.Slot));                 // the first still has 100 hit points
+            var deadline = Environment.TickCount64 + 5000;
+            while (host.KillsAlive == 0 && Environment.TickCount64 < deadline) Thread.Sleep(10);
+            Assert.AreEqual(1, host.KillsAlive);
+            Assert.AreEqual(1, host.WorldHitPointUpdates);
+        });
+    }
 }
