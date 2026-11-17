@@ -111,6 +111,9 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/mods", (RequestDelegate)(c => Html(c.Response, Pages.ModsPage(_admin, _options.PublicApi, c.Request.Query["notice"].ToString() is { Length: > 0 and <= 200 } n ? n : null))));
         app.MapGet("/areas", (RequestDelegate)(c => Html(c.Response, Pages.AreaEditorPage(_admin))));
         app.MapGet("/events", (RequestDelegate)(c => Html(c.Response, Pages.EventsPage(_admin))));
+        app.MapGet("/sectors", (RequestDelegate)(c => Html(c.Response, Pages.SectorsPage(_admin))));
+        app.MapGet("/api/sectors", (RequestDelegate)(c => Json(c.Response, _admin.SectorOwnership(), WebUiJson.Default.SectorOwnership)));
+        app.MapGet("/api/sectors/stream", (RequestDelegate)SectorStreamEndpoint);
         app.MapGet("/auction", (RequestDelegate)(c => Html(c.Response, Pages.AuctionPage(_admin))));
         app.MapGet("/api/areas/map", (RequestDelegate)(c => AreaMapEndpoint(c, image: false)));
         app.MapGet("/api/areas/map.png", (RequestDelegate)(c => AreaMapEndpoint(c, image: true)));
@@ -208,7 +211,7 @@ public sealed class WebUiServer : IAsyncDisposable
             if (read > ModStoreBodyLimit) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
             text = new string(buffer, 0, read);
         }
-        catch (Microsoft.AspNetCore.Server.Kestrel.Core.BadHttpRequestException) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
+        catch (Microsoft.AspNetCore.Http.BadHttpRequestException) { await Fail(context.Response, 413, "too large").ConfigureAwait(false); return; }
         string mod;
         try { using var doc = JsonDocument.Parse(text, new JsonDocumentOptions { MaxDepth = 32 }); mod = doc.RootElement.TryGetProperty("mod", out var m) ? m.GetString() ?? "" : ""; }
         catch (JsonException) { await Fail(context.Response, 400, "invalid JSON").ConfigureAwait(false); return; }
@@ -259,7 +262,44 @@ public sealed class WebUiServer : IAsyncDisposable
         await Json(context.Response, new ChatPage(entries.Count > 0 ? entries[^1].Id : Math.Max(after, head), entries.ToArray()), WebUiJson.Default.ChatPage).ConfigureAwait(false);
     }
 
+    /// <summary><c>GET /api/sectors/stream</c>: the sector ownership snapshot as Server-Sent Events (<c>event: sectors</c>), once on connect and again whenever it changes.</summary>
+    private async Task SectorStreamEndpoint(HttpContext context)
+    {
+        var response = context.Response;
+        response.ContentType = "text/event-stream";
+        response.Headers.CacheControl = "no-cache";
+        response.Headers["X-Accel-Buffering"] = "no";
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, _stopping, _admin.StopRequested);
+        var cancel = linked.Token;
+        long sent = -1;
+        var idle = 0;
+        try
+        {
+            await response.WriteAsync("retry: 3000\n\n", cancel).ConfigureAwait(false);
+            while (!cancel.IsCancellationRequested)
+            {
+                var snapshot = _admin.SectorOwnership();
+                if (snapshot.Version != sent)
+                {
+                    sent = snapshot.Version; idle = 0;
+                    var data = JsonSerializer.Serialize(snapshot, WebUiJson.Default.SectorOwnership);
+                    await response.WriteAsync($"id: {snapshot.Version}\nevent: sectors\ndata: {data}\n\n", cancel).ConfigureAwait(false);
+                    await response.Body.FlushAsync(cancel).ConfigureAwait(false);
+                    continue;
+                }
+                await Task.Delay(200, cancel).ConfigureAwait(false);
+                if (++idle < 75) continue;
+                idle = 0;
+                await response.WriteAsync(": keep-alive\n\n", cancel).ConfigureAwait(false);
+                await response.Body.FlushAsync(cancel).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (IOException) { }
+    }
+
     /// <summary>Server-Sent Events: one <c>chat</c> event per line, <c>id</c> = chat id so EventSource resumes with Last-Event-ID.</summary>
+
     private async Task ChatStreamEndpoint(HttpContext context)
     {
         var response = context.Response;

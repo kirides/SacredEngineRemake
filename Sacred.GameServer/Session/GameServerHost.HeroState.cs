@@ -68,6 +68,7 @@ public sealed partial class GameServerHost
                 if (m.Opcode == 0x16B) { LiveHero.Store(ref live.FullBody, ref live.FullBodyLength, p[prefix..]); live.FullIsNewer = true; }
                 else { LiveHero.Store(ref live.Body, ref live.BodyLength, p[prefix..]); live.FullIsNewer = false; }
                 live.EquipmentKnown = false;                                 // the new state carries the equipment
+                WitnessHeroGold(s, live, m.Opcode == 0x16B);                 // gold ledger (GameServerHost.Witness.cs)
                 return;
             }
             case 0x11B:
@@ -81,7 +82,7 @@ public sealed partial class GameServerHost
                     BinaryPrimitives.ReadUInt32LittleEndian(p[8..]) != GoldCreatureStateLayout.Marker ||
                     BinaryPrimitives.ReadUInt32LittleEndian(p[12..]) != GoldCreatureValuesLayout.Marker) return;
                 var live = Live(s);
-                var gold = BinaryPrimitives.ReadUInt32LittleEndian(p[(12 + GoldCreatureValuesLayout.CompactWord46Offset)..]);
+                var gold = WitnessGold(s, BinaryPrimitives.ReadUInt32LittleEndian(p[(12 + GoldCreatureValuesLayout.CompactWord46Offset)..]));   // gold ledger (GameServerHost.Witness.cs)
                 var compactAt = values + GoldCreatureValuesLayout.CompactWord46Offset;
                 if (live.BodyLength >= compactAt + 4) BinaryPrimitives.WriteUInt32LittleEndian(live.Body.AsSpan(compactAt), gold);
                 var fullAt = values + GoldCreatureValuesLayout.FullBlock08Offset + 62;
