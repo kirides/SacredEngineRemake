@@ -137,7 +137,7 @@ public sealed class ScriptHost
                 {
                     var total = _stores.Values.Sum(s => s.Size) + growth;
                     if (total > _options.MaxTotalStoreChars)
-                        throw new InvalidOperationException($"all mods' storage full: {total:N0} of {_options.MaxTotalStoreChars:N0} characters");
+                        throw new InvalidOperationException($"all mods' storage full: {total:N0} of {_options.MaxTotalStoreChars:N0} bytes");
                 },
             };
         return store;
@@ -433,7 +433,7 @@ public sealed class ScriptHost
             var key = c.GetArgument(0).ToString();
             if (key.StartsWith(ModStore.HeroPrefix, StringComparison.Ordinal)) throw new ArgumentException("keys starting with @ are the per-hero values");
             var value = Model(c.HasArgument(1) ? c.GetArgument(1) : LuaValue.Nil);
-            if (value is not null && Size(value) > _options.MaxStoreChars) throw new ArgumentException($"value larger than {_options.MaxStoreChars:N0} characters");
+            if (value is not null && Size(value) > _options.MaxStoreChars) throw new ArgumentException($"value larger than {_options.MaxStoreChars:N0} bytes");
             CurrentStore.Set(key, value);
             return c.Return();
         });
@@ -661,8 +661,11 @@ public sealed class ScriptHost
         {
             if (File.Exists(path) && Convert.FromHexString(File.ReadAllText(path).Trim()) is { Length: >= 32 } existing) return existing;
             var created = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
-            Directory.CreateDirectory(_options.DataDirectory);
-            File.WriteAllText(path, Convert.ToHexString(created));
+            ModStore.EnsureFolder(_options.DataDirectory);
+            // Owner-only on Unix (0600); Windows gives the file the folder's ACL.
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+            if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            using (var stream = new FileStream(path, options)) stream.Write(System.Text.Encoding.ASCII.GetBytes(Convert.ToHexString(created)));
             return created;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or FormatException)

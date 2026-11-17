@@ -87,8 +87,8 @@ public static class CommandLine
         new("Scripts", "scripts-data", OptionKind.Path, "folder for the mods' own storage, one {mod}.json each (default script-data)", "script-data"),
         new("Scripts", "scripts-max-response", OptionKind.Int, "largest script endpoint answer in characters (default 2097152)", "2097152", 1024, 67108864),
         new("Scripts", "scripts-max-string", OptionKind.Int, "largest string string.rep may build (default 4194304)", "4194304", 1024, 268435456),
-        new("Scripts", "scripts-store-max", OptionKind.Int, "largest storage of one mod in characters (default 8388608)", "8388608", 65536, 2147483647),
-        new("Scripts", "scripts-store-total-max", OptionKind.Int, "largest storage of all mods together (default 33554432)", "33554432", 65536, 2147483647),
+        new("Scripts", "scripts-store-max", OptionKind.Int, "largest storage of one mod in bytes (default 8388608)", "8388608", 65536, 2147483647),
+        new("Scripts", "scripts-store-total-max", OptionKind.Int, "largest storage of all mods together in bytes (default 33554432)", "33554432", 65536, 2147483647),
         new("Scripts", "scripts-budget", OptionKind.Int, "Lua instructions one handler or timer may run (default 1000000)", "1000000", 10000, 100000000),
 
         // ---- web UI (value may also follow as the next argument; the same keys exist as --WebUi:Port=..., webui.json, SACRED_GS_WebUi__Port) ----

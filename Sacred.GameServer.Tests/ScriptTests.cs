@@ -402,6 +402,8 @@ public class ScriptTests
         var uid = host.Uid("id:4711:2");
         StringAssert.Contains(line, "uid=" + uid);
         Assert.AreEqual(32, uid.Length);
+        Assert.IsTrue(File.Exists(Path.Combine(folder.Data, ".uid-secret")) && File.Exists(Path.Combine(folder.Data, ".gitignore")));
+        if (!OperatingSystem.IsWindows()) Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Path.Combine(folder.Data, ".uid-secret")));
         // Stable on this server (the secret is kept in the data folder), different on another one.
         var again = new ScriptHost(new ScriptOptions { Directory = folder.Scripts, DataDirectory = folder.Data }, server);
         Assert.AreEqual(uid, again.Uid("id:4711:2"));
@@ -439,6 +441,7 @@ public class ScriptTests
         // Writing happens off the game loop; at shutdown it is awaited.
         host.FlushStores(wait: true);
         Assert.IsTrue(new FileInfo(Path.Combine(folder.Data, "a.json")).Length < 300_000);
+        StringAssert.Contains(File.ReadAllText(Path.Combine(folder.Data, ".gitignore")), "*", "the data folder keeps itself out of git");
     }
 
     [TestMethod]

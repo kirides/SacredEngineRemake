@@ -23,14 +23,14 @@ public sealed class ModStore
     private bool _dirty;
     private Task _writing = Task.CompletedTask;
 
-    /// <summary>Serialized size of everything stored (characters, close to the file size); kept up to date per key.</summary>
+    /// <summary>Serialized size of everything stored in UTF-8 bytes (the compact JSON, close to the file size); kept up to date per key.</summary>
     public long Size { get; private set; }
 
     public ModStore(string path) { _path = path; Load(); }
 
     public string Path => _path;
     public int Count => _values.Count;
-    /// <summary>Largest file a mod may keep (serialized characters); saves beyond it fail with an error to the script.</summary>
+    /// <summary>Largest file a mod may keep (UTF-8 bytes of its JSON); saves beyond it fail with an error to the script.</summary>
     public long MaxChars { get; init; } = 8 * 1024 * 1024;
     /// <summary>Optional check across all mods (the host's total limit): gets the size change, throws to refuse it.</summary>
     public Action<long>? BeforeGrow { get; init; }
@@ -54,7 +54,7 @@ public sealed class ModStore
         if (check && size > old)
         {
             if (Size - old + size > MaxChars)
-                throw new InvalidOperationException($"mod storage full: {Size - old + size:N0} of {MaxChars:N0} characters (delete old data or raise --scripts-store-max)");
+                throw new InvalidOperationException($"mod storage full: {Size - old + size:N0} of {MaxChars:N0} bytes (delete old data or raise --scripts-store-max)");
             BeforeGrow?.Invoke(size - old);
         }
         Size += size - old;
@@ -153,6 +153,15 @@ public sealed class ModStore
         _ => null,
     };
 
+    /// <summary>Creates the data folder with a <c>.gitignore</c> of "*" in it, so a server started inside a git checkout never gets
+    /// mod data or the uid secret committed, wherever the folder is.</summary>
+    public static void EnsureFolder(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        var ignore = System.IO.Path.Combine(folder, ".gitignore");
+        if (!File.Exists(ignore)) File.WriteAllText(ignore, "# Server data (mod storage, uid secret): never commit.\n*\n");
+    }
+
     /// <summary>The whole store as JSON (also used to check the size limit).</summary>
     public string Serialize()
     {
@@ -208,7 +217,7 @@ public sealed class ModStore
         try
         {
             var directory = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(_path));
-            if (directory is not null) Directory.CreateDirectory(directory);
+            if (directory is not null) EnsureFolder(directory);
             File.WriteAllText(temporary, text);
             File.Move(temporary, _path, overwrite: true);
         }

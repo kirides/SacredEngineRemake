@@ -11,9 +11,9 @@ public sealed class ScriptOptions
     public string Directory { get; set; } = "scripts";
     /// <summary>Folder for the mods' own storage: one <c>{mod}.json</c> per script (<c>server.save</c>/<c>server.set</c>, ...).</summary>
     public string DataDirectory { get; set; } = "script-data";
-    /// <summary>Largest single value a mod may save (serialized characters).</summary>
+    /// <summary>Largest single value a mod may save (UTF-8 bytes of its JSON).</summary>
     public int MaxStoreChars { get; set; } = 4 * 1024 * 1024;
-    /// <summary>Largest storage of one mod (serialized characters, about the file size); saves beyond it fail with a script error.</summary>
+    /// <summary>Largest storage of one mod (UTF-8 bytes of its JSON, about the file size); saves beyond it fail with a script error.</summary>
     public long MaxModStoreChars { get; set; } = 8 * 1024 * 1024;
     /// <summary>Largest storage of all mods together.</summary>
     public long MaxTotalStoreChars { get; set; } = 32 * 1024 * 1024;

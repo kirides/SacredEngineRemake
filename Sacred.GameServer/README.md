@@ -181,7 +181,7 @@ cards for the top heroes (kills, level, time online), the best hunter per creatu
 character name for `server.top`); with `nil` instead of a player they are plain keys. Written through a temporary file and a
 move; the game loop only serializes changed mods, the file is written on a worker thread (flushed every 10 s, on reload, and
 awaited at shutdown). Limits: one value 4 MB, one mod 8 MB (`--scripts-store-max`), all mods 32 MB (`--scripts-store-total-max`),
-in serialized characters; a save, set or add past them fails with a script error and changes nothing, shrinking is always
+counted in UTF-8 bytes of the stored JSON (endpoint and page answers are capped in characters); a save, set or add past them fails with a script error and changes nothing, shrinking is always
 allowed. `--scripts-data` names a folder now: a value ending in `.json` (the earlier single-file setting) stops the server
 with an error instead of silently becoming a folder of that name. The game server itself keeps no state for
 mods: ladders, recent deaths, statistics live in the mod that needs them, so mods can grow without growing the server. (JSON,
@@ -191,7 +191,8 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
   owner keys or account names. `name` and `character` are the character name (the server strips the `account.` prefix of
   lobby names, and only of lobby names: a LAN name like `Mr.X` stays), `uid` is an opaque per-server identity of the hero
   (HMAC-SHA256 of its lobby identity with a secret kept in `{scripts-data}/.uid-secret`): stable across sessions on this
-  server, meaningless anywhere else. Per-hero storage is keyed by `uid`, so the mod files hold no lobby ids either.
+  server, meaningless anywhere else. The data folder gets a `.gitignore` of `*` when the server creates it, and the secret is
+  created owner-only (0600) on Unix, so neither ends up in a commit or readable by other users. Per-hero storage is keyed by `uid`, so the mod files hold no lobby ids either.
 * Hero deaths ("death"): 0x17D whose reference is a hero (1..16); the killer word is another player's slot or the killing
   object (type and level from the object world); several reports within 2 s count once. Unverified with a real client that
   hero deaths arrive as 0x17D.
