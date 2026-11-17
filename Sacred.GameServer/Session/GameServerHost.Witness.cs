@@ -165,12 +165,20 @@ public sealed partial class GameServerHost
     /// increase is written back to the explained figure in the server's copy of the state, so the hero is saved without it.</summary>
     private void WitnessHeroGold(PlayerSession s, LiveHero live, bool full)
     {
-        var mode = WitnessConfig.StrictGold;
-        if (mode == StrictItemsMode.Off || !HeroSavedByServer(s.Slot)) return;
+        if (WitnessConfig.StrictGold == StrictItemsMode.Off || !HeroSavedByServer(s.Slot)) return;
         var body = full ? live.FullBody.AsSpan(0, live.FullBodyLength) : live.Body.AsSpan(0, live.BodyLength);
         var at = GoldOffset(body, full);
         if (at < 0) return;
-        var reported = BinaryPrimitives.ReadUInt32LittleEndian(body[at..]);
+        var stored = WitnessGold(s, BinaryPrimitives.ReadUInt32LittleEndian(body[at..]));
+        BinaryPrimitives.WriteUInt32LittleEndian(body[at..], stored);
+    }
+
+    /// <summary>One gold report (a hero state, or the 0x11B values update a real client sends about a second after a gold change and
+    /// every 30 s). Returns the gold the server keeps: the report, or with AUTH_STRICT_GOLD=on the explained figure.</summary>
+    private uint WitnessGold(PlayerSession s, uint reported)
+    {
+        var mode = WitnessConfig.StrictGold;
+        if (mode == StrictItemsMode.Off || !HeroSavedByServer(s.Slot)) return reported;
         var ledger = Gold!;
         var unexplained = ledger.Report(s.Slot, reported, _clock.ElapsedMilliseconds);
         if (unexplained > 0)
@@ -180,11 +188,9 @@ public sealed partial class GameServerHost
             if (mode == StrictItemsMode.On && WitnessConfig.CountViolations) Violation(s, $"gold +{unexplained} without a source");
         }
         var allowed = ledger.Allowed(s.Slot);
-        if (mode == StrictItemsMode.On && allowed < reported)
-        {
-            BinaryPrimitives.WriteUInt32LittleEndian(body[at..], (uint)allowed);
-            if (unexplained > 0) GoldClamped++;
-        }
+        if (mode != StrictItemsMode.On || allowed >= reported) return reported;
+        if (unexplained > 0) GoldClamped++;
+        return (uint)allowed;
     }
 
     /// <summary>Offset of the hero's gold in a stored hero body (compact word +0x46 or the full block's +62), or -1.</summary>

@@ -31,17 +31,27 @@ local config = {
     token_seconds = 300,        -- how long the server's permission for the client to create a withdrawn item lives
     rate_per_minute = 30,       -- deposits + withdrawals per account per minute (0: no limit)
 }
--- Tunables are data: an admin can put a table with any of these keys into this mod's storage under "config" (web admin, mod storage) and
--- it applies within 30 s, without a reload; the values above are the defaults a reload (or a fresh start) begins with.
-local function apply_overrides()
+-- Tunables are data: the table above only holds the first-run defaults. They are written to this mod's storage under "config" the first
+-- time and from then on the storage wins (edit them on this mod's page /mods/shared_stash/, or POST /api/mod-store with {"mod":"shared_stash",
+-- "set":{"config":{...}}}); the key config_rev (bumped by that POST) is polled every second, so a change applies without a reload.
+local DEFAULTS = {}
+for key, value in pairs(config) do DEFAULTS[key] = value end
+
+local function apply_config()
     local o = server.load("config")
     if type(o) ~= "table" then return end
-    for key, default in pairs(config) do
-        if type(o[key]) == "number" and o[key] == o[key] and o[key] >= 0 then config[key] = o[key] end
+    for key in pairs(DEFAULTS) do
+        local v = o[key]
+        if type(v) == "number" and v == v and v >= 0 then config[key] = v else config[key] = DEFAULTS[key] end
     end
 end
-apply_overrides()
-server.every(30, apply_overrides)
+if server.load("config") == nil then server.save("config", DEFAULTS) end
+local config_rev = tonumber(server.load("config_rev")) or 0
+apply_config()
+server.every(1, function()
+    local rev = tonumber(server.load("config_rev")) or 0
+    if rev ~= config_rev then config_rev = rev apply_config() end
+end)
 
 local CHANNEL = "shared-stash"
 local ch = net.channel(CHANNEL, { server_only = true })
@@ -63,14 +73,15 @@ local function int(v)
     return math.floor(v)
 end
 
--- gear.inv.export: u32 type, u16 entry count, the 130-byte value records, ...: the records as the server keeps them
+-- gear.inv.export: u32 type, u16 n, n entries of 130 bytes (the socketed runes), then the item's own 130-byte record, ...: the value
+-- records as the server keeps them (hero_item.records) are those n + 1 blocks
 local function entries_hex(data)
     if type(data) ~= "string" or #data < 12 then return nil end
     local lo, hi = tonumber(data:sub(9, 10), 16), tonumber(data:sub(11, 12), 16)
     if not lo or not hi then return nil end
     local count = lo + hi * 256
-    if count < 1 or count > 9 or #data < 12 + count * 260 then return nil end
-    return data:sub(13, 12 + count * 260)
+    if count > 8 or #data < 12 + (count + 1) * 260 then return nil end
+    return data:sub(13, 12 + (count + 1) * 260)
 end
 
 local function type_of(data)
@@ -109,9 +120,21 @@ local function load_account(account)
     return s
 end
 
+-- A small index for the admin page: account -> counts (opaque keys only).
+local function summary(s)
+    local n = { ready = 0, reserved = 0, pending = 0 }
+    for _, e in ipairs(s.items) do n[e.state] = (n[e.state] or 0) + 1 end
+    return n
+end
+
+local index = server.load("index")
+if type(index) ~= "table" then index = {} end
+
 -- Writes the account's state durably; done(ok, err). On failure the caller's undo has the old state.
 local function write(account, done)
     local s = accounts[account]
+    index[account] = summary(s)
+    pcall(server.save, "index", index)
     local ok, err = pcall(server.save, "acct." .. account, s)
     if not ok then return done(false, tostring(err)) end
     server.flush(function(written, why) done(written and true or false, why) end)
@@ -414,8 +437,10 @@ local function handle(player, msg)
         if pending[key] then return end
         if type(msg.ref) ~= "number" then return result(player.slot, rid, false, "the item's id is needed") end
         if not valid_hex(msg.data) or not entries_hex(msg.data) or not known_type(msg.data) then
-            server.log("shared stash: " .. player.name .. ": a deposit with invalid item data was refused")
-            return result(player.slot, rid, false, "the item data is not valid")
+            local why = not valid_hex(msg.data) and ("not hex or out of size (" .. #tostring(msg.data) .. " characters, limit " .. config.max_data .. ")")
+                or not entries_hex(msg.data) and "no value records" or "unknown item type"
+            server.log("shared stash: " .. player.name .. ": a deposit with invalid item data was refused: " .. why)
+            return result(player.slot, rid, false, "the item data is not valid (" .. why .. ")")
         end
         -- a pending entry of this rid (earlier hero save failed): the request resumes there
         local resume
@@ -504,3 +529,36 @@ server.on("unload", function(reason)
     if reason == "reload" then pcall(server.save, "reload_sessions", sessions) end
     server.flush(function() end)
 end)
+
+-- ---- admin page (the Mods tab of the web UI links it): counts, in-flight requests, the tunables ---------------------------------------
+local function page_state()
+    local totals = { accounts = 0, ready = 0, reserved = 0, pending = 0 }
+    for _, n in pairs(index) do
+        totals.accounts = totals.accounts + 1
+        totals.ready = totals.ready + (n.ready or 0)
+        totals.reserved = totals.reserved + (n.reserved or 0)
+        totals.pending = totals.pending + (n.pending or 0)
+    end
+    local waiting = 0
+    for _ in pairs(pending) do waiting = waiting + 1 end
+    return { totals = totals, requests_in_flight = waiting, config = config, config_rev = config_rev, defaults = DEFAULTS }
+end
+
+server.endpoint("state", page_state, { description = "stash totals (opaque account keys are never listed), requests in flight, the tunables" })
+
+server.page("", function()
+    local s = page_state()
+    local rows = {}
+    for key, value in pairs(s.config) do
+        rows[#rows + 1] = '<tr><td>' .. key .. '</td><td><input name="' .. key .. '" value="' .. tostring(value) .. '" size="8"></td></tr>'
+    end
+    table.sort(rows)
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Shared stash</title><style>body{font:14px system-ui;margin:2em;max-width:40em}'
+        .. 'td{padding:2px 8px}</style></head><body><h1>Shared stash (Closed Net)</h1><p>Accounts with entries: ' .. s.totals.accounts
+        .. '. Items: ' .. s.totals.ready .. ' ready, ' .. s.totals.reserved .. ' reserved (withdrawals), ' .. s.totals.pending
+        .. ' pending (deposits). Requests in flight: ' .. s.requests_in_flight .. '.</p><h2>Tunables</h2><form id="f"><table>'
+        .. table.concat(rows) .. '</table><button>Save</button> <span id="m"></span></form><script>'
+        .. 'document.getElementById("f").onsubmit=async e=>{e.preventDefault();const c={};for(const i of e.target.querySelectorAll("input"))c[i.name]=Number(i.value);'
+        .. 'const r=await fetch("/api/mod-store",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mod:"shared_stash",set:{config:c}})});'
+        .. 'document.getElementById("m").textContent=r.ok?"saved, applies within a second":"failed: "+r.status};</script></body></html>'
+end, { title = "Shared stash" })

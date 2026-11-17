@@ -11,7 +11,8 @@ namespace Sacred.GameServer.Simulation;
 
 /// <summary>What a replay found (docs/authoritative-world-plan.md, M0).</summary>
 public sealed record ReplayReport(int Connections, long Frames, long DurationMs, long Ticks, int[] Explained, int Refused, int ExplainedLate,
-    int GoldUnexplained, long GoldUnexplainedAmount, int GoldClamped, int RejectedItems, long ServerFrames, int KillsAlive = 0, long Positions = 0, long HitPointUpdates = 0)
+    int GoldUnexplained, long GoldUnexplainedAmount, int GoldClamped, int RejectedItems, long ServerFrames, int KillsAlive = 0, long Positions = 0, long HitPointUpdates = 0,
+    IReadOnlyList<(long AtMs, int Refused)>? Bursts = null)
 {
     public string Describe()
     {
@@ -22,6 +23,12 @@ public sealed record ReplayReport(int Connections, long Frames, long DurationMs,
             if (Explained[i] > 0 || i == 0) text.AppendLine($"  {(ItemSource)i,-12} {Explained[i]}");
         text.AppendLine($"Refused by the strict item gate: {Refused}; unexplained items an event explained later: {ExplainedLate}; impossible item states: {RejectedItems}.");
         text.AppendLine($"Gold: {GoldUnexplained} unexplained increases ({GoldUnexplainedAmount} gold), {GoldClamped} not saved.");
+        if (Bursts is { Count: > 0 })
+        {
+            text.Append("Unexplained creations over time (s:count):");
+            foreach (var (at, n) in Bursts) text.Append(' ').Append(at / 1000).Append(':').Append(n);
+            text.AppendLine();
+        }
         text.AppendLine($"World: {Positions} position and {HitPointUpdates} health updates applied; {KillsAlive} kills of creatures that still had hit points.");
         return text.ToString();
     }
@@ -52,13 +59,24 @@ public static class CaptureReplay
         host.AddListener(inbox => listener = new ReplayListener(inbox));
         var links = new Dictionary<ushort, ReplayLink>();
         long frames = 0, ticks = 0;
+        var bursts = new List<(long, int)>();
+        var seen = 0;
+        void Burst()
+        {
+            var n = host.StrictItemsRefused - seen;
+            if (n == 0) return;
+            seen = host.StrictItemsRefused;
+            var bucket = clock.Now / 1000 * 1000;
+            if (bursts.Count > 0 && bursts[^1].Item1 == bucket) bursts[^1] = (bucket, bursts[^1].Item2 + n);
+            else bursts.Add((bucket, n));
+        }
         var tick = Math.Max(1, config.TickMilliseconds);
         uint last = 0;
         try
         {
             while (reader.TryRead(out var record))
             {
-                while (clock.Now + tick <= record.AtMs) { clock.Now += tick; host.RunTick(); ticks++; }
+                while (clock.Now + tick <= record.AtMs) { clock.Now += tick; host.RunTick(); ticks++; Burst(); }
                 last = record.AtMs;
                 frames++;
                 if (!links.TryGetValue(record.Connection, out var link))
@@ -74,13 +92,13 @@ public static class CaptureReplay
                 record.Payload.CopyTo(buffer);
                 listener!.Inbox.Enqueue(new InboundFrame(link, record.Sender, record.Type, buffer, record.Payload.Length));
             }
-            for (var i = 0; i < 5; i++) { clock.Now += tick; host.RunTick(); ticks++; }
+            for (var i = 0; i < 5; i++) { clock.Now += tick; host.RunTick(); ticks++; Burst(); }
             foreach (var link in links.Values) link.Close();
             for (var i = 0; i < 5; i++) { clock.Now += tick; host.RunTick(); ticks++; }
             var witness = host.Witness!;
             return new ReplayReport(links.Count, frames, last, ticks, (int[])witness.Explained.Clone(), host.StrictItemsRefused, witness.ExplainedLate,
                 host.Gold!.Unexplained, host.Gold.UnexplainedGold, host.GoldClamped, host.RejectedItems, links.Values.Sum(l => l.FramesSent),
-                host.KillsAlive, host.WorldPositions, host.WorldHitPointUpdates);
+                host.KillsAlive, host.WorldPositions, host.WorldHitPointUpdates, bursts);
         }
         finally { host.Dispose(); }
     }

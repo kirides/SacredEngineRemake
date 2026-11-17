@@ -62,16 +62,16 @@ public class BountyBoardScriptTests
 
     // A fixed pool: orcs (3 kills, gold + item) and wolves (2 kills, only in sector 7, gold).
     private const string Pool = """
-        local POOL = {
+        pool = {
           { id = "orcs", title = "Orc slayer", names = { "orc" }, target = 3, reward = { gold = 500, item = { quality = 3 } } },
           { id = "wolves", title = "Wolf <hunt>", names = { "wolf" }, target = 2, sectors = { 7 }, region = "North <plains>", reward = { gold = 100 } },
-        }
+        },
         """;
 
     private static string Source(Func<string, string>? edit = null)
     {
         var text = ReadExample();
-        text = Regex.Replace(text, @"local POOL = \{.*?\n\}\r?\n", _ => Pool + "\n", RegexOptions.Singleline);
+        text = Regex.Replace(text, @"  pool = \{\r?\n    \{ id = ""orcs"".*?\r?\n  \},\r?\n", _ => Pool + "\n", RegexOptions.Singleline);
         text = text.Replace("slots = 3,", "slots = 2,");
         return edit is null ? text : edit(text);
     }
@@ -154,7 +154,7 @@ public class BountyBoardScriptTests
         host.FireKill(north, Wolf(3));
         CollectionAssert.AreEqual(new[] { (1, 100u) }, server.Gold);
         Assert.IsTrue(server.Told.Any(t => t.Text.Contains("Bounty complete: Wolf <hunt>")));
-        Assert.IsTrue(State(host).GetProperty("bounties").EnumerateArray().Any(b => b.GetProperty("region").GetString() == "North <plains>"));
+        Assert.IsTrue(State(host).GetProperty("bounties").EnumerateArray().Any(b => b.TryGetProperty("region", out var region) && region.GetString() == "North <plains>"));
     }
 
     [TestMethod]
@@ -235,7 +235,7 @@ public class BountyBoardScriptTests
         again.Dispose();
 
         using var folder2 = new Folder();
-        folder2.Write("bounty_board.lua", Source(t => t.Replace("local POOL = {", "local POOL = { 5, { id = 'x' },")));
+        folder2.Write("bounty_board.lua", Source(t => t.Replace("  pool = {", "  pool = { 5, { id = 'x' },")));
         var (host3, server3) = Start(folder2);
         server3.Tick(host3);
         Assert.AreEqual(2, State(host3).GetProperty("bounties").GetArrayLength());
@@ -252,6 +252,68 @@ public class BountyBoardScriptTests
         Assert.AreEqual(3, State(host).GetProperty("bounties").GetArrayLength());
         StringAssert.Contains(host.HandleRequest("bounty_board", "", [], true).Body, "Bounty board");
         Assert.IsTrue(host.Mods.Single().Description is { Length: > 10 });
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
+    public void AReloadKeepsTheBoardAndProgressAndStartsNoSecondTimer()
+    {
+        using var folder = new Folder();
+        folder.Write("bounty_board.lua", Source());
+        var (host, server) = Start(folder);
+        server.Tick(host);
+        host.FireKill(server.Alice, Orc(1)); host.FireKill(server.Alice, Orc(2));     // 2/3, only in memory plus the dirty flag
+        server.Said.Clear();
+        Assert.IsTrue(host.Reload("bounty_board"));
+        Assert.AreEqual(2, State(host).GetProperty("bounties").GetArrayLength(), "the same board: nothing posted twice");
+        server.Tick(host);
+        Assert.AreEqual(0, server.Said.Count(s => s.Contains("New bounty")));
+        server.Told.Clear();
+        Assert.IsTrue(host.FireChat(server.Alice, "!bounty"));
+        Assert.IsTrue(server.Told.Any(t => t.Text.StartsWith("Orc slayer:") && t.Text.Contains("2/3")), string.Join(";", server.Told));
+        host.FireKill(server.Alice, Orc(3));
+        CollectionAssert.AreEqual(new[] { (1, 500u) }, server.Gold, "paid once");
+        Assert.AreEqual(1, host.Endpoints.Count(e => e.Mod == "bounty_board" && e.Path == "state"));
+        StringAssert.Contains(host.HandleRequest("bounty_board", "config", [], false).Body, "last reload reason: <b>reload</b>");
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
+    public void TheBoardIsDataSlotsAndPoolComeFromTheStorageAndBadDataFallsBack()
+    {
+        using var folder = new Folder();
+        folder.Write("bounty_board.lua", Source());
+        var server = new Fake();
+        var host = new ScriptHost(new ScriptOptions { Directory = folder.Scripts, DataDirectory = folder.Data }, server);
+        host.StoreOf("bounty_board").Set("config", new Dictionary<string, object?>
+        {
+            ["slots"] = 1.0, ["announce"] = false, ["history"] = "ten",
+            ["pool"] = new List<object?>
+            {
+                5.0, new Dictionary<string, object?> { ["id"] = "x" },
+                new Dictionary<string, object?> { ["id"] = "solo", ["title"] = "Solo hunt", ["names"] = new List<object?> { "wolf" }, ["target"] = 1.0,
+                    ["reward"] = new Dictionary<string, object?> { ["gold"] = 5.0 } },
+            },
+        });
+        host.Load();
+        server.Tick(host);
+        var bounties = State(host).GetProperty("bounties");
+        Assert.AreEqual(1, bounties.GetArrayLength(), "slots = 1");
+        Assert.AreEqual("Solo hunt", bounties[0].GetProperty("title").GetString(), "the pool from the storage, bad entries dropped");
+        Assert.AreEqual(0, server.Said.Count, "announce = false");
+        var page = host.HandleRequest("bounty_board", "config", [], false).Body;
+        StringAssert.Contains(page, "history: needs a number");
+        StringAssert.Contains(page, "item #1 refused");
+        host.FireKill(server.Alice, Wolf(1));
+        CollectionAssert.AreEqual(new[] { (1, 5u) }, server.Gold);
+
+        // A live edit: the pool is replaced without a reload (the board keeps what is posted, the next bounty comes from the new pool).
+        host.StoreOf("bounty_board").Set("config", new Dictionary<string, object?> { ["slots"] = 2.0, ["pool"] = new List<object?>
+            { new Dictionary<string, object?> { ["id"] = "orcs2", ["title"] = "More orcs", ["names"] = new List<object?> { "orc" }, ["target"] = 2.0 } } });
+        host.StoreOf("bounty_board").Set("config_rev", 1.0);
+        server.Now += 2100; host.Pump(server.Now);
+        server.Tick(host);
+        Assert.IsTrue(State(host).GetProperty("bounties").EnumerateArray().Any(b => b.GetProperty("title").GetString() == "More orcs"));
         Assert.AreEqual(0, host.Errors);
     }
 }

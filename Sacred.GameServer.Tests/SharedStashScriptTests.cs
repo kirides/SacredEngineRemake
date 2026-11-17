@@ -12,7 +12,7 @@ public class SharedStashScriptTests
 {
     private const uint Channel = 0x5A5A;
     private static readonly string Record = string.Concat(Enumerable.Range(0, 130).Select(i => (i % 251).ToString("x2")));
-    private static readonly string Item = "2a010000" + "0100" + Record + "deadbeef";
+    private static readonly string Item = "2a010000" + "0000" + Record + "deadbeef";
 
     private sealed class Folder : IDisposable
     {
@@ -416,6 +416,31 @@ public class SharedStashScriptTests
         Assert.IsTrue(host.Reload("shared_stash"));
         Settle(host, server);
         Assert.IsTrue(Ok(Answer(Ask(host, server, server.Alice, new { op = "collected", rid, @ref = 910 }), "collected")));
+        host.Dispose();
+    }
+
+    [TestMethod]
+    public void TheTunablesAreDataAndAChangeOfTheRevApplies()
+    {
+        using var folder = new Folder();
+        var server = new Fake();
+        var host = Start(folder, server);
+        var store = host.StoreOf("shared_stash");
+        Assert.IsTrue(store.TryGet("config", out _), "the first run wrote the defaults to the storage");
+        // a web-UI write (POST /api/mod-store) sets the key and bumps config_rev: no reload needed
+        store.Set("config", new Dictionary<string, object?> { ["rate_per_minute"] = 2.0, ["max_items"] = 1.0 });
+        store.Set("config_rev", 1.0);
+        Wait(host, server, () => false, 1.5);
+        Deposited(host, server, server.Alice, 600);
+        // max_items = 1: the second deposit is refused as full (the item stays gone: it is claimed only after the check)
+        server.Items[(1, 601)] = new ScriptHeroItem(601, 0x12A, "gone", Record);
+        var full = Answer(Ask(host, server, server.Alice, Deposit(Rid(), 601)), "result");
+        Assert.IsFalse(Ok(full));
+        StringAssert.Contains(full.GetProperty("err").GetString(), "full");
+        // rate_per_minute = 2: the deposit above and the next ones count; the third operation in the minute is refused
+        var third = Answer(Ask(host, server, server.Alice, Deposit(Rid(), 601)), "result");
+        Assert.IsFalse(Ok(third));
+        StringAssert.Contains(third.GetProperty("err").GetString(), "too many");
         host.Dispose();
     }
 }
