@@ -97,9 +97,9 @@ public partial class ScriptTests
             """);
         var (host, server, store) = Host(folder);
         host.FireChat(server.All[0], "x");
-        host.Load();                                                        // the old script's callback is dropped, the write finishes
+        host.Load();                                                        // a reload first drains the writes in flight: the old script's callback is answered, then it is replaced
         host.WaitDurable();
-        Assert.IsFalse(store.TryGet("called", out _));
+        Assert.IsTrue(store.TryGet("called", out var called) && called is true);
         Assert.IsFalse(store.DurablePending);
         var reloaded = new ModStore(Path.Combine(folder.Data, "a.json"));
         Assert.IsTrue(reloaded.TryGet("t", out var t) && t is "x");

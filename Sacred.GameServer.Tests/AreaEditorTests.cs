@@ -116,7 +116,8 @@ public class AreaEditorTests
         public Task<ModResponse> ModRequest(string mod, string path, IReadOnlyList<KeyValuePair<string, string>> query, bool publicOnly, CancellationToken cancellationToken) =>
             Task.FromResult(new ModResponse(404, "text/plain", "no"));
         public FloodSettings Flood() => new(true, false, 600, 3000, 2 * 1024 * 1024, 8 * 1024 * 1024, 3, 8, 500, 10, 60, 8, 42, 1, 2);
-        public bool Submit(in AdminCommand command) => true;
+        public readonly List<AdminCommand> Commands = new();
+        public bool Submit(in AdminCommand command) { Commands.Add(command); return true; }
         public CancellationToken StopRequested => default;
         public bool HasMap = true;
         public Task<BinaryResponse> AreaMapRequest(bool image, CancellationToken cancellationToken) =>
@@ -164,6 +165,32 @@ public class AreaEditorTests
             Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(html, @"(src|href)=""https?://|url\(https?://|@import"), "no outside resources: works offline");
             // the other pages link to it
             StringAssert.Contains(await client.GetStringAsync("/mods"), "href=\"areas\"");
+        }
+    }
+
+    [TestMethod]
+    public async Task TheEventsPageAndTheReloadButtonsAreAdminOnlyAndOffline()
+    {
+        var (server, client, admin) = await Start(new WebUiOptions { Enabled = true, Port = 0, Password = "s3cret" });
+        await using (server) using (client)
+        {
+            Assert.AreEqual(HttpStatusCode.Unauthorized, (await client.GetAsync("/events")).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String("admin:s3cret"u8.ToArray()));
+            var html = await client.GetStringAsync("/events");
+            StringAssert.Contains(html, "href=\"events\" aria-current=\"page\"");
+            StringAssert.Contains(html, "mods/'+MOD+'/events");
+            StringAssert.Contains(html, "api/mod-store");
+            Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(html, @"(src|href)=""https?://|url\(https?://|@import"), "no outside resources: works offline");
+            StringAssert.Contains(await client.GetStringAsync("/mods"), "href=\"events\"");
+            // reload commands: all mods (empty) or one; a bad name is refused
+            var all = await client.PostAsync("/api/reload-mods", Json("{\"text\":\"\"}"));
+            Assert.AreEqual(HttpStatusCode.OK, all.StatusCode);
+            var one = await client.PostAsync("/api/reload-mods", Json("{\"text\":\"world_events\"}"));
+            Assert.AreEqual(HttpStatusCode.OK, one.StatusCode);
+            Assert.AreEqual(HttpStatusCode.BadRequest, (await client.PostAsync("/api/reload-mods", Json("{\"text\":\"../x\"}"))).StatusCode);
+            CollectionAssert.AreEqual(new[] { AdminCommandKind.ReloadMods, AdminCommandKind.ReloadMods }, admin.Commands.Select(c => c.Kind).ToArray());
+            Assert.AreEqual("", admin.Commands[0].Text);
+            Assert.AreEqual("world_events", admin.Commands[1].Text);
         }
     }
 
