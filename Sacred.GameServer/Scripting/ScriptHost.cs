@@ -277,10 +277,12 @@ public sealed partial class ScriptHost
     public long Errors { get; private set; }
     public int HandlerCount => _handlers.Values.Sum(h => h.Count);
 
-    /// <summary>(Re)creates the Lua state and runs every script file, then fires "start".</summary>
+    /// <summary>(Re)creates the Lua state and runs every script file, then fires "start". A running state first gets "unload" ("reload").</summary>
     public void Load()
     {
+        if (_state is not null) FireUnloadAll("reload");
         _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear(); _endpoints.Clear(); _descriptions.Clear();
+        lock (_changeLock) { _reloadAll = false; _changedFiles = null; }
         ResetNet();
         _state = CreateState();
         var files = Directory.Exists(_options.Directory)
@@ -288,45 +290,35 @@ public sealed partial class ScriptHost
         foreach (var path in files)
         {
             var name = Path.GetFileName(path);
-            string? error = null;
-            try
-            {
-                var source = File.ReadAllText(path);
-                if (LeadingComment(source) is { } comment) _descriptions[ScriptEndpoints.ModName(name)] = comment;
-                _currentFile = name;
-                Run(() => _state.DoStringAsync(source, name));
-            }
-            catch (Exception e) when (Contained(e)) { error = Describe(e); }
+            var error = RunFile(path);
             _files.Add((name, error));
             Log.Info(error is null ? $"SCRIPT: loaded {name}." : $"SCRIPT: {name} failed to load: {error}");
         }
-        _currentFile = "";
-        Volatile.Write(ref _endpointList, _endpoints.Values.ToArray());
-        Volatile.Write(ref _mods, _files.Select(f => new ModEntry(ScriptEndpoints.ModName(f.File), _descriptions.GetValueOrDefault(ScriptEndpoints.ModName(f.File)), f.Error)).ToArray());
+        Publish();
         Fire("start");
         Log.Info($"SCRIPT: {files.Length} file(s), {HandlerCount} handler(s), {_timers.Count + _newTimers.Count} timer(s).");
     }
 
-    /// <summary>Watches the folder: a changed, added or removed script reloads everything half a second later.</summary>
+    /// <summary>Watches the folder: a changed, added or removed script reloads that mod half a second later (<see cref="ScriptHost.Reload"/>).</summary>
     public void Watch()
     {
         if (_watcher is not null || !Directory.Exists(_options.Directory)) return;
         _watcher = new FileSystemWatcher(_options.Directory, "*.lua") { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size };
-        _watcher.Changed += (_, _) => _changed = true;
-        _watcher.Created += (_, _) => _changed = true;
-        _watcher.Deleted += (_, _) => _changed = true;
-        _watcher.Renamed += (_, _) => _changed = true;
+        _watcher.Changed += (_, e) => Touched(e.Name);
+        _watcher.Created += (_, e) => Touched(e.Name);
+        _watcher.Deleted += (_, e) => Touched(e.Name);
+        _watcher.Renamed += (_, e) => { Touched(e.OldName); Touched(e.Name); };
         _watcher.EnableRaisingEvents = true;
     }
 
-    /// <summary>Requests a reload at the next pump (admin command).</summary>
-    public void RequestReload() => _changed = true;
+    /// <summary>Requests a full reload (every mod, a fresh Lua state) at the next pump.</summary>
+    public void RequestReload() => Touched(null);
 
     /// <summary>Game loop: timers and pending reloads.</summary>
     public void Pump(long nowMs)
     {
         if (_changed) { _changed = false; _reloadDueMs = nowMs + 500; }
-        if (_reloadDueMs != 0 && nowMs >= _reloadDueMs) { _reloadDueMs = 0; Log.Info("SCRIPT: reloading."); Load(); }
+        if (_reloadDueMs != 0 && nowMs >= _reloadDueMs) { _reloadDueMs = 0; ApplyPendingReload(); }
         PumpDurable();                                                      // server.flush callbacks (ScriptHost.Durable.cs)
         if (_newTimers.Count > 0) { _timers.AddRange(_newTimers); _newTimers.Clear(); }
         for (var i = _timers.Count - 1; i >= 0; i--)

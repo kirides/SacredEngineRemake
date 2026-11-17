@@ -219,7 +219,7 @@ internal static class Pages
     /// <c>GET /mods</c>: one card per mod (script file) with its pages and its endpoints listed apart. Links open in a new tab; pages
     /// run sandboxed (see WebUiServer.ModEndpoint). Public ones show their <c>/public/mods/...</c> address too.
     /// </summary>
-    public static string ModsPage(IServerAdmin admin, bool publicApi)
+    public static string ModsPage(IServerAdmin admin, bool publicApi, string? notice = null)
     {
         var o = admin.Overview();
         var mods = admin.Mods().OrderBy(m => m.Mod, StringComparer.OrdinalIgnoreCase).ToList();
@@ -231,6 +231,14 @@ internal static class Pages
           .Append(E(o.Name)).Append("</small></div></div>");
         Tabs(sb, "mods", mods.Count);
         sb.Append("</header><main class=\"modgrid\">");
+        if (notice is not null) sb.Append("<div id=\"toast\" role=\"status\">").Append(E(notice)).Append("</div>");
+        if (mods.Count > 0)
+            sb.Append("<section class=\"card modbar\"><p class=\"dim small\">Scripts reload by themselves when a file changes (only that mod). A mod's <code>unload</code> handler saves its state first.</p>");
+        if (mods.Count > 0)
+        {
+            Form(sb, "reload-mods", "<input type=\"hidden\" name=\"back\" value=\"mods\"><input type=\"hidden\" name=\"text\" value=\"\"><button class=\"ghost\" title=\"Every mod saves its state in its unload handler and is loaded again from disk, in a fresh Lua state\">Reload all mods</button>", null, null, false, inline: true);
+            sb.Append("</section>");
+        }
         if (mods.Count == 0)
             sb.Append("<section class=\"card\"><div class=\"empty\">").Append(Icon("users")).Append("<p>No mods installed.</p>")
               .Append("<small>Put .lua scripts into the scripts folder; they load without a restart.</small></div></section>");
@@ -247,6 +255,7 @@ internal static class Pages
             if (mod.Error is { Length: > 0 } error) sb.Append("<p class=\"moderror\">Failed to load: ").Append(E(error)).Append("</p>");
             ModList(sb, "Pages", pages, publicApi);
             ModList(sb, "Endpoints", endpoints, publicApi);
+            Form(sb, "reload-mods", $"<input type=\"hidden\" name=\"back\" value=\"mods\"><input type=\"hidden\" name=\"text\" value=\"{E(mod.Mod)}\"><button class=\"ghost\">Reload</button>", null, null, false, inline: true);
             sb.Append("</section>");
         }
         sb.Append("</main></div></body></html>");

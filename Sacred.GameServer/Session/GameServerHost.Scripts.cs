@@ -42,6 +42,19 @@ public sealed partial class GameServerHost : IScriptServer
         ExecuteScriptKicks();
     }
 
+    /// <summary>Game loop (web admin): one mod, or every mod with null, runs its unload handlers and is loaded again from disk.</summary>
+    private void ReloadMods(string? mod)
+    {
+        if (_scripts is null) { Log.Info("web admin: scripts are off, nothing to reload."); return; }
+        try
+        {
+            Log.Info(mod is null ? "web admin: reloading every mod." : $"web admin: reloading mod {mod}.");
+            if (!_scripts.Reload(mod)) Log.Info($"web admin: no mod {mod}.");
+            ExecuteScriptKicks();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("reload", e); }
+    }
+
     private void PumpScripts(long now)
     {
         if (_scripts is null) return;
@@ -61,6 +74,8 @@ public sealed partial class GameServerHost : IScriptServer
 
     private void StopScripts()
     {
+        try { _scripts?.Shutdown(); }                                       // the mods' "unload" handlers (reason "shutdown") save their state
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("unloading the scripts", e); }
         _scripts?.Dispose(); _scripts?.FlushStores(wait: true);
         while (_modRequests.TryDequeue(out var pending)) pending.Done.TrySetResult(new Web.ModResponse(503, "text/plain; charset=utf-8", "server stopping"));
         while (_storeRequests.TryDequeue(out var pendingStore)) pendingStore.Done.TrySetResult(new Web.ModResponse(503, "text/plain; charset=utf-8", "server stopping"));
