@@ -84,6 +84,9 @@ public sealed class WitnessOptions
     public int PurchaseWindowMs { get; set; } = 15_000;
     /// <summary>... of at least this percentage of the item price.</summary>
     public int PurchasePercent { get; set; } = 25;
+    /// <summary>An item admitted on a token with more value records than its creation had (sockets are added by a later update) must match the
+    /// token's records within this time.</summary>
+    public int TokenCompleteMs { get; set; } = 10_000;
     /// <summary>A quest event explains up to <see cref="QuestPerEvent"/> item creations of the same player within <see cref="QuestWindowMs"/>.</summary>
     public int QuestWindowMs { get; set; } = 5000;
     public int QuestPerEvent { get; set; } = 4;
@@ -170,6 +173,7 @@ public sealed class WitnessOptions
             case "AUTH_PURCHASE_PERCENT": PurchasePercent = NonNegative(value, PurchasePercent); return true;
             case "AUTH_QUEST_WINDOW_MS": QuestWindowMs = NonNegative(value, QuestWindowMs); return true;
             case "AUTH_QUEST_PER_EVENT": QuestPerEvent = NonNegative(value, QuestPerEvent); return true;
+            case "AUTH_TOKEN_COMPLETE_MS": TokenCompleteMs = NonNegative(value, TokenCompleteMs); return true;
             case "AUTH_STRICT_GOLD": StrictGold = ParseMode(value); return true;
             case "AUTH_GOLD_WINDOW_MS": GoldWindowMs = NonNegative(value, GoldWindowMs); return true;
             case "AUTH_STRICT_VIOLATIONS": CountViolations = NonNegative(value, 1) != 0; return true;

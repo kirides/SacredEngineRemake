@@ -63,6 +63,47 @@ public sealed partial class GameServerHost
         return null;
     }
 
+    /// <summary>An item with sockets is made in two steps: the creation holds fewer value records than the token (the socket entries and the
+    /// item's own record change when the runes are put in), a later update completes it. A token of the same type with more records than the
+    /// creation covers the creation provisionally; <see cref="PumpTokenPending"/> then checks the finished item against the token's records.</summary>
+    private ItemToken? FindTokenPartial(PlayerSession s, uint type, int contentLength)
+    {
+        var now = _clock.ElapsedMilliseconds;
+        foreach (var t in _tokens)
+            if (t.Owner == s && t.Account == s.LobbyIdentity && t.Block == s.CharacterBlock && t.ExpiresMs >= now && t.Type == type && t.Records.Length > contentLength) return t;
+        return null;
+    }
+
+    private sealed record PendingToken(PlayerSession Owner, uint Reference, long TokenId, long DeadlineMs);
+    private readonly List<PendingToken> _tokenPending = new();
+
+    /// <summary>PumpAuthoritative: items admitted on a token with more records than their creation had must have the token's records within
+    /// <c>AUTH_TOKEN_COMPLETE_MS</c>; otherwise they are logged, and with AUTH_STRICT_ITEMS=on removed from the server's world (never saved).</summary>
+    private void PumpTokenPending(long now)
+    {
+        for (var i = _tokenPending.Count - 1; i >= 0; i--)
+        {
+            var p = _tokenPending[i];
+            var token = _tokens.Find(t => t.Id == p.TokenId);
+            if (p.Owner.State == SessionState.Closed || !_world.TryGet(p.Reference, out var entry) || Item(p.Reference) is null) { _tokenPending.RemoveAt(i); continue; }
+            var body = entry.Payload[(entry.LongPrefix ? 24 : 8)..];
+            if (!SavedObjects.ReadLiveItem(body, out var records, out _)) { _tokenPending.RemoveAt(i); continue; }
+            var content = Convert.ToHexStringLower(SavedObjects.LiveContent(body, records));
+            if (token is null || content == token.Records) { _tokenPending.RemoveAt(i); continue; }           // complete (or the token was claimed: the hero holds it whole)
+            if (now < p.DeadlineMs) continue;
+            _tokenPending.RemoveAt(i);
+            StrictItemsRefused++;
+            Log.Info($"AUTH: strict items: {p.Owner.Describe()}: item 0x{p.Reference:X} was admitted on a token but never became the item of the token (has {content.Length / 260} of {token.Records.Length / 260} records)"
+                + (_config.Auth.StrictItems == StrictItemsMode.On ? ", removed." : " (log mode, kept)."));
+            if (_config.Auth.StrictItems == StrictItemsMode.On)
+            {
+                Span<byte> reference = stackalloc byte[4];
+                BinaryPrimitives.WriteUInt32LittleEndian(reference, p.Reference);
+                _world.Remove(reference);
+            }
+        }
+    }
+
     /// <summary>claim_item for an item that is in the hero (not destroyed): consumes the token minted for it.</summary>
     private bool ClaimArrivedItem(PlayerSession s, uint reference)
     {
@@ -84,6 +125,12 @@ public sealed partial class GameServerHost
         var witness = WitnessConfig;
         var content = Convert.ToHexStringLower(SavedObjects.LiveContent(body, records));
         if (witness.Accepts(ItemSource.Token) && FindToken(s, type, content) is not null) { Witness!.Explained[(int)ItemSource.Token]++; return false; }
+        if (witness.Accepts(ItemSource.Token) && FindTokenPartial(s, type, content.Length) is { } partial)
+        {
+            _tokenPending.Add(new PendingToken(s, reference, partial.Id, _clock.ElapsedMilliseconds + witness.TokenCompleteMs));
+            Witness!.Explained[(int)ItemSource.Token]++;
+            return false;
+        }
         if (witness.Accepts(ItemSource.Baseline))
         {
             if (_baselineItems[s.Slot] is not { } held || !ReferenceEquals(held.Owner, s))
