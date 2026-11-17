@@ -91,6 +91,21 @@ public static class CommandLine
         new("Scripts", "scripts-store-total-max", OptionKind.Int, "largest storage of all mods together in bytes (default 33554432)", "33554432", 65536, 2147483647),
         new("Scripts", "scripts-budget", OptionKind.Int, "Lua instructions one handler or timer may run (default 1000000)", "1000000", 10000, 100000000),
 
+        new("Net ops", "netops", OptionKind.Flag, "custom net opcodes for mod channels (default on; 0 = off)", "1"),
+        new("Net ops", "netops-control", OptionKind.Text, "opcode of the net ops handshake, decimal or 0x hex, above 0x1D5 (default 0x1E0; env NETOPS_CONTROL)", "0x1E0"),
+        new("Net ops", "netops-data", OptionKind.Text, "opcode of the net ops data messages (default 0x1E1; env NETOPS_DATA)", "0x1E1"),
+        new("Net ops", "netops-max-fragment", OptionKind.Int, "largest data bytes of one wire message (default 4000)", "4000", 64, 4000),
+        new("Net ops", "netops-max-message", OptionKind.Int, "largest reassembled message in bytes (default 262144)", "262144", 1024, 4194304),
+        new("Net ops", "netops-max-in-flight", OptionKind.Int, "unfinished messages one sender may have (default 8)", "8", 1, 64),
+        new("Net ops", "netops-rate", OptionKind.Int, "received net ops bytes per second and session (default 65536)", "65536", 1024, 67108864),
+        new("Net ops", "netops-burst", OptionKind.Int, "net ops burst bytes per session (default 262144)", "262144", 4096, 67108864),
+        new("Net ops", "netops-max-channels", OptionKind.Int, "different channels one client may use (default 64)", "64", 1, 4096),
+        new("Net ops", "netops-max-name", OptionKind.Int, "longest channel name (default 64)", "64", 4, 256),
+        new("Net ops", "netops-reassembly-session", OptionKind.Int, "bytes of unfinished messages per session (default 1048576)", "1048576", 4096, 67108864),
+        new("Net ops", "netops-reassembly-total", OptionKind.Int, "bytes of unfinished messages in total (default 8388608)", "8388608", 4096, 536870912),
+        new("Net ops", "netops-fragment-timeout", OptionKind.Int, "seconds before an unfinished message is dropped (default 10)", "10", 1, 600),
+        new("Net ops", "netops-handler-budget", OptionKind.Int, "Lua instructions one channel handler may run (default 200000)", "200000", 1000, 100000000),
+
         // ---- web UI (value may also follow as the next argument; the same keys exist as --WebUi:Port=..., webui.json, SACRED_GS_WebUi__Port) ----
         new("Web UI", "webserver", OptionKind.Flag, "start the management web UI", "1", WebStyle: true),
         new("Web UI", "webui-enabled", OptionKind.Flag, "same as --webserver", "1", WebStyle: true),
