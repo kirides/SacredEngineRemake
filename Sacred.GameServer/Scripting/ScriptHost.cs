@@ -40,6 +40,16 @@ public interface IScriptServer
     string? ItemName(uint type) => null;
     /// <summary>Drops a gold pile of <paramref name="amount"/> (1..<see cref="GoldPile.MaximumAmount"/>) next to the player's hero.</summary>
     ScriptDrop? DropGold(int slot, uint amount, out string? error);
+    // ---- custom net messages (the net table; the defaults: not available) ----------------------------------------------------
+    /// <summary>Registers a channel for scripts; returns its id. Throws ArgumentException for a bad name or an id collision.</summary>
+    uint NetRegister(string name, bool serverOnly) => throw new NotSupportedException("custom net messages are not available");
+    /// <summary>The scripts reloaded: forget the channels they registered.</summary>
+    void NetReset() { }
+    bool NetSupports(int slot) => false;
+    /// <summary>Sends a message to the player in <paramref name="slot"/> (0: every player that supports them); the number of players reached.</summary>
+    int NetSend(int slot, uint channel, bool json, byte[] data, out string? error) { error = "custom net messages are not available"; return 0; }
+    /// <summary>Lua instructions one net handler may run.</summary>
+    int NetHandlerBudget => 200_000;
 }
 
 /// <summary>
@@ -71,7 +81,7 @@ public interface IScriptServer
 /// count hook, so an endless loop is stopped with an error instead of freezing the server. Scripts are the server owner's
 /// own code: the sandbox guards against mistakes, not against a hostile script author.
 /// </summary>
-public sealed class ScriptHost
+public sealed partial class ScriptHost
 {
     private const int HookInterval = 1000, MaxConsecutiveErrors = 20;
     private readonly ScriptOptions _options;
@@ -82,7 +92,7 @@ public sealed class ScriptHost
     private readonly List<Timer> _newTimers = new();
     private readonly LuaValue[] _one = new LuaValue[1], _two = new LuaValue[2];
     private LuaState? _state;
-    private long _budget;
+    private long _budget, _nextBudget;
     private bool _exhausted;
     private string _currentFile = "";
     private FileSystemWatcher? _watcher;
@@ -188,6 +198,7 @@ public sealed class ScriptHost
     public void Load()
     {
         _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear(); _endpoints.Clear(); _descriptions.Clear();
+        ResetNet();
         _state = CreateState();
         var files = Directory.Exists(_options.Directory)
             ? Directory.GetFiles(_options.Directory, "*.lua").OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray() : [];
@@ -299,6 +310,7 @@ public sealed class ScriptHost
         try
         {
             _currentFile = file;
+            _budget = Math.Max(1, (_nextBudget > 0 ? _nextBudget : _options.InstructionBudget) / HookInterval); _exhausted = false; _nextBudget = 0;   // every entry call gets a fresh budget
             var values = Run(_state.CallAsync(function, args));
             result = values.Length > 0 ? values[0] : LuaValue.Nil;
             errors = 0;
@@ -393,6 +405,7 @@ public sealed class ScriptHost
             });
         }
         state.Environment["server"] = ServerTable();
+        state.Environment["net"] = NetTable();
         return state;
     }
 

@@ -16,12 +16,23 @@ public class NetOpsTests
         public readonly GameServerHost Host;
         public readonly ConcurrentQueue<(int Slot, string Channel, bool Json, byte[] Data)> Received = new();
         private readonly Thread _thread;
+        private readonly string? _folder;
 
-        public NetServer(Action<GameServerConfig>? configure = null, params (string Name, bool ServerOnly)[] channels)
+        public NetServer(Action<GameServerConfig>? configure = null, params (string Name, bool ServerOnly)[] channels) : this(null, configure, channels) { }
+
+        public NetServer(string? script, Action<GameServerConfig>? configure = null, params (string Name, bool ServerOnly)[] channels)
         {
             var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5 };
+            if (script is not null)
+            {
+                _folder = Directory.CreateTempSubdirectory("netops-").FullName;
+                Directory.CreateDirectory(Path.Combine(_folder, "scripts"));
+                File.WriteAllText(Path.Combine(_folder, "scripts", "net.lua"), script);
+                config.Scripts.Directory = Path.Combine(_folder, "scripts"); config.Scripts.DataDirectory = Path.Combine(_folder, "data");
+            }
             configure?.Invoke(config);
             Host = new GameServerHost(config, new AdmissionRules(null), null);
+            if (script is not null) Host.StartScripts();
             foreach (var (name, serverOnly) in channels) Host.RegisterNetChannel(name, serverOnly);
             Host.NetMessage += (from, channel, json, data) => Received.Enqueue((from.Slot, channel.Name, json, data));
             _thread = new Thread(Host.Run) { IsBackground = true };
@@ -29,7 +40,11 @@ public class NetOpsTests
         }
 
         public int Port => Host.TcpPort;
-        public void Dispose() { Host.Stop(); _thread.Join(); Host.Dispose(); }
+        public void Dispose()
+        {
+            Host.Stop(); _thread.Join(); Host.Dispose();
+            if (_folder is not null) try { Directory.Delete(_folder, true); } catch (IOException) { }
+        }
 
         public bool WaitReceived(int count, int timeoutMs = 3000)
         {
@@ -77,6 +92,21 @@ public class NetOpsTests
         var payload = new byte[NetOpsWire.DataHeaderBytes + data.Length];
         NetOpsWire.WriteData(payload, new(NetOpsWire.ChannelId(channel), flags, target, id), data);
         c.Send(opcode, payload);
+    }
+
+    /// <summary>The next complete message the server sent on the data opcode (all fragments), as (channel id, json flag, bytes).</summary>
+    private static (uint Channel, bool Json, byte[] Data) NextMessage(RawClient c, ushort opcode = NetOpsWire.DefaultData)
+    {
+        var all = new List<byte>(); uint channel = 0; var json = false;
+        while (true)
+        {
+            var m = c.WaitFor(opcode);
+            Assert.AreEqual((byte)0, m.Origin, "messages of the server come from slot 0");
+            Assert.IsTrue(NetOpsWire.TryReadData(m.Payload, out var h, out var d));
+            if (h.First) { all.Clear(); channel = h.Channel; json = h.Json; }
+            all.AddRange(d.ToArray());
+            if (h.Last) return (channel, json, all.ToArray());
+        }
     }
 
     private static byte[] Bytes(int length, byte seed = 1) { var b = new byte[length]; for (var i = 0; i < b.Length; i++) b[i] = (byte)(seed + i * 7); return b; }
@@ -467,4 +497,133 @@ public class NetOpsTests
         SendData(a, "k", NetOpsWire.TargetServer, [1], 2);
         Assert.IsTrue(server.WaitReceived(1));
     }
-}
+
+    // ---- Lua: the net table -------------------------------------------------------------------------------------------
+
+    private static readonly byte[] JsonFlags = [NetOpsWire.FlagFirst | NetOpsWire.FlagLast | NetOpsWire.FlagJson];
+
+    [TestMethod]
+    public void LuaChannelAnswersWithTablesAndByteStrings()
+    {
+        using var server = new NetServer("""
+            local ch = net.channel('lua:echo')
+            ch:on(function(player, payload)
+                if type(payload) == 'table' then
+                    assert(ch:send(player, { twice = payload.n * 2, from = player.slot, list = payload.list }))
+                else
+                    assert(ch:send(player, 'got ' .. payload))
+                end
+            end)
+            """);
+        using var a = RawClient.Admit(server.Port, "A", 1);
+        Handshake(a);
+        SendData(a, "lua:echo", NetOpsWire.TargetServer, "{\"n\":21,\"list\":[1,2,3]}"u8, 1, JsonFlags[0]);
+        var (channel, json, data) = NextMessage(a);
+        Assert.AreEqual(NetOpsWire.ChannelId("lua:echo"), channel);
+        Assert.IsTrue(json);
+        var reply = System.Text.Json.JsonDocument.Parse(data).RootElement;
+        Assert.AreEqual(42, reply.GetProperty("twice").GetInt32());
+        Assert.AreEqual(1, reply.GetProperty("from").GetInt32());
+        Assert.AreEqual(3, reply.GetProperty("list").GetArrayLength());
+        SendData(a, "lua:echo", NetOpsWire.TargetServer, [0x61, 0x00, 0xFF], 2);
+        (_, json, data) = NextMessage(a);
+        Assert.IsFalse(json);
+        CollectionAssert.AreEqual(new byte[] { (byte)'g', (byte)'o', (byte)'t', (byte)' ', 0x61, 0x00, 0xFF }, data);
+    }
+
+    [TestMethod]
+    public void LuaSendReachesOnlyCapablePlayersAndSupportsTellsWho()
+    {
+        using var server = new NetServer("""
+            local ch = net.channel('lua:cast')
+            ch:on(function(player, payload)
+                local note = {}
+                for slot = 1, 3 do note[#note + 1] = slot .. '=' .. tostring(net.supports(slot)) end
+                assert(ch:send('all', table.concat(note, ',')))
+                local ok, err = ch:send(3, 'x')
+                assert(ok == nil and err:find('no custom net support'), tostring(err))
+                assert(net.supports(player) == true)
+            end)
+            """);
+        using var a = RawClient.Admit(server.Port, "A", 1);
+        using var b = RawClient.Admit(server.Port, "B", 2);
+        using var plain = RawClient.Admit(server.Port, "Plain", 3);
+        Handshake(a); Handshake(b);
+        SendData(a, "lua:cast", NetOpsWire.TargetServer, [1], 1);
+        var (_, _, forA) = NextMessage(a);
+        var (_, _, forB) = NextMessage(b);
+        Assert.AreEqual("1=true,2=true,3=false", System.Text.Encoding.Latin1.GetString(forA));
+        CollectionAssert.AreEqual(forA, forB);
+        Assert.IsTrue(plain.Silent(NetOpsWire.DefaultData, 200));
+        Assert.AreEqual(0, server.Host.Scripts!.Errors);
+    }
+
+    [TestMethod]
+    public void LuaChannelsCanBeServerOnlyAndCollisionsAreReported()
+    {
+        using var server = new NetServer("""
+            local vault = net.channel('lua:vault', { server_only = true })
+            vault:on(function(player, payload) vault:send(player, 'ok') end)
+            local first = net.channel('n512789')
+            local second, err = net.channel('n749192')
+            local bad, why = net.channel('')
+            first:on(function(player)
+                first:send(player, tostring(second == nil) .. '|' .. tostring(err) .. '|' .. tostring(bad == nil))
+            end)
+            """);
+        using var a = RawClient.Admit(server.Port, "A", 1);
+        using var b = RawClient.Admit(server.Port, "B", 2);
+        Handshake(a); Handshake(b);
+        SendData(b, "lua:vault", NetOpsWire.TargetHost, [1], 1);                    // not relayed through a server-only channel
+        Assert.IsTrue(server.WaitStat(s => s.ServerOnlyRefused, 1));
+        Assert.IsTrue(a.Silent(NetOpsWire.DefaultData, 150));
+        SendData(b, "lua:vault", NetOpsWire.TargetServer, [1], 2);
+        Assert.AreEqual("ok", System.Text.Encoding.Latin1.GetString(NextMessage(b).Data));
+        SendData(b, "n512789", NetOpsWire.TargetServer, [1], 3);
+        var text = System.Text.Encoding.Latin1.GetString(NextMessage(b).Data);
+        StringAssert.StartsWith(text, "true|");
+        StringAssert.Contains(text, "collides");
+        StringAssert.EndsWith(text, "|true");
+    }
+
+    [TestMethod]
+    public void BrokenHandlersAreContainedCountedAndSwitchedOff()
+    {
+        using var server = new NetServer("""
+            net.channel('lua:bad'):on(function() error('boom') end)
+            local good = net.channel('lua:good')
+            good:on(function(player) good:send(player, 'fine') end)
+            net.channel('lua:loop'):on(function() while true do end end)
+            """, c => c.NetOps.Apply("NETOPS_HANDLER_BUDGET", "5000"));
+        using var a = RawClient.Admit(server.Port, "A", 1);
+        Handshake(a);
+        for (ushort i = 0; i < 22; i++) SendData(a, "lua:bad", NetOpsWire.TargetServer, [1], i);
+        Assert.IsTrue(server.WaitStat(s => s.Delivered, 22));
+        SendData(a, "lua:loop", NetOpsWire.TargetServer, [1], 100);               // an endless loop is stopped by the budget
+        SendData(a, "lua:good", NetOpsWire.TargetServer, [1], 101);
+        Assert.AreEqual("fine", System.Text.Encoding.Latin1.GetString(NextMessage(a).Data));
+        var errors = server.Host.Scripts!.Errors;
+        Assert.AreEqual(21, errors, "20 errors switch the handler off (the 21st message finds none), the endless loop counts one");
+        Assert.IsFalse(a.IsClosed());
+    }
+
+    [TestMethod]
+    public void EveryHandlerCallStartsWithAFreshInstructionBudget()
+    {
+        using var server = new NetServer("""
+            local ch = net.channel('lua:count')
+            local total = 0
+            ch:on(function(player)
+                for i = 1, 3000 do total = total + 1 end      -- 3000 loop turns per call: a few calls would exhaust a budget shared between them
+                ch:send(player, tostring(total))
+            end)
+            """, c => c.NetOps.Apply("NETOPS_HANDLER_BUDGET", "20000"));
+        using var a = RawClient.Admit(server.Port, "A", 1);
+        Handshake(a);
+        for (ushort i = 1; i <= 8; i++)
+        {
+            SendData(a, "lua:count", NetOpsWire.TargetServer, [1], i);
+            Assert.AreEqual((3000 * i).ToString(), System.Text.Encoding.Latin1.GetString(NextMessage(a).Data));
+        }
+        Assert.AreEqual(0, server.Host.Scripts!.Errors);
+    }}

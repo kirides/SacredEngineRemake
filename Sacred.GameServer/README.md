@@ -234,6 +234,46 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
   whole numbers of at least 1. **Unverified with a real client:** as for `drop_item`, that the owner's pick-up of a
   server-referenced object runs that path, and that the new gold reaches the server in the hero's values (saves).
 
+### Custom net messages for scripts (`net`)
+
+Sacred Gear clients (the mod kit, `gear.net`) talk to scripts through named channels over two message types above the
+original's range (default 0x1E0 control / 0x1E1 data; the original GameServer.exe only logs and drops them). A client
+says HELLO after joining; the server answers with its limits and the list of players that can use the messages. Only
+players that said HELLO ever get them, so plain clients are not affected.
+
+```lua
+local ch = net.channel("auction:bid" [, { server_only = true }])  -- the channel, or nil, message (bad name, id collision)
+ch:on(function(player, payload) end)    -- a message for the server; payload is a table (JSON) or a byte string
+ch:send(player | slot | "all", payload) -- string (one byte per character; above 255: UTF-8) or table (JSON) -> true | nil, message
+net.supports(player | slot)             -- true when that player's computer said HELLO
+```
+
+`server_only` keeps clients from relaying through the channel (clients can still address the server, never each other). A
+channel id is the FNV-1a hash of its name; two names with the same id are refused at registration. The server stamps the
+real sender slot into the message header and ignores any claim in the payload. Handlers get their own instruction budget
+(`NETOPS_HANDLER_BUDGET`, default 200000), and the usual error accounting (20 errors in a row switch a handler off).
+
+Options (`Gameserver.cfg` / `--key=value`, ids also from the environment variables `NETOPS_CONTROL` / `NETOPS_DATA`; clients learn
+the data id in the handshake, the control id is configured on their side with `gear.net.configure` or `GEAR_NETOPS`):
+
+| Key | Default | |
+|---|---|---|
+| `NETOPS` | 1 | 0: the opcodes stay unhandled like in the original |
+| `NETOPS_CONTROL`, `NETOPS_DATA` | `0x1E0`, `0x1E1` | above 0x1D5, below 0x400, different |
+| `NETOPS_MAX_FRAGMENT` | 4000 | data bytes per wire message (64 to 4000) |
+| `NETOPS_MAX_MESSAGE` | 262144 | bytes of one reassembled or relayed message |
+| `NETOPS_MAX_IN_FLIGHT` | 8 | unfinished messages per sender |
+| `NETOPS_RATE`, `NETOPS_BURST` | 65536, 262144 | per session token bucket (bytes per second, capacity), on top of the flood guard |
+| `NETOPS_MAX_CHANNELS` | 64 | different channels one client may use |
+| `NETOPS_MAX_NAME` | 64 | characters of a channel name |
+| `NETOPS_REASSEMBLY_SESSION`, `NETOPS_REASSEMBLY_TOTAL` | 1 MB, 8 MB | bytes of unfinished messages held |
+| `NETOPS_FRAGMENT_TIMEOUT` | 10 | seconds until an unfinished message is dropped |
+| `NETOPS_HANDLER_BUDGET` | 200000 | Lua instructions of one handler call |
+
+Everything dropped is counted (`GameServerHost.NetStats`): unknown channels (a message for the server on a channel no script
+registered), rate limit, too many messages in flight, too many channels, too large, reassembly memory, timeouts. Wire layouts:
+`docs/protocol.md` ("Custom net opcodes"); the code is `Wire/NetOpsWire.cs`, `Session/GameServerHost.Net.cs`,
+`Scripting/ScriptHost.Net.cs`. Example script: `scripts-examples/net_echo.lua`.
 ## Player data (web UI)
 
 With the web UI running the server keeps every player's hero state, equipment changes and inventories (also without
