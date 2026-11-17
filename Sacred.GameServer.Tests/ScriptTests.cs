@@ -43,8 +43,10 @@ public partial class ScriptTests
         public string? CreatureName(uint type) => type == 38 ? "Orc Warrior" : null;
         public string? ItemName(uint type) => type == 2501 ? "Longbow" : null;
         public readonly List<uint> Gold = new();
+        public bool GoldFails;
         public ScriptDrop? DropGold(int slot, uint amount, out string? error)
         {
+            if (GoldFails) { error = "no"; return null; }
             Gold.Add(amount); error = null;
             return new ScriptDrop(101, GoldPile.ResourceFor(amount), 0, "Gold", "Gold");
         }

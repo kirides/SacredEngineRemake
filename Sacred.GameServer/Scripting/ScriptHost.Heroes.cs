@@ -104,8 +104,8 @@ public sealed partial class ScriptHost
         hex = hex.ToLowerInvariant();
         var count = Convert.ToInt32(hex.Substring(8, 2), 16) + Convert.ToInt32(hex.Substring(10, 2), 16) * 256;
         if (count is < 1 or > 9 || hex.Length < 12 + count * 260) return false;
-        type = (uint)(Convert.ToInt32(hex.Substring(0, 2), 16) | Convert.ToInt32(hex.Substring(2, 2), 16) << 8 | Convert.ToInt32(hex.Substring(4, 2), 16) << 16
-            | (long)Convert.ToInt32(hex.Substring(6, 2), 16) << 24);
+        type = 0;
+        for (var b = 3; b >= 0; b--) type = type << 8 | Convert.ToUInt32(hex.Substring(b * 2, 2), 16);
         records = hex.Substring(12, count * 260);
         return true;
     }
