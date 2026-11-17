@@ -14,6 +14,10 @@ public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, 
 /// name, else its type's; null without --game-dir) when the server knows them.</summary>
 public readonly record struct ScriptMonster(uint Reference, uint Type, int Level, string? Name = null);
 
+/// <summary>An item that appeared on the ground (<c>server.on("drop")</c>): reference, type, level, rarity tier (0..15), filled sockets, price,
+/// name (the item's own name, else its type's; null without --game-dir) and where (sector, x, y).</summary>
+public readonly record struct ScriptItem(uint Reference, uint Type, int Level, int Rarity, int Sockets, long Price, string? Name, ushort Sector, int X, int Y);
+
 /// <summary>What a script asked for with <c>server.drop_item</c>.</summary>
 public readonly record struct ScriptLootRequest(int Level, int HeroClass, uint? Quality, Sacred.Core.Pak.Items.SacredItemCategory? Category, uint Seed);
 
@@ -58,6 +62,7 @@ public interface IScriptServer
 /// <code>
 /// server.on("join"|"enter"|"leave", function(player) end)
 /// server.on("chat", function(player, text) return true end)   -- true: the line is not relayed
+/// server.on("drop", function(item, reporter) end)             -- a new item on the ground: item = { ref, type, level, rarity, sockets, price, name, sector, x, y }; reporter = the player whose client created it
 /// server.on("kill", function(player, monster) end)            -- monster = { ref, type, level, name } (name nil without --game-dir)
 /// server.every(seconds, fn) / server.after(seconds, fn)
 /// server.broadcast(text) / server.message(player or slot, text) / server.kick(player or slot, reason)
@@ -298,6 +303,19 @@ public sealed partial class ScriptHost
         if (killer is not null) by["player"] = PlayerTable(killer);
         if (monster is { } m) { by["ref"] = m.Reference; by["type"] = m.Type; by["level"] = m.Level; if (m.Name is { } name) by["name"] = name; }
         return Fire("death", PlayerTable(player), by, 2);
+    }
+
+    /// <summary>A new item object lay on the ground (reported by <paramref name="reporter"/>'s client: the sector owner, which is not always the killer).</summary>
+    public bool FireDrop(ScriptPlayer reporter, ScriptItem item)
+    {
+        if (!Has("drop")) return false;
+        var table = new LuaTable(0, 10)
+        {
+            ["ref"] = item.Reference, ["type"] = item.Type, ["level"] = item.Level, ["rarity"] = item.Rarity, ["sockets"] = item.Sockets,
+            ["price"] = (double)item.Price, ["sector"] = item.Sector, ["x"] = item.X, ["y"] = item.Y,
+        };
+        if (item.Name is { } name) table["name"] = name;
+        return Fire("drop", table, PlayerTable(reporter), 2);
     }
 
     private ReadOnlySpan<LuaValue> One(LuaValue a) { _one[0] = a; return _one; }

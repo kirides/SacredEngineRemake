@@ -144,6 +144,25 @@ public sealed partial class GameServerHost : IScriptServer
         ExecuteScriptKicks();
     }
 
+    /// <summary>
+    /// A 0x16F state (an object with a position) the server's world did not have yet and that is an item: the "drop" event. The game
+    /// has no drop message; a creature's loot, a chest's content or an item a player throws down all appear as such a state from
+    /// the client that owns the sector, so mods that want creature loot correlate it with "kill".
+    /// </summary>
+    private void ScriptItemOnGround(PlayerSession reporter, uint reference)
+    {
+        if (_scripts is null || !_scripts.Has("drop") || reporter.Slot == 0) return;
+        try
+        {
+            if (Item(reference) is not { } item || !_world.TryGet(reference, out var entry)) return;
+            var (sector, x, y) = Position(entry);
+            if (x == 0 && y == 0) return;                           // carried, not lying on the ground
+            _scripts.FireDrop(ScriptPlayerOf(reporter), new ScriptItem(reference, item.Type, item.Level, item.Rarity, item.Sockets, item.Price, item.Name, sector, x, y));
+            ExecuteScriptKicks();
+        }
+        catch (Exception e) when (e is not OutOfMemoryException) { ScriptFault("drop", e); }
+    }
+
     private readonly long[] _lastHeroDeathMs = new long[MaxSlots + 1];
 
     /// <summary>Level word of a creature body with compact values (Gold 0x585C60: values at +445, level at +52), or 0.</summary>
