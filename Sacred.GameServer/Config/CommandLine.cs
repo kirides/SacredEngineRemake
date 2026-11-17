@@ -123,14 +123,39 @@ public static class CommandLine
 
     /// <summary>
     /// Checks the arguments. Returns null when they are fine, else the complete error message (one or two lines) for the console.
-    /// A bare <c>quiet</c> (the original GameServer.exe's switch for "no dialog") is accepted. Nothing is bound or read here.
+    /// The positional words of the original GameServer.exe (FUN_004C27B0 searches its command line): <c>quiet</c> (no dialog), a
+    /// decimal number (the window handle of the game, see <see cref="WindowHandle"/>), <c>netlog</c> and <c>tincatlog</c>.
+    /// Nothing is bound or read here.
     /// </summary>
+    /// <summary>
+    /// Sacred.exe starts the server with CreateProcess(lpApplicationName "GameServer.exe", lpCommandLine "quiet &lt;HWND&gt;[ netlog][ tincatlog]"),
+    /// so the program name slot of the command line holds "quiet" and this process sees the decimal window handle as its first (and
+    /// usually only) argument: <c>12345</c>, optionally followed by <c>netlog</c> and <c>tincatlog</c>.
+    /// </summary>
+    public static bool IsPositional(string arg) =>
+        arg.Equals("quiet", StringComparison.OrdinalIgnoreCase) || arg.Equals("netlog", StringComparison.OrdinalIgnoreCase) ||
+        arg.Equals("tincatlog", StringComparison.OrdinalIgnoreCase) || TryWindowHandle(arg, out _);
+
+    /// <summary>A bare decimal number (the original takes it with atoi from the text behind "quiet"): the game's window handle.</summary>
+    public static bool TryWindowHandle(string arg, out long handle)
+    {
+        handle = 0;
+        return arg.Length is > 0 and <= 10 && arg.All(char.IsAsciiDigit) && long.TryParse(arg, NumberStyles.None, CultureInfo.InvariantCulture, out handle) && handle <= int.MaxValue;
+    }
+
+    /// <summary>The window handle among the arguments (0 = none). The original posts its status messages (0x410) to that window.</summary>
+    public static long WindowHandle(string[] args)
+    {
+        foreach (var arg in args) if (TryWindowHandle(arg, out var handle)) return handle;
+        return 0;
+    }
+
     public static string? Validate(string[] args)
     {
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
-            if (arg.Equals("quiet", StringComparison.OrdinalIgnoreCase) || arg is "-h" or "--help" or "-?" or "/?") continue;
+            if (IsPositional(arg) || arg is "-h" or "--help" or "-?" or "/?") continue;
             if (!arg.StartsWith("--", StringComparison.Ordinal))
                 return $"ERROR: unexpected argument '{arg}'. Options look like --name=value; see --help.";
             var body = arg[2..];
@@ -247,6 +272,9 @@ public static class CommandLine
         text.AppendLine();
         text.AppendLine("  --help, -h                             this text");
         text.AppendLine("  quiet                                  accepted and ignored (GameServer.exe: start without the dialog)");
+        text.AppendLine("  <number>                               the game's window handle (Sacred.exe starts the server as 'quiet <number>')");
+        text.AppendLine("  netlog                                 accepted (the log always goes to Gameserver.log)");
+        text.AppendLine("  tincatlog                              like --trace: log every message");
         return text.ToString();
     }
 }

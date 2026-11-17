@@ -39,8 +39,30 @@ public class CommandLineTests
         StringAssert.Contains(CommandLine.Validate(["--tick-ms=1"])!, "between 5 and 100");
         StringAssert.Contains(CommandLine.Validate(["--lan-announce=maybe"])!, "takes 0 or 1");
         StringAssert.Contains(CommandLine.Validate(["--game-dir"])!, "needs a value");
-        StringAssert.Contains(CommandLine.Validate(["2006"])!, "unexpected argument '2006'");
+        StringAssert.Contains(CommandLine.Validate(["12abc"])!, "unexpected argument '12abc'");
+        StringAssert.Contains(CommandLine.Validate(["-5"])!, "unexpected argument '-5'");
+        StringAssert.Contains(CommandLine.Validate(["99999999999"])!, "unexpected argument");
         Assert.IsNull(CommandLine.Validate(["--network-password="]));             // an empty password is allowed
+    }
+
+    [TestMethod]
+    public void TheCommandLineSacredExeUsesIsAccepted()
+    {
+        // Sacred.exe: CreateProcess("GameServer.exe", "quiet <HWND>[ netlog][ tincatlog]"): the first word is the program name slot,
+        // so the server's arguments are the decimal window handle and the optional log words.
+        Assert.IsNull(CommandLine.Validate(["1313466"]));
+        Assert.IsNull(CommandLine.Validate(["1313466", "netlog"]));
+        Assert.IsNull(CommandLine.Validate(["1313466", "netlog", "tincatlog"]));
+        Assert.IsNull(CommandLine.Validate(["quiet", "1313466", "tincatlog"]));        // started by hand with the full line
+        Assert.IsNull(CommandLine.Validate(["quiet"]));
+        Assert.AreEqual(1313466L, CommandLine.WindowHandle(["netlog", "1313466"]));
+        Assert.AreEqual(0L, CommandLine.WindowHandle(["quiet"]));
+        var config = GameServerConfig.Load(["1313466", "tincatlog"]);
+        Assert.AreEqual(1313466L, config.ParentWindow);
+        Assert.IsTrue(config.Trace);
+        Assert.IsFalse(GameServerConfig.Load(["1313466"]).Trace);
+        // unknown options stay refused, also behind the number
+        StringAssert.Contains(CommandLine.Validate(["1313466", "--tcp-port=2006"])!, "unknown option");
     }
 
     [TestMethod]

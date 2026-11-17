@@ -17,6 +17,7 @@ if (args.Contains("--help") || args.Contains("-h"))
 
 if (CommandLine.Validate(args) is { } commandLineError) { Console.Error.WriteLine(commandLineError); return 2; }   // before anything is bound
 var config = GameServerConfig.Load(args);
+if (config.ParentWindow != 0) Log.Info($"Started by the game (window 0x{config.ParentWindow:X}).");   // 'quiet <HWND>' of Sacred.exe; its 0x410 status messages are not sent
 Log.Open("Gameserver.log");
 Log.TraceEnabled = config.Trace;
 GoldLanCompatibility? compatibility = null;

@@ -34,6 +34,8 @@ public sealed class GameServerConfig
     public int MaxPasswordTries { get; set; } = 3;
     /// <summary>Per-message wire trace in the log.</summary>
     public bool Trace { get; set; }
+    /// <summary>Window handle of the game that started the server (decimal argument "quiet &lt;HWND&gt;"), 0 = started by hand.</summary>
+    public long ParentWindow { get; set; }
     /// <summary>Client data version announced on LAN and to the lobby when no game data is read (--accept-any-data).</summary>
     public ushort? AnnounceVersion { get; set; }
     public string? LobbyHost { get; set; }
@@ -64,9 +66,11 @@ public sealed class GameServerConfig
             foreach (var line in File.ReadLines(cfgPath)) config.ApplyLine(line);
         foreach (var arg in args)
         {
+            if (arg.Equals("tincatlog", StringComparison.OrdinalIgnoreCase)) config.Trace = true;          // GameServer.exe: DAT_006340f5
             if (!arg.StartsWith("--", StringComparison.Ordinal) || arg.StartsWith("--config=", StringComparison.OrdinalIgnoreCase)) continue;
             config.ApplyLine(arg[2..]);
         }
+        config.ParentWindow = CommandLine.WindowHandle(args);
         return config;
     }
 
