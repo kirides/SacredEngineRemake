@@ -135,7 +135,7 @@ server.on("join", function(player) end)          -- admitted
 server.on("enter", function(player) end)         -- in the world (0x017/0x018 answered)
 server.on("leave", function(player) end)
 server.on("chat", function(player, text) return true end)   -- public chat; true = not relayed (commands like "!kills")
-server.on("kill", function(player, monster) end) -- monster = { ref, type, level }
+server.on("kill", function(player, monster) end) -- monster = { ref, type, level, name }
 server.on("death", function(player, by) end)     -- a hero died; by = { player } or { ref, type, level }
 server.on("start", function() end)               -- after (re)loading
 server.every(seconds, fn)  server.after(seconds, fn)
@@ -145,6 +145,7 @@ server.save(key, value)  server.load(key [, default])  server.delete(key)  serve
 server.get(player or nil, key [, default])  server.set(player or nil, key, value)  server.add(player or nil, key [, n])
 server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- item or nil, error
 server.random()  server.random(n)  server.random(m, n)
+server.creature_name(type or monster)  server.item_name(type or item)   -- the game's name, or nil
 server.top(key, n)                     -- { { name, value }, ... }: this mod's per-hero numbers, also offline heroes
 server.endpoint(path, fn [, { public = true, description = "..." }])   -- GET /mods/{script}/{path}
 server.page(path, html or fn [, { public = true, title = "..." }])     -- a single-file HTML page at the same address
@@ -191,6 +192,8 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
 * Kills come from 0x17D `[creature ref][killer]` (GameServer.exe case 0x4C647E: native death event 0x208 on its creature). The
   killer word is a player slot, or an object of a player (credited to its owner), else the sender. Type and level come from
   the creature's last 0x16E/0x16F state in the server's object world (0 when the server never saw it). Each creature counts once.
+  `name` is the game's text (see *Names* below): the creature's own name word when it has one, else its type's ("Orc Warrior",
+  551 "Horse"); nil without `--game-dir`.
 * Messages from scripts are server chat (origin 0), like the web UI's broadcast and private messages.
 * Sandbox: basic (no `dofile`, `loadfile`, `load`, `collectgarbage`), `string`, `table`, `math`, `bit32`; no `io`, `os`,
   `require` or `debug`. Each handler or timer call may run `--scripts-budget` Lua instructions (default 1,000,000, a few ms);
@@ -214,7 +217,7 @@ not SQLite: SQLite needs a native library, which would end the single-file Nativ
 * Ladders: `scripts-examples/ladders.lua` keeps most kills, highest level, time online (+60 s per connected hero each minute),
   kills per creature and the last 20 deaths in its own storage and serves them as a page and as JSON/CSV endpoints; `!top`
   shows the kill ladder in chat. `player.online` is the current session in seconds.
-* Not yet: gold rewards (the money item's amount field is unknown) and creature names.
+* Not yet: gold rewards (the money item's amount field is unknown).
 
 ## Player data (web UI)
 
@@ -230,10 +233,31 @@ default.
 A hero: character, class, level, experience, gold, remaining skill points, skills (game skill id, level, bonus), the six spent
 attribute points, the six attributes (only after the client sent a full 0x16B state, else null), combat arts (kind, art id,
 rank byte), number of combos, equipment (slot 0..18 and item), inventory and shared stash (anchor cell, width, height, item),
-online seconds. An item: reference, type (Items.pak resource), level, rarity tier, filled sockets, price. Names of skills, arts
-and items need the game's text tables and are not resolved yet; ids are the game's own numbers. Source: the hero's own object
+online seconds. An item: reference, type (Items.pak resource), level, rarity tier, filled sockets, price. Skills, arts and
+items also carry a `name` when the server read the game's texts (`--game-dir`, see *Names*); without them the field is left
+out and only the game's numbers remain. Source: the hero's own object
 states (Gold 0x585C60 values at +445: compact fields, or the full sCharValHero block from 0x16B), 0x11D/0x11E, 0x122, 0x13E/0x13F
 and the items in the object world.
+
+### Names (`Data/NameService.cs`)
+
+Read once at startup from `--game-dir` with the Sacred.Assets readers (never in the game loop; lookups are dictionary reads):
+`scripts/us/global.res` (else the first `scripts/<language>/global.res`) for the texts, `PAK/Items.pak` with its
+`Items00..15.pak` overlays (by word +0x76, like GameServer.exe) and `PAK/Weapon.pak` (`SacredObjectTemplateArchive`) for the
+type descriptors.
+
+| id | source | example |
+| --- | --- | --- |
+| object type (creatures and items share the Items.pak index) | descriptor +0x20 `ResourceId`, resolved like Gold 0x44A200 (bit 31 clear: decimal key, set: hash) | 38 "Orc Warrior", 5171 "Lesser Healing Potion", 2501 "Longbow" |
+| an object's own name | its name word (native +0x3C; base state +37 on the wire, +51 in saves) before the type's | generated items: "Decaying Bow of Oblivion" (type 2501) |
+| skill slot id | text 9399 + id (as in the item requirement texts) | 2 "Weapon Lore", 20 "Vampirism", 29 "Weapon Technology" |
+| combat art id (u16 at +4 of the 22-byte record) | cMagicEntry/cSMoveEntry name resources (`SacredCombatArtDefinition.GetNameResource`): spells 1.., special moves 1000.. | 60 "Blazing Disc", 1022 "Turn into Vampire" |
+
+Checked against five real saves: every skill, art and item (252) resolves, and the names fit the heroes' classes. Items always
+carry their own name word in the saves (a type's base name can be empty, e.g. 1966 Daemon greaves). **Unverified:** the name
+word of creatures on the wire (named bosses and NPCs should carry it; the saves only show the horse, 551 with 0x227 = its type),
+the language when the install has several (`us` is preferred), and that item 0x16F drops of `server.drop_item` show their
+generated name (the server creates them with name word 0, so clients see the type's name).
 
 ## Flood protection (`--flood-protection`, on with `--authoritative`)
 

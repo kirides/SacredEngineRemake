@@ -18,7 +18,7 @@ public class HeroDataTests
         var saved = SacredSavedHero.FromPayload(decoded.Hero, decoded.Version).Creature.Values;
 
         var config = new GameServerConfig { TcpPort = 0, LanAnnounce = false, TickMilliseconds = 5 };
-        var host = new GameServerHost(config, new AdmissionRules(null), null) { TrackHeroes = true };
+        var host = new GameServerHost(config, new AdmissionRules(null), null) { TrackHeroes = true, Names = NameServiceTests.Shared };
         var thread = new Thread(host.Run) { IsBackground = true };
         thread.Start();
         try
@@ -55,6 +55,13 @@ public class HeroDataTests
             Assert.AreEqual(anchors, hero.Inventory.Length, "every inventory item is listed");
             Assert.IsTrue(hero.Inventory.All(i => i.Width >= 1 && i.Height >= 1 && i.Item.Type != 0));
             Assert.IsTrue(hero.Equipment.Length > 0, "equipped items");
+            if (NameServiceTests.Shared is not null)
+            {
+                Assert.IsTrue(hero.Skills.All(sk => !string.IsNullOrEmpty(sk.Name)), "skill names");
+                Assert.IsTrue(hero.CombatArts.All(a => !string.IsNullOrEmpty(a.Name)), "combat art names");
+                Assert.IsTrue(hero.Equipment.Concat(hero.Inventory.Select(i => new Web.EquippedItem(i.Cell, i.Item))).All(e => !string.IsNullOrEmpty(e.Item.Name)), "item names");
+                Console.WriteLine(string.Join(", ", hero.Equipment.Select(e => e.Item.Name)));
+            }
         }
         finally { host.Stop(); thread.Join(); host.Dispose(); }
     }

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Sacred.GameServer.Web;
 
 /// <summary>What the web UI may do and see. Implemented by the game server; every member is safe to call from any thread.</summary>
@@ -78,16 +80,19 @@ public sealed record FloodSettings(
 
 /// <summary>An online hero. Values come from the hero's own object states and inventory messages; <see cref="Attributes"/> is
 /// null until the client sent a full state (0x16B). Skill, combat art and item ids are the game's numbers (names need its text
-/// tables). <see cref="Account"/> is only filled for the admin API.</summary>
+/// tables: the optional Name fields). <see cref="Account"/> is only filled for the admin API.</summary>
 public sealed record HeroInfo(int Slot, string Character, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] string? Account,
     int Class, int Level, long Experience, long Gold, int SkillPointsLeft, SkillInfo[] Skills, int[] AttributePoints, int[]? Attributes,
     ArtInfo[] CombatArts, int Combos, EquippedItem[] Equipment, StoredItem[] Inventory, StoredItem[] Stash, bool InGame, double OnlineSeconds);
 
-public sealed record SkillInfo(int Id, int Level, int Bonus);
-/// <summary>A combat art record (22 bytes): kind word, art id and the byte after it (its rank as far as the saves show).</summary>
-public sealed record ArtInfo(int Kind, int Id, int Rank);
-/// <summary>An item: object reference, type (Items.pak resource), item level, rarity tier, filled sockets, price.</summary>
-public sealed record ItemInfo(uint Ref, uint Type, int Level, int Rarity, int Sockets, long Price);
+/// <summary>A skill slot. <see cref="Name"/> (and the other records' names) is the game's text when the server read its tables
+/// (--game-dir), else left out.</summary>
+public sealed record SkillInfo(int Id, int Level, int Bonus, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Name = null);
+/// <summary>A combat art record (22 bytes): kind word (1 spell, 2 special move), art id and the byte after it (its rank as far as the saves show).</summary>
+public sealed record ArtInfo(int Kind, int Id, int Rank, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Name = null);
+/// <summary>An item: object reference, type (Items.pak resource), item level, rarity tier, filled sockets, price and its name
+/// (its own generated name, else the type's).</summary>
+public sealed record ItemInfo(uint Ref, uint Type, int Level, int Rarity, int Sockets, long Price, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Name = null);
 public sealed record EquippedItem(int Slot, ItemInfo Item);
 public sealed record StoredItem(int Cell, int Width, int Height, ItemInfo Item);
 
