@@ -188,26 +188,36 @@ public sealed partial class GameServerHost
         var difficulty = (int)GoldSessionGameFlagsCodec.Difficulty(_gameFlags);
         var item = _loot.Roll(request.Level, request.HeroClass, difficulty, request.Quality, request.Category, request.Seed, out error);
         if (item is null) return null;
+        var reference = DropNextToHero(player, hero, item.Type, item.Values, item.Category == Sacred.Core.Pak.Items.SacredItemCategory.Weapon, out error);
+        if (reference == 0) return null;
+        Log.Info($"SCRIPT: dropped {item.Name ?? "item"} (type {item.Type}, quality {item.Quality}, ref {reference}) for #{player.Slot} {player.Name}.");
+        return new ScriptDrop(reference, item.Type, item.Quality, item.Name ?? "", item.Category.ToString());
+    }
+
+    /// <summary>Stores an item object of <paramref name="type"/> with <paramref name="values"/> at the hero's position, owned by
+    /// the player, and streams it; returns its reference, or 0 with <paramref name="error"/>.</summary>
+    private uint DropNextToHero(PlayerSession player, ObjectMirror.Entry hero, uint type, ReadOnlySpan<byte> values, bool weaponExtension, out string? error)
+    {
+        error = null;
         var reference = TakeReference(player.Slot);
-        if (reference == 0) { error = "no free object reference"; return null; }
+        if (reference == 0) { error = "no free object reference"; return 0; }
 
         var (sector, x, y) = Position(hero);
-        var basis = new GoldObjectBaseState(reference, item.Type, 0, sector, x, y, 0, 0, 0, 0, player.Slot, 0);
+        var basis = new GoldObjectBaseState(reference, type, 0, sector, x, y, 0, 0, 0, 0, player.Slot, 0);
         var physical = GoldPhysicalConstructionWriter.Write(basis, new GoldPhysicalVector(0, 1, 0));
-        var weapon = item.Category == Sacred.Core.Pak.Items.SacredItemCategory.Weapon ? new byte[GoldItemStateLayout.WeaponExtensionSize] : [];
+        var weapon = weaponExtension ? new byte[GoldItemStateLayout.WeaponExtensionSize] : [];
         if (weapon.Length != 0) BinaryPrimitives.WriteUInt32LittleEndian(weapon, GoldItemStateLayout.WeaponMarker);
-        var body = GoldItemState.Create(physical, [], item.Values, 0, weapon).ToPayload();
+        var body = GoldItemState.Create(physical, [], values, 0, weapon).ToPayload();
         var payload = new byte[24 + body.Length];
         BinaryPrimitives.WriteUInt32LittleEndian(payload, reference);
-        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(4), item.Type);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(4), type);
         BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(8), x);
         BinaryPrimitives.WriteInt32LittleEndian(payload.AsSpan(12), y);
         BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(20), sector);
         body.CopyTo(payload, 24);
-        if (!_world.Store(0x16F, player.Slot, payload, 0)) { error = "the object world is full"; return null; }
+        if (!_world.Store(0x16F, player.Slot, payload, 0)) { error = "the object world is full"; return 0; }
         StreamObject(reference);
-        Log.Info($"SCRIPT: dropped {item.Name ?? "item"} (type {item.Type}, quality {item.Quality}, ref {reference}) for #{player.Slot} {player.Name}.");
-        return new ScriptDrop(reference, item.Type, item.Quality, item.Name ?? "", item.Category.ToString());
+        return reference;
     }
 
     /// <summary>Sector and position of an object from its mirrored state (24-byte prefix, or the base block of an 8-byte one).</summary>

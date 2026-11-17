@@ -29,6 +29,8 @@ public interface IScriptServer
     void Kick(int slot, string reason);
     /// <summary>Generates equipment for the player and drops it next to its hero; null with <paramref name="error"/> on failure.</summary>
     ScriptDrop? DropItem(int slot, in ScriptLootRequest request, out string? error);
+    /// <summary>Drops a gold pile of <paramref name="amount"/> (1..<see cref="GoldPile.MaximumAmount"/>) next to the player's hero.</summary>
+    ScriptDrop? DropGold(int slot, uint amount, out string? error);
     /// <summary>Publishes a board (ladder) for the web UI and its public API.</summary>
     void Publish(string name, string title, IReadOnlyList<(string Name, double Value)> rows);
 }
@@ -45,6 +47,7 @@ public interface IScriptServer
 /// server.players() / server.player(slot) / server.time() / server.log(text)
 /// server.get(player or nil, key [, default]) / server.set(player or nil, key, value) / server.add(player or nil, key, n)
 /// server.drop_item(player, { quality = 0..14, category = "ring", level = n, class = n, seed = n })  -- returns item or nil, error
+/// server.drop_gold(player, amount)                    -- returns { ref, type, amount } or nil, error
 /// server.random([m [, n]])
 /// server.top(key, n) -> { { key, name, value }, ... }  (saved numbers of every hero, also offline)
 /// server.publish(name, title, rows)                    -- rows = { { name = "...", value = n }, ... } for the web UI (names are
@@ -368,6 +371,17 @@ public sealed class ScriptHost
             var drop = _server.DropItem(slot, request, out var error);
             if (drop is null) return c.Return(LuaValue.Nil, error ?? "failed");
             return c.Return(new LuaTable(0, 5) { ["ref"] = drop.Reference, ["type"] = drop.Type, ["quality"] = drop.Quality, ["name"] = drop.Name, ["category"] = drop.Category });
+        });
+        server["drop_gold"] = Fn("drop_gold", c =>
+        {
+            var slot = SlotOf(c.GetArgument(0));
+            if (_server.Player(slot) is null) return c.Return(LuaValue.Nil, "no such player");
+            var requested = c.HasArgument(1) && c.GetArgument(1).Type == LuaValueType.Number ? Math.Floor(c.GetArgument(1).Read<double>()) : double.NaN;
+            if (!(requested >= 1)) return c.Return(LuaValue.Nil, "amount must be at least 1");
+            var amount = (uint)Math.Min(requested, GoldPile.MaximumAmount);
+            var drop = _server.DropGold(slot, amount, out var error);
+            if (drop is null) return c.Return(LuaValue.Nil, error ?? "failed");
+            return c.Return(new LuaTable(0, 3) { ["ref"] = drop.Reference, ["type"] = drop.Type, ["amount"] = amount });
         });
         server["endpoint"] = Fn("endpoint", c =>
         {
