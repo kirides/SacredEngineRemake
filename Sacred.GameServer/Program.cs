@@ -1,3 +1,4 @@
+using Sacred.GameServer.Net;
 using Sacred.GameServer.Platform;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -41,7 +42,9 @@ var announcedVersion = config.AnnounceVersion ?? compatibility?.Version ?? 0;
 if (announcedVersion == 0) Log.Info("WARNING: no client version known (pass --game-dir or --announce-version); clients will see the game as incompatible.");
 var rules = new AdmissionRules(config.AcceptAnyData ? null : compatibility);
 var advertised = config.PublicAddress is { } text && IPAddress.TryParse(text, out var parsed) ? parsed : IPAddress.Loopback;
-var lan = config.LanAnnounce ? new LanAnnouncer(config, announcedVersion, advertised) : null;
+var announce = config.LanAnnounce;
+if (announce && BindPolicy.IsLoopback(config.BindAddress)) { announce = false; Log.Info($"LAN announce is off: the server is bound to {config.BindAddress} only."); }
+var lan = announce ? new LanAnnouncer(config, announcedVersion, advertised) : null;
 GameServerHost host;
 GameStatus.Post(GameStatus.TestingPort, 1);
 try { host = new GameServerHost(config, rules, lan); }
@@ -76,7 +79,7 @@ if (config.Scripts.IsEnabled) host.StartScripts();
 if (config.UdpPort > 0)
 {
     // Sacred Bild players reach the game over its UDP transport (SBT/KCP) when the host answers, else they fall back to TCP.
-    try { var udp = host.AddListener(inbox => new SbtListener(config.UdpPort, inbox, () => host.TcpPort)); host.SetAdminUdpPort(udp.Port); Log.Info($"UDP transport (Sacred Bild) on port {udp.Port}"); }
+    try { var udp = host.AddListener(inbox => new SbtListener(config.UdpPort, inbox, () => host.TcpPort, config.BindAddress)); host.SetAdminUdpPort(udp.Port); Log.Info($"UDP transport (Sacred Bild) on port {udp.Port}"); }
     catch (System.Net.Sockets.SocketException e) { Log.Info($"WARNING: UDP port {config.UdpPort} unavailable ({e.SocketErrorCode}), Sacred Bild players use TCP."); }
 }
 

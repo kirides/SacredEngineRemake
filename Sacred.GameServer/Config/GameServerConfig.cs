@@ -1,3 +1,4 @@
+using System.Net;
 using System.Globalization;
 
 namespace Sacred.GameServer.Config;
@@ -36,6 +37,8 @@ public sealed class GameServerConfig
     public bool Trace { get; set; }
     /// <summary>Window handle of the game that started the server (decimal argument "quiet &lt;HWND&gt;"), 0 = started by hand.</summary>
     public long ParentWindow { get; set; }
+    /// <summary>Address the TCP and UDP listeners bind (BIND_ADDRESS / NETWORK_BIND / --bind); null = every interface like the original.</summary>
+    public IPAddress? BindAddress { get; set; }
     /// <summary>Client data version announced on LAN and to the lobby when no game data is read (--accept-any-data).</summary>
     public ushort? AnnounceVersion { get; set; }
     public string? LobbyHost { get; set; }
@@ -93,6 +96,7 @@ public sealed class GameServerConfig
         var value = split < 0 ? "1" : line[(split + 1)..].Trim();
         switch (key)
         {
+            case "BIND_ADDRESS" or "NETWORK_BIND" or "BIND": BindAddress = IPAddress.TryParse(value, out var bind) ? bind : BindAddress; break;
             case "NETWORK_PORT_TCP" or "PORT": TcpPort = Int(value, TcpPort); break;
             case "NETWORK_PORT_LISTEN" or "LISTEN_PORT": ListenPort = Int(value, ListenPort); break;
             case "NETWORK_LOBBYPORT": LobbyPort = Int(value, LobbyPort); break;
