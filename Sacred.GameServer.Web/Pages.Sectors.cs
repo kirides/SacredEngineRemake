@@ -61,18 +61,27 @@ function playerPoint(p){var t=null;if(p.hasPosition)t=[p.x/TILE,p.y/TILE];else i
   if(!t)return null;var m=mapOfTile(t[0],t[1]);return screenOfMap(m[0],m[1])}
 
 function resize(){dpr=window.devicePixelRatio||1;var r=cv.getBoundingClientRect();cv.width=Math.max(1,Math.round(r.width*dpr));cv.height=Math.max(1,Math.round(r.height*dpr));
-  if(M&&!fitted&&r.width>10&&r.height>10){fit();fitted=true}draw()}
+  if(M&&!fitted&&r.width>10&&r.height>10){fit();fitted=true}render()}
 function fit(){if(!M)return;var r=cv.getBoundingClientRect();if(r.width<10||r.height<10)return;var k=Math.min(r.width/M.width,r.height/M.height);view.k=k;view.x=(r.width-M.width*k)/2;view.y=(r.height-M.height*k)/2}
 function zoomToSectors(ids){if(!M||!ids.length)return;var r=cv.getBoundingClientRect(),x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
   ids.forEach(function(id){var c=idCell[id];if(!c)return;diamond(c[0],c[1]).forEach(function(p){x0=Math.min(x0,p[0]);y0=Math.min(y0,p[1]);x1=Math.max(x1,p[0]);y1=Math.max(y1,p[1])})});
   if(x0>x1)return;var pad=Math.max(40,(x1-x0)*.2,(y1-y0)*.2);x0-=pad;x1+=pad;y0-=pad;y1+=pad;
   var k=Math.min(r.width/(x1-x0),r.height/(y1-y0),8);view.k=k;view.x=(r.width-(x1-x0)*k)/2-x0*k;view.y=(r.height-(y1-y0)*k)/2-y0*k;fitted=true;draw()}
 
-function draw(){if(!M)return;var w=cv.width/dpr,h=cv.height/dpr;g.setTransform(dpr,0,0,dpr,0,0);g.fillStyle='#0c0a07';g.fillRect(0,0,w,h);
+/* ---- the sector grid: built once as long straight runs in map pixels and stroked under the view transform ---- */
+var gridPath=null, raf=0;
+function hasCell(x,y){return !!cellId[x+','+y]}
+function buildGrid(){var H={},V={},p=new Path2D();function add(o,k,v){(o[k]||(o[k]=[])).push(v)}
+  M.sectors.forEach(function(c){var x=c.x,y=c.y;add(H,y,x);if(!hasCell(x,y+1))add(H,y+1,x);add(V,x,y);if(!hasCell(x+1,y))add(V,x+1,y)});
+  function runs(o,seg){Object.keys(o).forEach(function(k){var l=o[k].sort(function(a,b){return a-b}),i=0;while(i<l.length){var j=i;while(j+1<l.length&&l[j+1]<=l[j]+1)j++;seg(+k,l[i],l[j]+1);i=j+1}})}
+  function line(a,b){p.moveTo(a[0],a[1]);p.lineTo(b[0],b[1])}
+  runs(H,function(y,x0,x1){line(mapOfTile(x0*ST,y*ST),mapOfTile(x1*ST,y*ST))});runs(V,function(x,y0,y1){line(mapOfTile(x*ST,y0*ST),mapOfTile(x*ST,y1*ST))});gridPath=p}
+// pointer moves, wheel steps and live updates all ask for a redraw: draw at most once per frame
+function draw(){if(!M||raf)return;raf=requestAnimationFrame(function(){raf=0;render()})}
+function render(){if(!M)return;if(!gridPath)buildGrid();var w=cv.width/dpr,h=cv.height/dpr;g.setTransform(dpr,0,0,dpr,0,0);g.fillStyle='#0c0a07';g.fillRect(0,0,w,h);
   if(imgOk){g.imageSmoothingEnabled=view.k<1.5;g.globalAlpha=.8;g.drawImage(img,view.x,view.y,M.width*view.k,M.height*view.k);g.globalAlpha=1}
   var cellpx=view.k*Math.hypot(M.projection.kx,M.projection.ky)*ST,grid=cellpx>8;
-  if(grid){g.lineWidth=1;g.strokeStyle='rgba(255,255,255,'+(cellpx<18?.07:.14)+')';g.beginPath();
-    M.sectors.forEach(function(s){var d=diamond(s.x,s.y);if(visible(d,w,h))path(d)});g.stroke()}
+  if(grid){g.setTransform(dpr*view.k,0,0,dpr*view.k,dpr*view.x,dpr*view.y);g.lineWidth=1/view.k;g.strokeStyle='rgba(255,255,255,'+(cellpx<18?.07:.14)+')';g.stroke(gridPath);g.setTransform(dpr,0,0,dpr,0,0)}
   var focus=sel||0;
   data.sectors.forEach(function(s){var c=idCell[s.id];if(!c)return;var d=diamond(c[0],c[1]);if(!visible(d,w,h))return;
     var col=s.owner?color(s.owner):'#9a9a9a';

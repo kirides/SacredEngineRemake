@@ -78,14 +78,14 @@ window.AreaCodec={compact:compact,toDef:toDef,fromDefIds:function(d){var ids={};
   geometry:{TILE:TILE,ST:ST}};
 
 function rcolor(id){return RCOLORS[(id-1)%RCOLORS.length]}
-function regionLabels(w,h){M.regions.forEach(function(r){var x=0,y=0,n=0;M.sectors.forEach(function(s){if(s.r===r.id){var d=diamond(s.x,s.y),c=mapOfTile((s.x+.5)*ST,(s.y+.5)*ST);x+=c[0];y+=c[1];n++}});if(!n)return;
-  var p=screenOfMap(x/n,y/n);if(p[0]<-80||p[0]>w+80||p[1]<-20||p[1]>h+20)return;g.font='600 '+Math.max(11,Math.min(20,view.k*14))+'px system-ui,sans-serif';g.textAlign='center';g.lineWidth=3;g.strokeStyle='rgba(0,0,0,.75)';g.strokeText(r.name,p[0],p[1]);g.fillStyle='#fff3d6';g.fillText(r.name,p[0],p[1]);g.textAlign='start'})}
+function regionLabels(w,h){M.regions.forEach(function(r){var c=regionPos&&regionPos[r.id];if(!c)return;
+  var p=screenOfMap(c[0],c[1]);if(p[0]<-80||p[0]>w+80||p[1]<-20||p[1]>h+20)return;g.font='600 '+Math.max(11,Math.min(20,view.k*14))+'px system-ui,sans-serif';g.textAlign='center';g.lineWidth=3;g.strokeStyle='rgba(0,0,0,.75)';g.strokeText(r.name,p[0],p[1]);g.fillStyle='#fff3d6';g.fillText(r.name,p[0],p[1]);g.textAlign='start'})}
 function color(a){var i=order.indexOf(a.id);return COLORS[(i<0?0:i)%COLORS.length]}
 function count(a){return Object.keys(a.ids).length}
 
 /* ---- drawing ---- */
 var fitted=false;
-function resize(){dpr=window.devicePixelRatio||1;var r=cv.getBoundingClientRect();cv.width=Math.max(1,Math.round(r.width*dpr));cv.height=Math.max(1,Math.round(r.height*dpr));if(M&&!fitted&&r.width>10&&r.height>10){fit();fitted=true}draw()}
+function resize(){dpr=window.devicePixelRatio||1;var r=cv.getBoundingClientRect();cv.width=Math.max(1,Math.round(r.width*dpr));cv.height=Math.max(1,Math.round(r.height*dpr));if(M&&!fitted&&r.width>10&&r.height>10){fit();fitted=true}render()}
 function fit(){if(!M)return;var r=cv.getBoundingClientRect();if(r.width<10||r.height<10)return;var k=Math.min(r.width/M.width,r.height/M.height);view.k=k;view.x=(r.width-M.width*k)/2;view.y=(r.height-M.height*k)/2}
 function zoomTo(a){if(!M||!a)return;var r=cv.getBoundingClientRect();if(r.width<10)return;var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9,any=false;
   function add(mx,my){any=true;x0=Math.min(x0,mx);y0=Math.min(y0,my);x1=Math.max(x1,mx);y1=Math.max(y1,my)}
@@ -95,16 +95,40 @@ function zoomTo(a){if(!M||!a)return;var r=cv.getBoundingClientRect();if(r.width<
   var k=Math.min(r.width/(x1-x0),r.height/(y1-y0));k=Math.min(k,8);view.k=k;view.x=(r.width-(x1-x0)*k)/2-x0*k;view.y=(r.height-(y1-y0)*k)/2-y0*k;fitted=true;draw()}
 function visible(p,w,h){for(var i=0;i<p.length;i++){var s=screenOfMap(p[i][0],p[i][1]);if(s[0]>-60&&s[0]<w+60&&s[1]>-60&&s[1]<h+60)return true}return false}
 function path(p){var s=screenOfMap(p[0][0],p[0][1]);g.moveTo(s[0],s[1]);for(var i=1;i<p.length;i++){s=screenOfMap(p[i][0],p[i][1]);g.lineTo(s[0],s[1])}g.closePath()}
-function draw(){if(!M)return;var w=cv.width/dpr,h=cv.height/dpr;g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,w,h);g.fillStyle='#0c0a07';g.fillRect(0,0,w,h);
+/* ---- cached layers: built once in map pixels and drawn under the view transform, so panning and zooming do no per-sector work ---- */
+var gridPath=null, regionPaths=null, regionPos=null, areaLayer=null, areaRev=0, raf=0;
+function cellPath(p,x,y){var d=diamond(x,y);p.moveTo(d[0][0],d[0][1]);p.lineTo(d[1][0],d[1][1]);p.lineTo(d[2][0],d[2][1]);p.lineTo(d[3][0],d[3][1]);p.closePath()}
+// the edges of a set of cells merged into long straight runs: every edge (outline=false) or only the border of the set (outline=true)
+function edgePath(cells,inside,outline){var H={},V={},p=new Path2D();function add(o,k,v){(o[k]||(o[k]=[])).push(v)}
+  cells.forEach(function(c){var x=c[0],y=c[1];if(!outline||!inside(x,y-1))add(H,y,x);if(!inside(x,y+1))add(H,y+1,x);if(!outline||!inside(x-1,y))add(V,x,y);if(!inside(x+1,y))add(V,x+1,y)});
+  function runs(o,seg){Object.keys(o).forEach(function(k){var l=o[k].sort(function(a,b){return a-b}),i=0;while(i<l.length){var j=i;while(j+1<l.length&&l[j+1]<=l[j]+1)j++;seg(+k,l[i],l[j]+1);i=j+1}})}
+  function line(a,b){p.moveTo(a[0],a[1]);p.lineTo(b[0],b[1])}
+  runs(H,function(y,x0,x1){line(mapOfTile(x0*ST,y*ST),mapOfTile(x1*ST,y*ST))});runs(V,function(x,y0,y1){line(mapOfTile(x*ST,y0*ST),mapOfTile(x*ST,y1*ST))});return p}
+function hasCell(x,y){return !!cellId[x+','+y]}
+// the grid, one path per region colour and the label point of every region: they only depend on the map
+function buildStatic(){gridPath=edgePath(M.sectors.map(function(s){return [s.x,s.y]}),hasCell,false);regionPaths={};regionPos={};var sum={};
+  M.sectors.forEach(function(s){if(!s.r)return;var col=rcolor(s.r);cellPath(regionPaths[col]||(regionPaths[col]=new Path2D()),s.x,s.y);
+    var c=mapOfTile((s.x+.5)*ST,(s.y+.5)*ST),t=sum[s.r]||(sum[s.r]=[0,0,0]);t[0]+=c[0];t[1]+=c[1];t[2]++});
+  Object.keys(sum).forEach(function(r){var t=sum[r];regionPos[r]=[t[0]/t[2],t[1]/t[2]]})}
+// the areas' fills (a sector in the colour of one area, the selected one first) and the selected area's outline: rebuilt only when an area changes
+function buildAreas(){var key=cur+'|'+areaRev+'|'+order.join(',');if(areaLayer&&areaLayer.key===key)return areaLayer;var fills={},sel=areas[cur],cells=[];
+  M.sectors.forEach(function(s){var mine=null;for(var i=0;i<order.length;i++){var a=areas[order[i]];if(a.ids[s.id]){mine=a;if(a===sel)break}}
+    if(mine)cellPath(fills[mine.id]||(fills[mine.id]=new Path2D()),s.x,s.y);if(sel&&sel.ids[s.id])cells.push([s.x,s.y])});
+  var outline=cells.length?edgePath(cells,function(x,y){var id=cellId[x+','+y];return !!(id&&sel.ids[id])},true):null;
+  return areaLayer={key:key,fills:fills,outline:outline}}
+function mapSpace(){g.setTransform(dpr*view.k,0,0,dpr*view.k,dpr*view.x,dpr*view.y)}
+function screenSpace(){g.setTransform(dpr,0,0,dpr,0,0)}
+// pointer moves, wheel steps and polls all ask for a redraw: draw at most once per frame
+function draw(){if(!M||raf)return;raf=requestAnimationFrame(function(){raf=0;render()})}
+function render(){if(!M)return;if(!gridPath)buildStatic();var w=cv.width/dpr,h=cv.height/dpr;screenSpace();g.clearRect(0,0,w,h);g.fillStyle='#0c0a07';g.fillRect(0,0,w,h);
   if(imgOk){g.imageSmoothingEnabled=view.k<1.5;g.drawImage(img,view.x,view.y,M.width*view.k,M.height*view.k)}
   var cellpx=view.k*Math.hypot(M.projection.kx,M.projection.ky)*ST,grid=cellpx>6,gridAlpha=cellpx<14?.1:cellpx<30?.2:.3;
-  g.lineWidth=1;
-  M.sectors.forEach(function(s){var d=diamond(s.x,s.y);if(!visible(d,w,h))return;
-    if(showRegions&&s.r){g.beginPath();path(d);g.globalAlpha=.2;g.fillStyle=rcolor(s.r);g.fill();g.globalAlpha=1}
-    var mine=null;for(var i=0;i<order.length;i++){var a=areas[order[i]];if(a.ids[s.id]){mine=a;if(a===areas[cur])break}}
-    if(mine){g.beginPath();path(d);g.globalAlpha=mine===areas[cur]?.5:.28;g.fillStyle=color(mine);g.fill();g.globalAlpha=1}
-    if(grid){g.beginPath();path(d);g.strokeStyle='rgba(255,255,255,'+gridAlpha+')';g.stroke()}});
-  var a=areas[cur];if(a){g.beginPath();M.sectors.forEach(function(s){if(a.ids[s.id]){var d=diamond(s.x,s.y);if(visible(d,w,h))path(d)}});g.strokeStyle=color(a);g.lineWidth=2;g.stroke()}
+  mapSpace();
+  if(showRegions){g.globalAlpha=.2;Object.keys(regionPaths).forEach(function(c){g.fillStyle=c;g.fill(regionPaths[c])});g.globalAlpha=1}
+  var L=buildAreas();order.forEach(function(id){var p=L.fills[id];if(p){g.globalAlpha=id===cur?.5:.28;g.fillStyle=color(areas[id]);g.fill(p)}});g.globalAlpha=1;
+  if(grid){g.lineWidth=1/view.k;g.strokeStyle='rgba(255,255,255,'+gridAlpha+')';g.stroke(gridPath)}
+  if(L.outline){g.lineWidth=2/view.k;g.strokeStyle=color(areas[cur]);g.stroke(L.outline)}
+  screenSpace();
   if(showRegions)regionLabels(w,h);
   order.forEach(function(id){var b=areas[id];if(b.circle){var c=mapOfTile(b.circle.x/TILE,b.circle.y/TILE);var s=screenOfMap(c[0],c[1]);
     var rx=b.circle.r/TILE*view.k*(M.projection.kx*Math.SQRT2*0),ry=0;
@@ -135,7 +159,7 @@ function addRegion(rid,on){var a=areas[cur];if(!a){status('Select or create an a
   touch(a);status((on?'Added ':'Removed ')+n+' sectors of '+(regionById[rid]?regionById[rid].name:'region '+rid)+(on?'. The area follows the region.':'.'),'ok')}
 // a sector taken out of a region's area by hand: the area no longer follows that region as a whole
 function detach(a,sectorId){var s=byId[sectorId];if(s&&s.r&&a.regions&&a.regions.indexOf(s.r)>=0)a.regions.splice(a.regions.indexOf(s.r),1)}
-function touch(a){a.changed=true;dirtySaved=true;renderAreas();renderDetail();draw();$('#save').disabled=false}
+function touch(a){a.changed=true;areaRev++;dirtySaved=true;renderAreas();renderDetail();draw();$('#save').disabled=false}
 
 /* ---- tools ---- */
 function setTool(t){tool=t;document.querySelectorAll('[data-tool]').forEach(function(b){b.setAttribute('aria-pressed',b.dataset.tool===t?'true':'false')});cv.className=t==='pan'?'':'paint';
