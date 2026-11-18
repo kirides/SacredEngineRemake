@@ -238,7 +238,7 @@ public class WebAdminTests
             StringAssert.Contains(html, "mods/'+MOD+'/rules", "reads the mod's rules endpoint");
             StringAssert.Contains(html, "api/mod-store", "writes the mod's storage");
             StringAssert.Contains(html, "href=\"bounties\" aria-current=\"page\"", "the tab");
-            StringAssert.Contains(html, "Creature words");
+            StringAssert.Contains(html, "Add a creature");
             Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(html, @"(src|href)=""https?://|url\(https?://|@import"), "no outside resources: works offline");
             StringAssert.Contains(await client.GetStringAsync("/mods"), "href=\"bounties\"");
         }
