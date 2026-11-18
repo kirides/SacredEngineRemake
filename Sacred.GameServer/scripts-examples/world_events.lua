@@ -245,6 +245,13 @@ end
 --   actions   { action = "spawn", n, per_player, kinds = { { type = "Orc Warrior", weight = 3 }, ... }, radius, target, text }
 --             { action = "item", spec = { quality, category, level } (or { type = "Healing Potion" } where the Sacred Gear mod runs it), n, target }
 --             { action = "message", text, target }      { action = "gold", amount, target }
+--             { action = "boss", name, kinds = { { type = "Orc Warrior" } } | near = "Orc", health, damage, taken, deflect, reflect, regen, radius,
+--               reward = { gold, item = { quality, category, level } }, text, window, target }: a WORLD BOSS. Everybody's client shows its name and
+--               health bar (`worldevents:boss`); the target hero's game is asked to make it (message `worldevents:spawn` with a `boss`): Sacred Gear
+--               can only create creatures in a game of its own (single player / LAN host), so in a dedicated server game nobody can make it
+--               yet; the server only announces it and calls it defeated when a hero kills a creature of its kind (`kinds[1].type` / `near`)
+--               within `window` seconds (default 1800); the reward (gold, an item by rarity) goes to that hero. The server has no creature and no
+--               health of the boss: the bar shows its name and "Hunt" without numbers.
 --   targets   killer (the hero who made the triggering kill) | host | random (a hero in the event's area, anybody online for an event
 --             without area) | owner (the owner of the area's sector, the only hero there, else the one with most kills) |
 --             players (every hero in the area, everybody for an event without area) | global (everybody)
@@ -255,8 +262,10 @@ end
 local region_name        -- defined with the areas below (the name of a game region)
 local HOOK_LIMITS = { hooks = 12, actions = 6, kinds = 8 }
 local HOOK_TARGETS = { killer = true, host = true, random = true, owner = true, players = true, global = true }
-local HOOK_ACTIONS = { spawn = true, item = true, message = true, gold = true }
-local HOOK_DEFAULT_TARGET = { spawn = "owner", item = "killer", message = "global", gold = "killer" }
+local HOOK_ACTIONS = { spawn = true, item = true, message = true, gold = true, boss = true }
+local HOOK_DEFAULT_TARGET = { spawn = "owner", item = "killer", message = "global", gold = "killer", boss = "owner" }
+-- What a boss may be made of (the same limits as the Sacred Gear mod): name = { lowest, highest, default }.
+local BOSS_LIMITS = { health = { 1, 1000, 10 }, damage = { 0, 50, 2 }, taken = { 0.05, 10, 1 }, deflect = { 0, 0.9, 0 }, reflect = { 0, 1, 0 }, regen = { 0, 0.2, 0 } }
 
 local function hk_int(v, low, high)
   v = tonumber(v)
@@ -287,6 +296,42 @@ local function hk_kind(raw)
   return { type = t, weight = hk_int(raw.weight, 1, 1000) or 1 }
 end
 
+local function hk_num(v, low, high, default)
+  v = tonumber(v)
+  if not v or v ~= v then return default end
+  return math.max(low, math.min(high, v))
+end
+
+-- The boss of a `boss` action, checked (never throws): name, kinds / near, multipliers, reward, window.
+local function hk_boss(raw)
+  local b = { kinds = {} }
+  for _, k in ipairs(type(raw.kinds) == "table" and raw.kinds or {}) do
+    local entry = hk_kind(k)
+    if entry and #b.kinds < HOOK_LIMITS.kinds then b.kinds[#b.kinds + 1] = entry end
+  end
+  if type(raw.near) == "string" and raw.near:match("%S") then b.near = hk_text(raw.near, 48):match("^%s*(.-)%s*$") end
+  if #b.kinds == 0 and not b.near then return nil, "a boss needs a creature kind (kinds) or creatures to promote (near)" end
+  local first = b.kinds[1] and tostring(b.kinds[1].type) or b.near
+  b.name = hk_text(raw.name ~= nil and raw.name or first, 40):match("^%s*(.-)%s*$")
+  if b.name == "" then b.name = hk_text(first, 40) end
+  b.radius = hk_clamp(raw.radius, 50, 3000, 400)
+  b.window = hk_clamp(raw.window, 1, 86400, 1800)
+  for key, range in pairs(BOSS_LIMITS) do b[key] = hk_num(raw[key], range[1], range[2], range[3]) end
+  if type(raw.reward) == "table" then
+    local r = { gold = hk_int(raw.reward.gold, 1, 2000000000) }
+    if type(raw.reward.item) == "table" then
+      local spec, item = raw.reward.item, {}
+      if spec.quality ~= nil then item.quality = hk_int(spec.quality, 0, 14) end
+      if type(spec.category) == "string" and spec.category ~= "" then item.category = hk_text(spec.category, 20):lower() end
+      if spec.level ~= nil then item.level = hk_int(spec.level, 1, 200) end
+      if next(item) ~= nil then r.item = item end
+    end
+    if raw.reward.text ~= nil and tostring(raw.reward.text):match("%S") then r.text = hk_text(raw.reward.text, 120) end
+    if r.gold or r.item then b.reward = r end
+  end
+  return b
+end
+
 local function hk_action(raw, hook_no, action_no)
   if type(raw) ~= "table" then return nil, "not an object" end
   local kind = raw.action
@@ -302,6 +347,12 @@ local function hk_action(raw, hook_no, action_no)
       if kind_entry and #a.kinds < HOOK_LIMITS.kinds then a.kinds[#a.kinds + 1] = kind_entry end
     end
     if #a.kinds == 0 then return nil, "a spawn needs at least one creature kind" end
+  elseif kind == "boss" then
+    -- the cleaned action keeps the shape of the raw one (the definition is cleaned again when it is copied, exported or edited)
+    local boss, why = hk_boss(raw)
+    if not boss then return nil, why end
+    for k, v in pairs(boss) do a[k] = v end
+    a.n = 1
   elseif kind == "item" then
     local spec = type(raw.spec) == "table" and raw.spec or {}
     a.spec = {}
@@ -640,7 +691,7 @@ end
 -- ---- state (kept in this mod's storage) ---------------------------------------------------------------------------------------
 
 local function fresh()
-  return { seq = 0, index = 0, history = {}, next_start = NOW() + CONFIG.first_delay, control_rev = (function() local ok, v = pcall(server.load, "control_rev", 0); return ok and tonumber(v) or 0 end)() }
+  return { seq = 0, index = 0, history = {}, bosses = {}, next_start = NOW() + CONFIG.first_delay, control_rev = (function() local ok, v = pcall(server.load, "control_rev", 0); return ok and tonumber(v) or 0 end)() }
 end
 
 local function load_state()
@@ -649,6 +700,7 @@ local function load_state()
   value.seq = tonumber(value.seq) or 0
   value.index = tonumber(value.index) or 0
   value.history = type(value.history) == "table" and value.history or {}
+  value.bosses = type(value.bosses) == "table" and value.bosses or {}
   value.next_start = tonumber(value.next_start) or NOW()
   if value.current ~= nil and (type(value.current) ~= "table" or type(value.current.def) ~= "table"
       or not tonumber(value.current.ends) or type(value.current.players) ~= "table") then
@@ -945,6 +997,9 @@ local function action_text(a, bound)
   local who = target_text(a.target, bound)
   if a.action == "spawn" then
     return string.format("%d of %s appear around %s%s", a.n, kind_text(a.kinds), who, a.per_player and " (that many for each)" or " (shared out)")
+  elseif a.action == "boss" then
+    return string.format("the boss %s (x%s health, x%s damage) %s for %s", a.name, tostring(a.health), tostring(a.damage),
+      a.near and ("rises from the nearest " .. a.near) or "appears", who)
   elseif a.action == "item" then
     local spec = a.spec
     local what = spec.type and tostring(spec.type) or ("an item" .. (spec.quality and (" of quality " .. spec.quality) or "") .. (spec.category and (", " .. spec.category) or "")
@@ -1055,6 +1110,113 @@ local function send_spawn(ev, key, index, player, action, n)
   return true
 end
 
+-- ---- world bosses ------------------------------------------------------------------------------------------------------------------
+-- The server cannot make creatures: it announces a boss on `worldevents:boss` (name, no health numbers), asks the target hero's game to make it
+-- (`worldevents:spawn` with a `boss`, only a game that can create creatures does) and calls the boss defeated when a hero kills a creature of its
+-- kind. The bosses are kept in state.bosses (a restart or a reload carries on).
+
+local boss_channel = net and net.channel("worldevents:boss", { server_only = true })
+
+local function boss_message(b, st, by)
+  return { v = 1, id = b.id, st = st, name = b.name, event = b.event, text = b.text, by = by, reward = b.reward_text }
+end
+
+local function boss_send(player, b, st, by)
+  if not boss_channel or not net.supports(player) then return end
+  local ok, err = pcall(boss_channel.send, boss_channel, player, boss_message(b, st, by))
+  if not ok then server.log("boss " .. tostring(b.id) .. ": cannot send: " .. tostring(err)) end
+end
+
+local function boss_send_all(b, st, by)
+  for _, p in ipairs(server.players()) do if p.in_game then boss_send(p, b, st, by) end end
+end
+
+local function boss_reward_text(r)
+  if not r then return nil end
+  local parts = {}
+  if r.gold then parts[#parts + 1] = r.gold .. " gold" end
+  if r.item then parts[#parts + 1] = "an item" .. (r.item.category and (" (" .. r.item.category .. ")") or "") end
+  return table.concat(parts, ", ")
+end
+
+if server.events then
+  server.events.declare("worldevent.boss.spawned", { doc = "A world boss was announced (a boss action of an event).", args = "id, name, event, reward?, source = 'server'" })
+  server.events.declare("worldevent.boss.defeated", { doc = "A hero defeated the boss (gone = true: its time ran out).", args = "id, name, event, reward?, by?, gone?, source = 'server'" })
+end
+
+local function boss_emit(name, b, extra)
+  if not server.emit then return end
+  local e = { id = b.id, name = b.name, event = b.event, reward = b.reward_text, source = "server" }
+  for k, v in pairs(extra or {}) do e[k] = v end
+  local ok, err = pcall(server.emit, name, e)
+  if not ok then server.log("hook " .. name .. ": " .. tostring(err)) end
+end
+
+local function boss_start(ev, key, index, action)
+  state.bosses = state.bosses or {}
+  local def = action
+  local first = def.kinds[1] and def.kinds[1].type or def.near
+  local b = { id = ev.n .. ":" .. key .. ":" .. index, name = def.name, event = ev.def.title, text = action.text, match = first, started = NOW(),
+    expires = NOW() + def.window, reward = def.reward, reward_text = boss_reward_text(def.reward) }
+  for i = #state.bosses, 1, -1 do if state.bosses[i].id == b.id then table.remove(state.bosses, i) end end
+  if #state.bosses >= 8 then table.remove(state.bosses, 1) end
+  state.bosses[#state.bosses + 1] = b
+  dirty = true
+  boss_send_all(b, "active")
+  boss_emit("worldevent.boss.spawned", b)
+  say(string.format("%s: the boss %s has appeared!%s", ev.def.title, b.name, b.reward_text and (" Reward: " .. b.reward_text .. ".") or ""))
+  return b
+end
+
+local function boss_end(i, st, player)
+  local b = table.remove(state.bosses, i)
+  dirty = true
+  boss_send_all(b, st, player and player.character or nil)
+  boss_emit("worldevent.boss.defeated", b, { by = player and player.character or nil, gone = st == "gone" or nil })
+  if st == "defeated" and player then
+    say(string.format("%s defeated the boss %s!", player.character or player.name or "A hero", b.name))
+    local r = b.reward
+    if r then
+      if r.gold then
+        local ok, pile, err = pcall(server.drop_gold, player, r.gold)
+        if not (ok and pile) then server.log("boss " .. b.id .. ": no gold for " .. tostring(player.name) .. ": " .. tostring(ok and err or pile)) end
+      end
+      if r.item then
+        local ok, item, err = pcall(server.drop_item, player, r.item)
+        if not (ok and item) then server.log("boss " .. b.id .. ": no item for " .. tostring(player.name) .. ": " .. tostring(ok and err or item)) end
+      end
+      if r.text then server.message(player, PREFIX .. r.text) end
+    end
+  elseif st == "gone" then
+    say(string.format("The boss %s is gone.", b.name))
+  end
+end
+
+-- A hero killed `monster`: the first boss of that kind is defeated.
+local function boss_kill(player, monster)
+  for i, b in ipairs(state.bosses or {}) do
+    local match = false
+    if type(b.match) == "number" then match = monster.type == b.match
+    elseif monster.name and type(b.match) == "string" then
+      local function norm(text) return (tostring(text):lower():gsub("[_%s]+", " ")) end
+      match = norm(monster.name):find(norm(b.match):gsub("%.%a+$", ""), 1, true) ~= nil
+    end
+    if match then boss_end(i, "defeated", player); return end
+  end
+end
+
+local function boss_tick()
+  local t = NOW()
+  for i = #(state.bosses or {}), 1, -1 do
+    if t >= state.bosses[i].expires then boss_end(i, "gone", nil) end
+  end
+end
+
+-- A hero who joins sees the bosses that are on.
+local function boss_greet(player)
+  for _, b in ipairs(state.bosses or {}) do boss_send(player, b, "active") end
+end
+
 local function run_action(ev, key, index, action, ctx)
   local targets = pick_targets(ev, action.target, ctx)
   if action.action == "message" then
@@ -1062,7 +1224,21 @@ local function run_action(ev, key, index, action, ctx)
     else for _, p in ipairs(targets) do server.message(p, PREFIX .. action.text) end end
     return
   end
-  if #targets == 0 then server.log("hook " .. key .. ": no " .. action.target .. " target for " .. action.action); return end
+  if #targets == 0 and action.action ~= "boss" then server.log("hook " .. key .. ": no " .. action.target .. " target for " .. action.action); return end
+  if action.action == "boss" then
+    local b = boss_start(ev, key, index, action)
+    -- the target's game is asked to make the creature (only a game that can create creatures does; see above)
+    for _, p in ipairs(targets) do
+      if spawn_channel and net.supports(p) and spawn_budget(1) > 0 then
+        local message = { v = 1, id = b.id .. ":" .. tostring(p.uid):sub(1, 8), event = ev.def.title, n = 1, radius = action.radius, text = action.text,
+          boss = { name = action.name, kinds = action.kinds, near = action.near, radius = action.radius, health = action.health, damage = action.damage,
+            taken = action.taken, deflect = action.deflect, reflect = action.reflect, regen = action.regen, reward = action.reward } }
+        local ok, err = pcall(spawn_channel.send, spawn_channel, p, message)
+        if not ok then server.log("hook " .. key .. ": cannot send the boss: " .. tostring(err)) end
+      end
+    end
+    return
+  end
   if action.action == "spawn" then
     local base, extra = action.n, 0
     if not action.per_player then base, extra = math.floor(action.n / #targets), action.n % #targets end
@@ -1467,6 +1643,7 @@ server.on("kill", function(player, monster)
     server.log(string.format("kill: %s (type %s) at sector %s x %s y %s by %s in sector %s", tostring(monster.name), tostring(monster.type),
       tostring(monster.sector), tostring(monster.x), tostring(monster.y), player.character, tostring(player.sector)))
   end
+  if state.bosses and #state.bosses > 0 then pcall(boss_kill, player, monster) end
   local ev = state.current
   if not ev or not counts(ev.def, player, monster) then return end
   ev.count = ev.count + 1
@@ -1499,6 +1676,7 @@ server.on("kill", function(player, monster)
 end)
 
 server.on("enter", function(player)
+  pcall(boss_greet, player)
   if state.current then
     for _, line in ipairs(status_lines(player)) do server.message(player, PREFIX .. line) end
   end
@@ -1748,6 +1926,7 @@ local function tick()
   end
   poll_events()
   poll_control()
+  pcall(boss_tick)
   local ev = state.current
   if ev and t >= ev.ends then finish(false) end
   if state.current then pcall(hooks_progress, state.current, nil) end

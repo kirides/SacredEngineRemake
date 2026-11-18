@@ -124,7 +124,7 @@ public class WorldEventsHooksTests
             "EV worldevent.started 0/3 server -", "EV worldevent.progress 1/3 server -", "EV worldevent.progress 2/3 server -",
             "EV worldevent.hook 2/3 server message", "EV worldevent.progress 3/3 server -", "EV worldevent.completed 3/3 server -",
         }, server.Said.Where(x => x.StartsWith("EV ")).ToArray());
-        Assert.AreEqual(5, host.DeclaredEvents("worldevent.").Count);
+        Assert.AreEqual(7, host.DeclaredEvents("worldevent.").Count);
         Assert.AreEqual(0, host.Errors);
     }
 
@@ -500,5 +500,92 @@ public class WorldEventsHooksTests
         server2.Tick(host2);
         host2.FireKill(server2.Alice, OrcIn(1, 2909));
         Assert.AreEqual(0, host2.Errors);
+    }
+
+    // ---- world bosses -------------------------------------------------------------------------------------------------------------
+
+    private static string BossHook(string extra = "") =>
+        """{ { at = 30, actions = { { action = "boss", name = "Grakk", kinds = { { type = "Orc Warrior" } }, health = 20, damage = 3, taken = 0.5, reflect = 0.2, """
+        + extra + """ reward = { gold = 777 }, text = "Grakk comes!", target = "killer" } } } }""";
+
+    [TestMethod]
+    public void ABossActionAnnouncesTheBossToEverybodyAndAsksTheTargetsGameToMakeIt()
+    {
+        using var folder = new Folder();
+        var (host, server) = Start(folder, Script(Event(BossHook(), target: 100)));
+        server.Tick(host);
+        Kills(host, server.Bob, 30);                                              // 30 %: the boss
+        var boss = server.Sent.Where(s => s.Channel == "worldevents:boss").ToList();
+        CollectionAssert.AreEquivalent(new[] { 1, 2, 3 }, boss.Select(b => b.Slot).ToArray(), "everybody in the game sees it");
+        var first = boss[0].Payload;
+        Assert.AreEqual("active", first.GetProperty("st").GetString());
+        Assert.AreEqual("Grakk", first.GetProperty("name").GetString());
+        Assert.AreEqual("Wave event", first.GetProperty("event").GetString());
+        Assert.AreEqual("777 gold", first.GetProperty("reward").GetString());
+        StringAssert.StartsWith(first.GetProperty("id").GetString(), "1:h1:1");
+        var spawn = server.Spawns.Single();
+        Assert.AreEqual(2, spawn.Slot, "the killer's own game is asked to make it");
+        var def = spawn.Payload.GetProperty("boss");
+        Assert.AreEqual(20, def.GetProperty("health").GetDouble());
+        Assert.AreEqual(3, def.GetProperty("damage").GetDouble());
+        Assert.AreEqual(0.5, def.GetProperty("taken").GetDouble());
+        Assert.AreEqual(1, spawn.Payload.GetProperty("n").GetInt32());
+        Assert.IsTrue(server.Said.Any(s => s.Contains("the boss Grakk has appeared") && s.Contains("777 gold")));
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
+    public void ABossIsDefeatedByAKillOfItsKindWhichPaysTheKillerAndTellsEverybody()
+    {
+        using var folder = new Folder();
+        var (host, server) = Start(folder, Script(Event(BossHook(), target: 100)));
+        server.Tick(host);
+        Kills(host, server.Bob, 30);
+        server.Sent.Clear();
+        host.FireKill(server.Cara, Orc(9000, "Goblin", 12));                      // another kind: the boss lives
+        Assert.AreEqual(0, server.Sent.Count(s => s.Channel == "worldevents:boss"));
+        host.FireKill(server.Cara, Orc(9001));
+        var done = server.Sent.Where(s => s.Channel == "worldevents:boss").ToList();
+        Assert.AreEqual(3, done.Count);
+        Assert.AreEqual("defeated", done[0].Payload.GetProperty("st").GetString());
+        CollectionAssert.AreEqual(new[] { (3, 777u) }, server.Gold.Where(g => g.Slot == 3 && g.Amount == 777).ToArray());
+        Assert.IsTrue(server.Said.Any(s => s.Contains("defeated the boss Grakk")));
+        server.Sent.Clear();
+        host.FireKill(server.Cara, Orc(9002));
+        Assert.AreEqual(0, server.Sent.Count(s => s.Channel == "worldevents:boss"), "a defeated boss is over");
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
+    public void ABossThatNobodyKillsIsGoneWhenItsWindowEndsAndAJoinerSeesALiveOne()
+    {
+        using var folder = new Folder();
+        var (host, server) = Start(folder, Script(Event(BossHook("window = 1,"), target: 100)));
+        server.Tick(host);
+        Kills(host, server.Bob, 30);
+        server.Sent.Clear();
+        host.FirePlayer("enter", server.Cara);
+        Assert.IsTrue(server.Sent.Any(s => s.Slot == 3 && s.Channel == "worldevents:boss" && s.Payload.GetProperty("st").GetString() == "active"), "a joiner is told");
+        Thread.Sleep(1200);
+        server.Tick(host);
+        Assert.IsTrue(server.Sent.Any(s => s.Channel == "worldevents:boss" && s.Payload.GetProperty("st").GetString() == "gone"));
+        Assert.IsTrue(server.Said.Any(s => s.Contains("The boss Grakk is gone")));
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
+    public void ABossWithoutACreatureIsRefusedAndTheMultipliersAreClamped()
+    {
+        using var folder = new Folder();
+        var (host, server) = Start(folder, Script(Event("""
+            { { at = 30, actions = { { action = "boss", name = "Nothing" } } },
+              { at = 40, actions = { { action = "boss", near = "Orc", health = 99999, damage = -4, taken = 0, deflect = 5 } } } }
+            """, target: 100)));
+        server.Tick(host);
+        Kills(host, server.Bob, 40);
+        var boss = server.Sent.Where(s => s.Channel == "worldevents:boss").ToList();
+        Assert.AreEqual(3, boss.Count, "only the valid boss, to everybody");
+        Assert.AreEqual("Orc", boss[0].Payload.GetProperty("name").GetString());
+        Assert.AreEqual(0, host.Errors);
     }
 }
