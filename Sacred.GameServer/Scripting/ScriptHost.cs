@@ -297,7 +297,7 @@ public sealed partial class ScriptHost
     public void Load()
     {
         if (_state is not null) FireUnloadAll("reload");
-        _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear(); _endpoints.Clear(); _descriptions.Clear();
+        _handlers.Clear(); _timers.Clear(); _newTimers.Clear(); _files.Clear(); _endpoints.Clear(); _descriptions.Clear(); DropDeclarations(null);
         lock (_changeLock) { _reloadAll = false; _changedFiles = null; }
         ResetNet();
         _state = CreateState();
@@ -702,6 +702,7 @@ public sealed partial class ScriptHost
             var high = (int)c.GetArgument<double>(c.HasArgument(1) ? 1 : 0);
             return c.Return(high < low ? low : Random.Shared.Next(low, high + 1));
         });
+        AddEvents(server);                                                  // server.emit, server.events (ScriptHost.Events.cs)
         AddDurable(server);                                                 // server.flush (ScriptHost.Durable.cs)
         return server;
     }

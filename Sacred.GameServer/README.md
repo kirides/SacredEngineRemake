@@ -164,6 +164,9 @@ server.top(key, n)                     -- { { name, value }, ... }: this mod's p
 server.endpoint(path, fn [, { public = true, description = "..." }])   -- GET /mods/{script}/{path}
 server.page(path, html or fn [, { public = true, title = "..." }])     -- a single-file HTML page at the same address
 server.describe(text)                  -- short description for the Mods tab (default: first sentence of the leading comment)
+server.emit(name, payload)             -- hook for other mods: name "mod.what" (has a dot), payload one table; the same bus as Sacred Gear's gear.emit
+server.on("bounty.completed", fn(ev))  -- subscribe (any mod, any load order); server.on("bounty.*", fn(name, ev)) for every event of one mod
+server.events.declare(name, {doc=, args=}) / .list([prefix]) / .declared(name)  -- publish and discover hooks (go with the mod when it unloads or reloads)
 server.file(name)  server.html(text)  server.render(template, values)  server.csv(rows [, columns])  server.json(table)
 ```
 
