@@ -29,7 +29,7 @@ bounties are open.
 
 ## Editor page
 
-The web UI has a **Bounties** tab (`/bounties`, admin only, works offline) to edit the configuration without writing JSON: the general fields (bounties at once, lifetime in hours, announcements, history, hunters per bounty) and the pool as a table (id, title, creature words, target range, minimum level, lifetime, gold, item quality and category), with Add and Delete for entries. Save writes the storage key `config` through `POST /api/mod-store`, so it applies within 2 seconds. Pool fields without a column (`types`, `sectors`, `region`) are kept and shown under the creature words. The page reads the mod's admin-only `rules` endpoint (`/mods/bounty_board/rules`), so the script must be loaded; otherwise the page says so.
+The web UI has a **Bounties** tab (`/bounties`, admin only, works offline) to edit the configuration without writing JSON: the general fields (bounties at once, lifetime in hours, announcements, history, hunters per bounty) and the pool as a table (id, title, creatures (pick a group or a creature from a list, or add another word), target range, minimum level, lifetime, gold, item quality and category), with Add and Delete for entries. Save writes the storage key `config` through `POST /api/mod-store`, so it applies within 2 seconds. Pool fields without a column (`types`, `sectors`, `region`) are kept and shown under the creature words. The page reads the mod's admin-only `rules` endpoint (`/mods/bounty_board/rules`), so the script must be loaded; otherwise the page says so.
 
 ## Settings (the `config` data of the mod)
 

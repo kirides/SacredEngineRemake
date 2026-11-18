@@ -9,6 +9,7 @@ internal static partial class Pages
 .bo label small{display:block;color:var(--dim)}.bo input[type=checkbox]{justify-self:start}.bo .general{max-width:44rem}
 .bo table{border-collapse:collapse;width:100%}.bo th,.bo td{text-align:left;padding:.25rem .3rem;border-bottom:1px solid var(--line,#3b3025);vertical-align:top}
 .bo th{font-weight:600;font-size:.8rem;color:var(--dim)}.bo td input{width:100%;min-width:3rem;box-sizing:border-box}.bo td input.n{width:4.5rem}.bo td input.t{min-width:9rem}.bo td input.i{min-width:7rem}
+.bo .chips{display:flex;flex-wrap:wrap;gap:.25rem;margin-bottom:.25rem}.bo .chip{padding:.1rem .45rem;font-size:.8rem}.bo td select{max-width:11rem}
 .bo .status{min-height:1.2rem}.bo .status.bad{color:var(--bad)}.bo .status.ok{color:var(--ok)}.bo .extra{font-size:.75rem;color:var(--dim);margin-top:.15rem}
 """;
 
@@ -20,7 +21,11 @@ function api(url,o){return fetch(url,o).then(function(r){return r.text().then(fu
 var GENERAL=[['slots','num','Bounties at once','1 to 20'],['duration','hours','Lifetime (hours)','default lifetime of a bounty; an entry can set its own'],
 ['announce','bool','Announce','broadcast new bounties and completions'],['history','num','History','completions and expiries kept for the dashboard'],
 ['max_hunters','num','Hunters per bounty','heroes remembered per bounty']];
-var COLS=[['id','text','Id','i'],['title','text','Title','t'],['names','list','Creature words','t'],['tmin','num','From','n'],['tmax','num','To','n'],['min_level','num','Min level','n'],
+var GROUPS=[['Orcs',['orc']],['Undead',['skeleton','zombie','mummy','ghost']],['Spiders',['spider']],['Thieves and pirates',['thief','pirate']],['Wolves, bears and boars',['wolf','bear','boar']],
+['Trolls and ogres',['troll','ogre','minotaur']],['Demons and golems',['demon','gargoyle','golem']],['Dragons',['dragon']],['Scorpions and snakes',['scorpion','snake']]];
+var WORDS=['bear','boar','bull','demon','dragon','gargoyle','ghost','golem','lizard','minotaur','mummy','ogre','orc','pirate','scorpion','skeleton','snake','spider','thief','troll','wolf','zombie'];
+function cap(w){return w.charAt(0).toUpperCase()+w.slice(1)}
+var COLS=[['id','text','Id','i'],['title','text','Title','t'],['names','chips','Creatures',''],['tmin','num','From','n'],['tmax','num','To','n'],['min_level','num','Min level','n'],
 ['hours','num','Hours','n'],['gold','num','Gold','n'],['quality','num','Item quality','n'],['category','text','Item category','i']];
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 function build(){
@@ -34,10 +39,25 @@ function row(e,idx){
  var tr=el('tr');tr.dataset.i=idx;
  var t=Array.isArray(e.target)?e.target:[e.target,e.target],r=e.reward||{},it=r.item||{};
  var v={id:e.id,title:e.title||'',names:(e.names||[]).join(', '),tmin:t[0],tmax:t[1]==null?t[0]:t[1],min_level:e.min_level||'',hours:e.duration?e.duration/3600:'',gold:r.gold||'',quality:it.quality==null?'':it.quality,category:it.category||''};
- COLS.forEach(function(c){var td=el('td'),i=el('input',c[3]);i.type='text';i.dataset.k=c[0];i.value=v[c[0]]==null?'':v[c[0]];i.setAttribute('aria-label',c[2]);td.appendChild(i);
-  if(c[0]==='names'&&(e.types||e.sectors)){var x=[];if(e.types)x.push('types '+e.types.join(','));if(e.sectors)x.push('sectors '+e.sectors.join(',')+(e.region?' ('+e.region+')':''));td.appendChild(el('div','extra',x.join('; ')))}
+ COLS.forEach(function(c){var td=el('td');
+  if(c[0]==='names'){tr._names=(e.names||[]).slice();td.appendChild(chips(tr));
+   if(e.types||e.sectors){var x=[];if(e.types)x.push('types '+e.types.join(','));if(e.sectors)x.push('sectors '+e.sectors.join(',')+(e.region?' ('+e.region+')':''));td.appendChild(el('div','extra',x.join('; ')))}
+   tr.appendChild(td);return}
+  var i=el('input',c[3]);i.type='text';i.dataset.k=c[0];i.value=v[c[0]]==null?'':v[c[0]];i.setAttribute('aria-label',c[2]);td.appendChild(i);
   tr.appendChild(td)});
  var td=el('td'),b=el('button','ghost','Delete');b.type='button';b.onclick=function(){tr.remove()};td.appendChild(b);tr.appendChild(td);return tr}
+function chips(tr){
+ var box=el('div'),list=el('div','chips'),sel=el('select');box.appendChild(list);
+ function draw(){list.textContent='';if(!tr._names.length)list.appendChild(el('span','dim small','needs a creature or types'));
+  tr._names.forEach(function(w,k){var b=el('button','ghost chip',cap(w)+' ×');b.type='button';b.title='Remove';b.onclick=function(){tr._names.splice(k,1);draw()};list.appendChild(b)})}
+ function opt(p,t,v){var o=el('option',null,t);o.value=v;p.appendChild(o)}
+ opt(sel,'+ Add a creature...','');var g=el('optgroup');g.label='Groups';GROUPS.forEach(function(x,k){opt(g,x[0],'g'+k)});sel.appendChild(g);
+ var w=el('optgroup');w.label='Creatures';WORDS.forEach(function(x){opt(w,cap(x),'w'+x)});sel.appendChild(w);opt(sel,'Other word...','o');
+ sel.onchange=function(){var v=sel.value;sel.value='';var add=[];
+  if(v[0]==='g')add=GROUPS[+v.slice(1)][1];else if(v[0]==='w')add=[v.slice(1)];
+  else if(v==='o'){var t=prompt('Word of the creature name (e.g. goblin):');if(t)add=t.toLowerCase().split(/[^a-z]+/).filter(Boolean)}
+  add.forEach(function(x){if(tr._names.indexOf(x)<0)tr._names.push(x)});draw()};
+ box.appendChild(sel);draw();return box}
 function num(s){var n=parseFloat(String(s).replace(',','.'));return isNaN(n)?null:n}
 function collect(){
  var out=JSON.parse(JSON.stringify(cfg)),bad=null;
@@ -48,7 +68,7 @@ function collect(){
   tr.querySelectorAll('input').forEach(function(i){f[i.dataset.k]=i.value.trim()});
   if(!f.id){bad='every bounty needs an id';return}
   e.id=f.id;e.title=f.title||f.id;
-  var names=f.names.split(/[ ,;]+/).filter(Boolean);if(names.length)e.names=names;else delete e.names;
+  var names=tr._names.slice();if(names.length)e.names=names;else delete e.names;
   if(!e.names&&!e.types){bad=f.id+': creature words are needed';return}
   var a=num(f.tmin),b=num(f.tmax);if(a==null){bad=f.id+': needs a target';return}if(b==null)b=a;e.target=a===b?a:[a,Math.max(a,b)];
   var ml=num(f.min_level);if(ml)e.min_level=ml;else delete e.min_level;
@@ -84,9 +104,9 @@ load();
         Tabs(sb, "bounties", admin.Mods().Count);
         sb.Append("</header><main class=\"bo\"><section class=\"card\" id=\"missing\" hidden><h2>Bounty board</h2><p>The <code>bounty_board</code> mod is not loaded (or too old for this page). Copy <code>bounty_board.lua</code> from <code>scripts-examples</code> into the scripts folder.</p><p class=\"dim small\" id=\"why\"></p></section>")
           .Append("<div id=\"main\" hidden><section class=\"card general\"><h2>Bounty board</h2><div id=\"general\"></div></section>")
-          .Append("<section class=\"card\"><h2>Bounties</h2><p class=\"dim small\">The board draws from this list, never the same entry twice at once. Creature words match whole words of a creature's name (needs <code>--game-dir</code>); the target is drawn between From and To. ")
+          .Append("<section class=\"card\"><h2>Bounties</h2><p class=\"dim small\">The board draws from this list, never the same entry twice at once. Creatures match whole words of a creature's name (needs <code>--game-dir</code>); pick a group or a creature, or add another word; the target is drawn between From and To. ")
           .Append("Item quality 0 to 14 (leave empty for no item), the category is optional (weapon, armor, ...). Hours empty: the default lifetime.</p>")
-          .Append("<div style=\"overflow-x:auto\"><table><thead><tr><th>Id</th><th>Title</th><th>Creature words</th><th>From</th><th>To</th><th>Min level</th><th>Hours</th><th>Gold</th><th>Item quality</th><th>Item category</th><th></th></tr></thead><tbody id=\"pool\"></tbody></table></div>")
+          .Append("<div style=\"overflow-x:auto\"><table><thead><tr><th>Id</th><th>Title</th><th>Creatures</th><th>From</th><th>To</th><th>Min level</th><th>Hours</th><th>Gold</th><th>Item quality</th><th>Item category</th><th></th></tr></thead><tbody id=\"pool\"></tbody></table></div>")
           .Append("<div class=\"row\" style=\"margin-top:.8rem\"><button type=\"button\" class=\"ghost\" id=\"add\">Add bounty</button><button type=\"button\" class=\"primary\" id=\"save\">Save</button><button type=\"button\" class=\"ghost\" id=\"reload\">Refresh</button></div>")
           .Append("<p class=\"hint dim small\">Stored in the mod's storage (key <code>config</code>); a change applies within 2 seconds, no restart or reload. Bounties already on the board keep their values; the script file's values only seed a fresh install.</p>")
           .Append("<p class=\"status\" id=\"status\" aria-live=\"polite\"></p></section></div></main></div><script>").Append(BountyScript).Append("</script></body></html>");
