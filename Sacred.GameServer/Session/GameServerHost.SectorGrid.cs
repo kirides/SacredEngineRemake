@@ -41,6 +41,8 @@ public sealed partial class GameServerHost
         return (cell.X, cell.Y);
     }
 
+    int Scripting.IScriptServer.SectorOwner(int sector) => sector is > 0 and < SectorTableSize ? _sectorOwner[sector] : 0;
+
     uint Scripting.IScriptServer.SectorAt(int cellX, int cellY) =>
         SectorGridOrNull() is { } data && cellX is >= 0 and < SacredSectorCoordinates.GridWidth && cellY is >= 0 and < SacredSectorCoordinates.GridWidth
             ? data.Grid.GetSector(cellX * Sacred.Core.World.Sector.Sector.TileCount, cellY * Sacred.Core.World.Sector.Sector.TileCount) : 0;
