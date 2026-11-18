@@ -301,6 +301,11 @@ public class BountyBoardScriptTests
         Assert.AreEqual(1, bounties.GetArrayLength(), "slots = 1");
         Assert.AreEqual("Solo hunt", bounties[0].GetProperty("title").GetString(), "the pool from the storage, bad entries dropped");
         Assert.AreEqual(0, server.Said.Count, "announce = false");
+        var rules = host.HandleRequest("bounty_board", "rules", [], false);
+        Assert.AreEqual(200, rules.Status, "the editor page reads the configuration in force");
+        StringAssert.Contains(rules.Body, "\"slots\":1");
+        StringAssert.Contains(rules.Body, "Solo hunt");
+        Assert.AreEqual(404, host.HandleRequest("bounty_board", "rules", [], true).Status, "not public");
         var page = host.HandleRequest("bounty_board", "config", [], false).Body;
         StringAssert.Contains(page, "history: needs a number");
         StringAssert.Contains(page, "item #1 refused");

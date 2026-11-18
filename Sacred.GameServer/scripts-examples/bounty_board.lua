@@ -553,6 +553,10 @@ local function public_state()
   return { bounties = list, recent = recent, top = top }
 end
 
+-- The active configuration (admin only, never public): the editor page /bounties of the web UI reads it and writes the storage key config.
+server.endpoint("rules", function() return CONFIG end,
+  { description = "the bounty configuration in force (JSON; the editor page /bounties writes it back under config in the mod's storage)" })
+
 server.endpoint("state", function() return public_state() end,
   { public = true, description = "the active bounties, recent completions and the top hunters as JSON" })
 
