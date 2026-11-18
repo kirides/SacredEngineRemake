@@ -410,4 +410,25 @@ public class WorldEventsHooksTests
         Assert.AreEqual(7, spawn.GetProperty("kinds")[1].GetProperty("type").GetInt32());
         Assert.AreEqual(0, host.Errors);
     }
+
+    [TestMethod]
+    public void TheExportIsTheFormatOfTheClientModsEventsJson()
+    {
+        using var folder = new Folder();
+        var hooks = """{ { at = 30, actions = { { action = "spawn", n = 3, target = "owner", kinds = { { type = "Orc Warrior", weight = 3 } } } } } }""";
+        var (host, _) = Start(folder, Script(Event(hooks, target: 50, extra: "names = { \"orc\" }, unit = \"orcs\",")));
+        var answer = host.HandleRequest("world_events", "export", [], publicOnly: true);
+        Assert.AreEqual(200, answer.Status, answer.Body);
+        var json = JsonDocument.Parse(answer.Body).RootElement;
+        Assert.AreEqual(1, json.GetProperty("v").GetInt32());
+        Assert.AreEqual(5, json.GetProperty("config").GetProperty("cooldown").GetInt32());
+        var ev = json.GetProperty("events")[0];
+        Assert.AreEqual("wave", ev.GetProperty("id").GetString());
+        Assert.AreEqual(50, ev.GetProperty("target").GetInt32());
+        Assert.AreEqual("orc", ev.GetProperty("names")[0].GetString());
+        var hook = ev.GetProperty("hooks")[0];
+        Assert.AreEqual(30, hook.GetProperty("at").GetDouble());
+        Assert.AreEqual("Orc Warrior", hook.GetProperty("actions")[0].GetProperty("kinds")[0].GetProperty("type").GetString());
+        Assert.AreEqual(0, host.Errors);
+    }
 }

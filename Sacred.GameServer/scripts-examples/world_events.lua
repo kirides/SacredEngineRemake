@@ -1814,6 +1814,23 @@ local function editable(def)
   }
 end
 
+-- The events in the format of the Sacred Gear mod `world-events` for a single player / LAN game without a server (its events.json): save
+-- this answer as `events.json` in the mod's folder. Rules and hooks are public anyway (dashboard), so this endpoint is public too.
+server.endpoint("export", function()
+  local events = {}
+  for _, id in ipairs(all_order) do
+    local def = all_defs[id]
+    if def and not events_off[id] then
+      events[#events + 1] = {
+        id = tostring(def.id), title = def.title, goal = "kill", target = def.target, duration = def.duration, names = def.names, types = def.types,
+        sectors = def.sectors, unit = def.unit, text = def.text, area = def.region and def.region.name or nil, hooks = def.hooks,
+      }
+    end
+  end
+  return { v = 1, config = { first_delay = CONFIG.first_delay, cooldown = CONFIG.cooldown, result_hold = CONFIG.result_hold, order = CONFIG.order == "random" and "random" or "sequence" },
+    events = events }
+end, { public = true, description = "the events in the format of the world-events client mod (events.json for games without a server)" })
+
 server.endpoint("events", function()
   local list = {}
   for i, id in ipairs(all_order) do
