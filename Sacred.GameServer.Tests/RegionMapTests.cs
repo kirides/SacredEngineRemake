@@ -88,4 +88,38 @@ public class RegionMapTests
         Assert.IsTrue(map.SectorsOf.Count >= 5, "most regions have sectors");
         Assert.IsTrue(map.RegionOfSector.Count > 100);
     }
+
+    [TestMethod]
+    public void TheTextKeyHashMatchesTheOneTheClientModComputes()
+    {
+        // the same numbers the world-events / sector-tools client mods hard-code in their tests (gear.text.get takes this id)
+        Assert.AreEqual(280942659u, Sacred.Core.GameRes.SacredResourceHash.Compute("UI_REGION_SOUTHKERN"));
+        Assert.AreEqual(411024114u, Sacred.Core.GameRes.SacredResourceHash.Compute("UI_REGION_NORTHKERN"));
+        Assert.AreEqual(1628257094u, Sacred.Core.GameRes.SacredResourceHash.Compute("UI_REGION_WUSTE"));
+        Assert.AreEqual(889598971u, Sacred.Core.GameRes.SacredResourceHash.Compute("ui_region_uw_lower"), "case-insensitive");
+    }
+
+    [TestMethod]
+    public void NamesNeverShowTheRawKeyAndFollowTheInstallLanguage()
+    {
+        var game = new[] { @"B:\Spiele\GOG Games\sacred gold GOG-wetest", Environment.GetEnvironmentVariable("SACRED_GAME_DIR") }
+            .FirstOrDefault(d => !string.IsNullOrEmpty(d) && File.Exists(Path.Combine(d, "bin", "Balance.bin")) && Directory.Exists(Path.Combine(d, "scripts")));
+        if (game is null) { Assert.Inconclusive("no game folder on this machine"); return; }
+        var balance = File.ReadAllBytes(Path.Combine(game, "bin", "Balance.bin"));
+        var names = new Dictionary<string, string[]>();
+        foreach (var language in new[] { "us", "de" })
+        {
+            var service = NameService.Load(game, out var error, language);
+            if (service is null || !string.Equals(service.Language, language, StringComparison.OrdinalIgnoreCase)) continue;
+            var regions = RegionMap.ReadRegions(balance, service.TextByKey);
+            Assert.AreEqual(9, regions.Count, error);
+            Assert.IsTrue(regions.All(r => !r.Name.StartsWith("UI_") && r.Name.Length > 2), string.Join(", ", regions.Select(r => r.Name)));
+            names[language] = [.. regions.Select(r => r.Name)];
+        }
+        Assert.IsTrue(names.Count >= 1, "at least one language was readable");
+        if (names.Count == 2) CollectionAssert.AreNotEqual(names["us"], names["de"], "the texts differ per install language, the key is the same");
+        // without the text table the key is made readable, never empty
+        var fallback = RegionMap.ReadRegions(balance);
+        Assert.IsTrue(fallback.All(r => r.Name.Length > 0 && !r.Name.StartsWith("UI_")), string.Join(", ", fallback.Select(r => r.Name)));
+    }
 }
