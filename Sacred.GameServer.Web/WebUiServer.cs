@@ -115,6 +115,7 @@ public sealed class WebUiServer : IAsyncDisposable
         app.MapGet("/api/sectors", (RequestDelegate)(c => Json(c.Response, _admin.SectorOwnership(), WebUiJson.Default.SectorOwnership)));
         app.MapGet("/api/sectors/stream", (RequestDelegate)SectorStreamEndpoint);
         app.MapGet("/auction", (RequestDelegate)(c => Html(c.Response, Pages.AuctionPage(_admin))));
+        app.MapGet("/bounties", (RequestDelegate)(c => Html(c.Response, Pages.BountyPage(_admin))));
         app.MapGet("/api/areas/map", (RequestDelegate)(c => AreaMapEndpoint(c, image: false)));
         app.MapGet("/api/areas/map.png", (RequestDelegate)(c => AreaMapEndpoint(c, image: true)));
         app.MapGet("/api/mod-store", (RequestDelegate)ModStoreRead);
