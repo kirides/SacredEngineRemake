@@ -60,7 +60,7 @@ public class EventsEditorHooksTests
             var good = [
               { trig: 'at', v: '30', actions: [{ kind: 'spawn', target: 'owner', n: '12', radius: '600', per: true, text: 'Orcs!', kinds: [{ type: 'Orc Warrior', weight: '3' }, { type: ' ', weight: '1' }, { type: '38', weight: '' }] }] },
               { trig: 'at_time', v: '20', actions: [{ kind: 'message', target: 'global', text: 'Hurry' }] },
-              { trig: 'kills', creature: 'Orc Shaman', count: '5', per: true, actions: [{ kind: 'item', target: 'killer', n: '2', type: '', quality: '9', category: 'Ring', level: '' }, { kind: 'gold', target: 'killer', amount: '500' }] },
+              { trig: 'kills', creature: 'Orc Shaman', count: '5', per: true, region: '2', actions: [{ kind: 'item', target: 'killer', n: '2', type: '', quality: '9', category: 'Ring', level: '' }, { kind: 'gold', target: 'killer', amount: '500' }] },
               { trig: 'success', actions: [{ kind: 'gold', target: 'players', amount: '100' }] },
             ];
             out.good = hooksToDef(good);
@@ -102,6 +102,7 @@ public class EventsEditorHooksTests
         Assert.AreEqual("Orc Shaman", kills.GetProperty("creature").GetString());
         Assert.AreEqual(5, kills.GetProperty("count").GetInt32());
         Assert.IsTrue(kills.GetProperty("per_player").GetBoolean());
+        Assert.AreEqual(2, kills.GetProperty("region").GetInt32(), "a kills trigger can be limited to a game region");
         var item = good[2].GetProperty("actions")[0];
         Assert.AreEqual("ring", item.GetProperty("spec").GetProperty("category").GetString(), "lower case");
         Assert.AreEqual(9, item.GetProperty("spec").GetProperty("quality").GetInt32());

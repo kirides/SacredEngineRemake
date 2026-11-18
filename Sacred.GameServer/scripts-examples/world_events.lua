@@ -1876,11 +1876,13 @@ server.endpoint("events", function()
   for id, a in pairs(recorded) do if type(a) == "table" then areas[id] = clean_name(a.name or id) end end
   local tiers = {}
   for i, tier in ipairs(TIERS) do tiers[i] = { id = tier.id, name = tier.name } end
+  local game_regions = {}
+  for i, r in ipairs(server.regions and server.regions() or {}) do game_regions[i] = { id = r.id, name = clean_name(r.name), sectors = r.sectors } end
   local ev = state.current
   local running
   if ev then running = { id = ev.def.id, title = ev.def.title, count = ev.count, target = ev.def.target, left = math.floor(math.max(0, ev.ends - NOW())) } end
   return {
-    events = list, areas = areas, tiers = tiers, running = running, next_in = not ev and math.floor(math.max(0, (state.next_start or NOW()) - NOW())) or nil,
+    events = list, areas = areas, regions = game_regions, tiers = tiers, running = running, next_in = not ev and math.floor(math.max(0, (state.next_start or NOW()) - NOW())) or nil,
     control = load_key("control_result", nil), config = { order = CONFIG.order, cooldown = CONFIG.cooldown, min_players = CONFIG.min_players },
     max_web_events = MAX_WEB_EVENTS,
   }

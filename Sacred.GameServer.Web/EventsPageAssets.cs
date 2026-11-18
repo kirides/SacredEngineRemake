@@ -29,6 +29,7 @@ public static class EventsPageAssets
 #editor .hk select{width:auto;max-width:100%}
 #editor .hk button{padding:.25rem .6rem}
 @media (max-width:640px){#editor .hkhead,#editor .act>.row:first-child{align-items:stretch}#editor .hk select{width:100%}#editor .inl input{width:100%}}
+#editor .regpick{display:grid;gap:.2rem;margin-top:.4rem}#editor .regpick>div{display:flex;flex-wrap:wrap}
 #editor .hooknote{color:var(--bad);font-size:.85rem}
 """;
 
@@ -95,6 +96,7 @@ function openEditor(e){
   d.reward=d.reward||{};var rw=d.reward, areas=[].concat(d.area||[],d.areas||[]), tiers=data.tiers;
   var ar='';Object.keys(data.areas).sort().forEach(function(id){ar+='<label class="chk"><input type="checkbox" name="area" value="'+esc(id)+'"'+(areas.indexOf(id)>=0?' checked':'')+'> '+esc(data.areas[id])+' <small>'+esc(id)+'</small></label>'});
   var ms=(rw.milestones||[]);
+  var rg='';(data.regions||[]).forEach(function(r){rg+='<label class="chk"><input type="checkbox" name="region" value="'+r.id+'"'+((d.regions||[]).indexOf(r.id)>=0?' checked':'')+'> '+esc(r.name)+'</label>'});
   var h='<form method="dialog" id="eform"><h3>'+(e?'Edit event':'New event')+'</h3>'
    +'<div class="two"><label>Id<input name="id" '+(e?'readonly ':'')+'value="'+esc(d.id)+'" maxlength="40" placeholder="goblin-hunt" pattern="[a-z0-9][a-z0-9_\\-]*" required></label>'
    +'<label>Title<input name="title" value="'+esc(d.title)+'" maxlength="60" placeholder="Goblin hunt"></label></div>'
@@ -105,7 +107,8 @@ function openEditor(e){
    +'<label>or creature types (numbers)<input name="types" value="'+esc((d.types||[]).join(', '))+'"></label>'
    +'<label>Counted thing, plural<input name="unit" value="'+esc(d.unit||'')+'" maxlength="30" placeholder="goblins"></label></div>'
    +'<label>Goal in words (optional)<input name="text" value="'+esc(d.text||'')+'" maxlength="200" placeholder="Slay 500 goblins"></label>'
-   +'<fieldset><legend>Where (none picked: everywhere)</legend>'+(ar||'<small>No areas yet: draw some on the Areas page.</small>')
+   +'<fieldset><legend>Where (nothing picked: everywhere)</legend>'+(ar||'<small>No areas yet: draw some on the Areas page.</small>')
+   +(rg?'<div class="regpick"><small>Game regions (every sector of the region counts; need --game-dir)</small><div>'+rg+'</div></div>':'')
    +'<label style="margin-top:.4rem">A kill counts where<select name="where"><option value="">the default of the script</option><option value="victim">the creature died</option><option value="player">the hero stands</option><option value="either">either</option></select></label></fieldset>'
    +'<fieldset><legend>Reward</legend><div class="two"><label>Gold pool, shared by kills<input name="gold" type="number" min="0" value="'+esc(rw.gold||0)+'"></label>'
    +'<label>Gold for everyone who qualifies<input name="gold_each" type="number" min="0" value="'+esc(rw.gold_each||0)+'"></label></div>'
@@ -141,6 +144,7 @@ function saveEditor(dlg,tiers){
   if(g('unit').trim())def.unit=g('unit').trim();if(g('text').trim())def.text=g('text').trim();
   var areas=[].slice.call(f.querySelectorAll('[name=area]:checked')).map(function(c){return c.value});
   if(areas.length===1)def.area=areas[0];else if(areas.length>1)def.areas=areas;
+  var regs=[].slice.call(f.querySelectorAll('[name=region]:checked')).map(function(c){return Number(c.value)});if(regs.length)def.regions=regs;
   if(g('where'))def.where=g('where');
   if(edit&&edit.def.sectors)def.sectors=edit.def.sectors;
   var rw={gold:Math.max(0,Math.floor(num(g('gold'))||0)),gold_each:Math.max(0,Math.floor(num(g('gold_each'))||0))};
@@ -167,7 +171,7 @@ var DEF_TARGET={spawn:'owner',item:'killer',message:'global',gold:'killer'};
 function opts(list,sel){return list.map(function(o){return '<option value="'+esc(o[0])+'"'+(o[0]===sel?' selected':'')+'>'+esc(o[1])+'</option>'}).join('')}
 function hookToModel(h){
   var m={trig:'at',v:'',creature:'',count:1,per:false,actions:[]};
-  if(h.on)m.trig=h.on;else if(h.kills){m.trig='kills';m.creature=h.kills.creature;m.count=h.kills.count;m.per=!!h.kills.per_player}
+  if(h.on)m.trig=h.on;else if(h.kills){m.trig='kills';m.creature=h.kills.creature;m.count=h.kills.count;m.per=!!h.kills.per_player;m.region=h.kills.region||''}
   else if(h.at_time!=null){m.trig='at_time';m.v=Math.round(h.at_time/60*100)/100}else{m.trig='at';m.v=h.at}
   (h.actions||[]).forEach(function(a){
     var x={kind:a.action,target:a.target||DEF_TARGET[a.action],text:a.text||''};
@@ -200,6 +204,7 @@ function hookHtml(m,i){
   if(m.trig==='at')h+='<label class="inl"><input class="tv" type="number" min="0.1" max="100" step="any" value="'+esc(m.v)+'" aria-label="Percent"> %</label>';
   else if(m.trig==='at_time')h+='<label class="inl"><input class="tv" type="number" min="0.02" max="43200" step="any" value="'+esc(m.v)+'" aria-label="Minutes"> minutes</label>';
   else if(m.trig==='kills')h+='<label class="inl"><input class="tc" value="'+esc(m.creature)+'" placeholder="Orc Shaman" maxlength="48" aria-label="Creature name or type number"></label><label class="inl"><input class="tn" type="number" min="1" max="100000" value="'+esc(m.count)+'" aria-label="How many"> times</label>'
+    +'<label class="inl">in<select class="trg"><option value="">anywhere</option>'+(data.regions||[]).map(function(r){return '<option value="'+r.id+'"'+(String(m.region)===String(r.id)?' selected':'')+'>'+esc(r.name)+'</option>'}).join('')+'</select></label>'
     +'<label class="chk"><input type="checkbox" class="tp"'+(m.per?' checked':'')+'> each hero on their own</label>';
   h+='<span class="mv"><button type="button" class="ghost" data-hk="up" title="Move up" aria-label="Move the hook up">&uarr;</button><button type="button" class="ghost" data-hk="down" title="Move down" aria-label="Move the hook down">&darr;</button><button type="button" class="ghost bad" data-hk="rm" aria-label="Remove the hook">&times;</button></span></div>'
    +m.actions.map(actHtml).join('')+'<button type="button" class="ghost" data-hk="aadd">Add an action</button></div>';
@@ -207,7 +212,7 @@ function hookHtml(m,i){
 function readHooks(root){
   return [].map.call(root.querySelectorAll('.hk'),function(hk){
     var q=function(el,s){var e=el.querySelector(s);return e?e.value:''}, c=function(el,s){var e=el.querySelector(s);return !!(e&&e.checked)};
-    var m={trig:q(hk,'.tr'),v:q(hk,'.tv'),creature:q(hk,'.tc'),count:q(hk,'.tn'),per:c(hk,'.tp'),actions:[]};
+    var m={trig:q(hk,'.tr'),v:q(hk,'.tv'),creature:q(hk,'.tc'),count:q(hk,'.tn'),per:c(hk,'.tp'),region:q(hk,'.trg'),actions:[]};
     [].forEach.call(hk.querySelectorAll('.act'),function(ae){
       var a={kind:q(ae,'.ak'),target:q(ae,'.tg'),text:q(ae,'.atext'),n:q(ae,'.n'),radius:q(ae,'.radius'),per:c(ae,'.per'),amount:q(ae,'.amount'),
         type:q(ae,'.itype'),quality:q(ae,'.iq'),category:q(ae,'.icat'),level:q(ae,'.ilvl'),kinds:[]};
@@ -220,7 +225,7 @@ function hooksToDef(models){
   for(var i=0;i<models.length;i++){var m=models[i],h={},no='Hook '+(i+1)+': ';
     if(m.trig==='at'){var p=num(m.v);if(!(p>0&&p<=100))return no+'the percent must be above 0 and at most 100.';h.at=p}
     else if(m.trig==='at_time'){var mi=num(m.v);if(!(mi>0))return no+'the minutes must be above 0.';h.at_time=Math.max(1,Math.round(mi*60))}
-    else if(m.trig==='kills'){var cr=String(m.creature).trim(),cn=num(m.count);if(!cr||!(cn>=1))return no+'name a creature and how many.';h.kills={creature:/^\d+$/.test(cr)?Number(cr):cr,count:Math.floor(cn)};if(m.per)h.kills.per_player=true}
+    else if(m.trig==='kills'){var cr=String(m.creature).trim(),cn=num(m.count);if(!cr||!(cn>=1))return no+'name a creature and how many.';h.kills={creature:/^\d+$/.test(cr)?Number(cr):cr,count:Math.floor(cn)};if(m.per)h.kills.per_player=true;if(m.region)h.kills.region=Number(m.region)}
     else h.on=m.trig;
     h.actions=[];
     if(!m.actions.length)return no+'add at least one action.';
