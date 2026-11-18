@@ -1095,6 +1095,30 @@ local function run_action(ev, key, index, action, ctx)
 end
 
 -- Fires one hook once. Never throws.
+-- Events for other mods (server.emit; the same names and payloads as the Sacred Gear world events mod publishes in the game):
+-- worldevent.started / progress / completed / failed / hook.
+if server.events then
+  for _, e in ipairs({
+    { "worldevent.started", "A world event began." },
+    { "worldevent.progress", "The realm's count went up (previous)." },
+    { "worldevent.completed", "The goal was reached." },
+    { "worldevent.failed", "The time ran out (cancelled = true: an admin ended it)." },
+    { "worldevent.hook", "A trigger of the event fired an action (action, text)." },
+  }) do
+    server.events.declare(e[1], { doc = e[2], args = "id, title, text, unit, area?, count, target, percent, here, source = 'server', previous?, cancelled?, action?" })
+  end
+end
+
+local function we_hook(name, ev, extra)
+  if not server.emit then return end
+  local def = ev.def
+  local e = { id = ev.n, title = def.title, text = goal_text(def), unit = unit_of(def), area = def.region and def.region.name or nil,
+    count = ev.count, target = def.target, percent = math.min(100, math.floor(ev.count * 100 / def.target)), here = false, source = "server" }
+  for k, v in pairs(extra or {}) do e[k] = v end
+  local ok, err = pcall(server.emit, name, e)
+  if not ok then server.log("hook " .. name .. ": " .. tostring(err)) end
+end
+
 local function fire_hook(ev, number, hook, ctx)
   local key = "h" .. number
   ev.fired = ev.fired or {}
@@ -1105,6 +1129,7 @@ local function fire_hook(ev, number, hook, ctx)
   for i, action in ipairs(hook.actions) do
     local ok, err = pcall(run_action, ev, key, i, action, ctx)
     if not ok then server.log("hook " .. key .. " action " .. i .. " failed: " .. tostring(err)) end
+    we_hook("worldevent.hook", ev, { action = action.action, text = action.text })
     parts[#parts + 1] = action_text(action, ev.def.region ~= nil)
   end
   if CONFIG.announce_hooks then say(ev.def.title .. ": " .. trigger_text(hook):lower() .. " -> " .. table.concat(parts, "; ") .. ".") end
@@ -1276,6 +1301,7 @@ local function finish(success)
   state.current = nil
   local def, top = ev.def, ranked(ev)
   pcall(hooks_on, ev, success and "success" or "fail")
+  we_hook(success and "worldevent.completed" or "worldevent.failed", ev)
   local record = {
     n = ev.n, id = def.id, title = def.title, text = goal_text(def), unit = unit_of(def), success = success, count = ev.count, target = def.target,
     started = ev.started, finished = NOW(), people = #top, region = def.region, top = {},
@@ -1359,6 +1385,7 @@ local function begin_event(def, index)
   state.current = { n = state.seq, def = snap, started = t, ends = t + snap.duration, count = 0, players = {}, marks = {}, fired = {}, hk = {} }
   say(snap.title .. " begins: " .. goal_text(snap) .. " within " .. duration_text(snap.duration) .. "! Reward: "
     .. (reward_text(snap) ~= "" and reward_text(snap) or "glory") .. ". Type !event for the progress.")
+  we_hook("worldevent.started", state.current)
   pcall(hooks_on, state.current, "start")
   save_state()
   push_all()
@@ -1384,6 +1411,7 @@ local function cancel_event()
     finished = record.finished, people = record.people })
   while #state.history > 10 do table.remove(state.history) end
   state.next_start = NOW() + CONFIG.cooldown
+  we_hook("worldevent.failed", ev, { cancelled = true })
   say(def.title .. " was cancelled by an admin.")
   save_state()
   push_all()
@@ -1449,6 +1477,7 @@ server.on("kill", function(player, monster)
   end
   if mine then mine.n = mine.n + 1; mine.name = player.character end
   dirty, push_due = true, true
+  we_hook("worldevent.progress", ev, { previous = ev.count - 1 })
   local percent = ev.count * 100 / ev.def.target
   for _, mark in ipairs(CONFIG.milestones) do
     if percent >= mark and ev.count < ev.def.target and not ev.marks[tostring(mark)] then

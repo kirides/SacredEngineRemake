@@ -393,6 +393,33 @@ local function snapshot(def, index, slots)
   }
 end
 
+-- Events for other mods (server.emit; the same names and payloads as the Sacred Gear bounty mod publishes in the game):
+-- bounty.started / progress / completed / claimed / failed. `player` (the hero's name) and `slot` are set where one hero is meant.
+if server.events then
+  for _, e in ipairs({
+    { "bounty.started", "A bounty was posted on the board." },
+    { "bounty.progress", "A hero's counter went up (n, previous)." },
+    { "bounty.completed", "A hero reached the target." },
+    { "bounty.claimed", "The reward of a hero was paid." },
+    { "bounty.failed", "A bounty ended unfinished (claims: how many heroes finished it)." },
+  }) do
+    server.events.declare(e[1], { doc = e[2], args = "id, title, text, region?, level, target, n?, previous?, reward, claims?, player?, slot?, source = 'server'" })
+  end
+end
+
+local function hook(name, b, player, extra)
+  if not server.emit then return end
+  local ev = { id = b.id, title = b.title, text = what_text(b), region = b.region, level = b.min_level, target = b.target,
+    reward = reward_text(b.reward), source = "server", custom = false }
+  if player then
+    local mine = b.players[player.uid]
+    ev.player, ev.slot, ev.n = player.character, player.slot, mine and mine.n or 0
+  end
+  for k, v in pairs(extra or {}) do ev[k] = v end
+  local ok, err = pcall(server.emit, name, ev)
+  if not ok then server.log("hook " .. name .. ": " .. tostring(err)) end
+end
+
 local function active_defs()
   local set = {}
   for _, b in ipairs(state.board) do set[b.def] = true end
@@ -410,6 +437,7 @@ local function fill(first)
     local b = snapshot(def, first and (#state.board + 1) or nil, CONFIG.slots)
     state.board[#state.board + 1] = b
     posted = true
+    hook("bounty.started", b)
     say("New bounty: " .. b.title .. ": " .. what_text(b) .. ". Reward: " .. reward_text(b.reward) .. ". Type !bounty.")
   end
   return posted
@@ -421,6 +449,7 @@ local function expire()
     if b.ends <= t then
       changed = true
       remember({ kind = "expired", title = b.title, time = t, claims = claims(b) })
+      hook("bounty.failed", b, nil, { claims = claims(b) })
       say("The bounty \"" .. b.title .. "\" has ended (" .. claims(b) .. " hunters finished it).")
     else
       kept[#kept + 1] = b
@@ -482,6 +511,8 @@ local function complete(player, b)
   pcall(server.message, player, PREFIX .. "Bounty complete: " .. b.title .. "! Reward: " .. reward_text(b.reward) .. ".")
   say(player.character .. " completed the bounty \"" .. b.title .. "\".")
   pay(player, b)
+  hook("bounty.completed", b, player)
+  hook("bounty.claimed", b, player)
 end
 
 server.on("kill", function(player, monster)
@@ -496,6 +527,7 @@ server.on("kill", function(player, monster)
       if mine and not mine.done then
         mine.n = mine.n + 1
         mine.name = player.character
+        hook("bounty.progress", b, player, { previous = mine.n - 1 })
         dirty, push_due[player.slot] = true, true
         if mine.n >= b.target then
           mine.done = true

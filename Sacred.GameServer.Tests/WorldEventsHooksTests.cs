@@ -109,6 +109,26 @@ public class WorldEventsHooksTests
     // ---- triggers -----------------------------------------------------------------------------------------------------------------
 
     [TestMethod]
+    public void TheEventPublishesWorldEventHooksForOtherMods()
+    {
+        using var folder = new Folder();
+        folder.Write("listener.lua", "server.on('worldevent.*', function(name, ev) server.broadcast('EV ' .. name .. ' ' .. ev.count .. '/' .. ev.target .. ' ' .. ev.source .. ' ' .. (ev.action or '-')) end)");
+        folder.Write("world_events.lua", Script(Event("""{ { at = 50, actions = { { action = "message", text = "half", target = "global" } } } }""", target: 3)));
+        var server = new Fake();
+        var host = new ScriptHost(new ScriptOptions { Directory = folder.Scripts, DataDirectory = folder.Data }, server);
+        host.Load();
+        server.Tick(host);
+        Kills(host, server.Alice, 3);
+        CollectionAssert.AreEqual(new[]
+        {
+            "EV worldevent.started 0/3 server -", "EV worldevent.progress 1/3 server -", "EV worldevent.progress 2/3 server -",
+            "EV worldevent.hook 2/3 server message", "EV worldevent.progress 3/3 server -", "EV worldevent.completed 3/3 server -",
+        }, server.Said.Where(x => x.StartsWith("EV ")).ToArray());
+        Assert.AreEqual(5, host.DeclaredEvents("worldevent.").Count);
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
     public void APercentHookFiresOnceForTheHeroWhoMadeTheKill()
     {
         using var folder = new Folder();

@@ -141,6 +141,28 @@ public class BountyBoardScriptTests
     }
 
     [TestMethod]
+    public void TheBoardPublishesBountyEventsForOtherMods()
+    {
+        using var folder = new Folder();
+        folder.Write("bounty_board.lua", Source());
+        folder.Write("listener.lua", "server.on('bounty.*', function(name, ev) server.broadcast('EV ' .. name .. ' ' .. (ev.player or '-') .. ' ' .. tostring(ev.n) .. ' ' .. ev.source) end)");
+        var server = new Fake();
+        var host = new ScriptHost(new ScriptOptions { Directory = folder.Scripts, DataDirectory = folder.Data }, server);
+        host.Load();
+        server.Tick(host);
+        Assert.AreEqual(2, server.Said.Count(s => s == "EV bounty.started - nil server"));
+        Assert.AreEqual(5, host.DeclaredEvents("bounty.").Count);
+        server.Said.Clear();
+        for (uint i = 1; i <= 3; i++) host.FireKill(server.Alice, Orc(i));
+        CollectionAssert.AreEqual(new[]
+        {
+            "EV bounty.progress Alice 1 server", "EV bounty.progress Alice 2 server", "EV bounty.progress Alice 3 server",
+            "EV bounty.completed Alice 3 server", "EV bounty.claimed Alice 3 server",
+        }, server.Said.Where(s => s.StartsWith("EV ")).ToArray());
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
     public void ARegionBountyCountsOnlyInItsSectors()
     {
         using var folder = new Folder();
