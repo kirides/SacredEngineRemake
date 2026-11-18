@@ -1855,7 +1855,7 @@ server.endpoint("export", function()
     if def and not events_off[id] then
       events[#events + 1] = {
         id = tostring(def.id), title = def.title, goal = "kill", target = def.target, duration = def.duration, names = def.names, types = def.types,
-        sectors = def.sectors, unit = def.unit, text = def.text, area = def.region and def.region.name or nil, hooks = def.hooks,
+        sectors = def.sectors, regions = def.regions, unit = def.unit, text = def.text, area = def.region and def.region.name or nil, hooks = def.hooks,
       }
     end
   end
