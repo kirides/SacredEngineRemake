@@ -8,9 +8,9 @@ internal static partial class Pages
 .bo{display:grid;gap:1rem;max-width:72rem}.bo label{display:grid;grid-template-columns:13rem 1fr;gap:.5rem;align-items:center;margin:.35rem 0}
 .bo label small{display:block;color:var(--dim)}.bo input[type=checkbox]{justify-self:start}.bo .general{max-width:44rem}
 .bo table{border-collapse:collapse;width:100%}.bo th,.bo td{text-align:left;padding:.25rem .3rem;border-bottom:1px solid var(--line,#3b3025);vertical-align:top}
-.bo th{font-weight:600;font-size:.8rem;color:var(--dim)}.bo td input{width:100%;min-width:3rem;box-sizing:border-box}.bo td input.n{width:4.5rem}.bo td input.t{min-width:9rem}.bo td input.i{min-width:10rem}.bo td input.t{min-width:13rem}.bo td select{min-width:8rem}
-.bo .chips{display:flex;flex-wrap:wrap;gap:.25rem;margin-bottom:.25rem}.bo .chip{padding:.1rem .45rem;font-size:.8rem}.bo td select{max-width:11rem}
-.bo .status{min-height:1.2rem}.bo .status.bad{color:var(--bad)}.bo .status.ok{color:var(--ok)}.bo .extra{font-size:.75rem;color:var(--dim);margin-top:.15rem}
+.bo th{font-weight:600;font-size:.8rem;color:var(--dim)}.bo td input{width:100%;min-width:3rem;box-sizing:border-box}.bo td input.bo-n{width:4.5rem}.bo td input.bo-t{min-width:9rem}.bo td input.bo-i{min-width:10rem}.bo td input.bo-t{min-width:13rem}.bo td select{min-width:8rem}
+.bo .bo-chips{display:flex;flex-wrap:wrap;gap:.25rem;margin-bottom:.25rem}.bo .bo-chip{padding:.1rem .45rem;font-size:.8rem}.bo td select{max-width:11rem}
+.bo .status{min-height:1.2rem}.bo .status.bad{color:var(--bad)}.bo .status.ok{color:var(--ok)}.bo .bo-extra{font-size:.75rem;color:var(--dim);margin-top:.15rem}
 """;
 
     private const string BountyScript = """
@@ -27,8 +27,8 @@ var WORDS=['bear','boar','bull','demon','dragon','gargoyle','ghost','golem','liz
 var QUALITIES=[['','No item']];for(var q=0;q<=14;q++)QUALITIES.push([String(q),q===0?'0 - plain':q+(q>=12?' - rare':q>=5?' - magic':' - good')]);
 var CATEGORIES=[['','Any item'],['weapon','Weapon'],['armor','Chest armor'],['helmet','Helmet'],['shield','Shield'],['boots','Boots'],['belt','Belt'],['gloves','Gloves'],['arms','Arm guards'],['legs','Leg armor'],['shoulders','Shoulders'],['ring','Ring'],['amulet','Amulet']];
 function cap(w){return w.charAt(0).toUpperCase()+w.slice(1)}
-var COLS=[['id','text','Id','i'],['title','text','Title','t'],['names','chips','Creatures',''],['tmin','num','From','n'],['tmax','num','To','n'],['min_level','num','Min level','n'],
-['hours','num','Hours','n'],['gold','num','Gold','n'],['quality','select','Item quality','q'],['category','select','Item category','c']];
+var COLS=[['id','text','Id','bo-i'],['title','text','Title','bo-t'],['names','chips','Creatures',''],['tmin','num','From','bo-n'],['tmax','num','To','bo-n'],['min_level','num','Min level','bo-n'],
+['hours','num','Hours','bo-n'],['gold','num','Gold','bo-n'],['quality','select','Item quality',''],['category','select','Item category','']];
 function el(t,c,x){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 function build(){
  var g=$('#general');g.textContent='';
@@ -43,7 +43,7 @@ function row(e,idx){
  var v={id:e.id,title:e.title||'',names:(e.names||[]).join(', '),tmin:t[0],tmax:t[1]==null?t[0]:t[1],min_level:e.min_level||'',hours:e.duration?e.duration/3600:'',gold:r.gold||'',quality:it.quality==null?'':it.quality,category:it.category||''};
  COLS.forEach(function(c){var td=el('td');
   if(c[0]==='names'){tr._names=(e.names||[]).slice();td.appendChild(chips(tr));
-   if(e.types||e.sectors){var x=[];if(e.types)x.push('types '+e.types.join(','));if(e.sectors)x.push('sectors '+e.sectors.join(',')+(e.region?' ('+e.region+')':''));td.appendChild(el('div','extra',x.join('; ')))}
+   if(e.types||e.sectors){var x=[];if(e.types)x.push('types '+e.types.join(','));if(e.sectors)x.push('sectors '+e.sectors.join(',')+(e.region?' ('+e.region+')':''));td.appendChild(el('div','bo-extra',x.join('; ')))}
    tr.appendChild(td);return}
   if(c[1]==='select'){var sl=el('select');sl.dataset.k=c[0];sl.setAttribute('aria-label',c[2]);
    (c[0]==='quality'?QUALITIES:CATEGORIES).forEach(function(o){var op=el('option',null,o[1]);op.value=o[0];sl.appendChild(op)});
@@ -53,9 +53,9 @@ function row(e,idx){
   tr.appendChild(td)});
  var td=el('td'),b=el('button','ghost','Delete');b.type='button';b.onclick=function(){tr.remove()};td.appendChild(b);tr.appendChild(td);return tr}
 function chips(tr){
- var box=el('div'),list=el('div','chips'),sel=el('select');box.appendChild(list);
+ var box=el('div'),list=el('div','bo-chips'),sel=el('select');box.appendChild(list);
  function draw(){list.textContent='';if(!tr._names.length)list.appendChild(el('span','dim small','needs a creature or types'));
-  tr._names.forEach(function(w,k){var b=el('button','ghost chip',cap(w)+' ×');b.type='button';b.title='Remove';b.onclick=function(){tr._names.splice(k,1);draw()};list.appendChild(b)})}
+  tr._names.forEach(function(w,k){var b=el('button','ghost bo-chip',cap(w)+' ×');b.type='button';b.title='Remove';b.onclick=function(){tr._names.splice(k,1);draw()};list.appendChild(b)})}
  function opt(p,t,v){var o=el('option',null,t);o.value=v;p.appendChild(o)}
  opt(sel,'+ Add a creature...','');var g=el('optgroup');g.label='Groups';GROUPS.forEach(function(x,k){opt(g,x[0],'g'+k)});sel.appendChild(g);
  var w=el('optgroup');w.label='Creatures';WORDS.forEach(function(x){opt(w,cap(x),'w'+x)});sel.appendChild(w);opt(sel,'Other word...','o');
