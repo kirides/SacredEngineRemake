@@ -9,6 +9,9 @@ namespace Sacred.GameServer.Scripting;
 /// <remarks><see cref="Name"/> is the FIRSTCONTACT name and <see cref="Key"/>/<see cref="LobbyId"/> hold lobby identities: they never
 /// reach Lua. Scripts get <see cref="Character"/> (the host strips the "account." prefix of lobby names) and an opaque per-server
 /// <c>uid</c> derived from <see cref="Key"/>.</remarks>
+/// <summary>A game region as scripts see it (server.regions()).</summary>
+public sealed record ScriptRegion(int Id, string Key, string Name, int SectorCount, int KillsNeeded, bool Boss);
+
 public sealed record ScriptPlayer(int Slot, string Name, string Key, int Class, int Level, bool InGame, bool IsHost, int LobbyId, double OnlineSeconds = 0,
     string? Character = null, int Sector = 0, int X = 0, int Y = 0);
 
@@ -52,6 +55,12 @@ public partial interface IScriptServer
     (int X, int Y)? SectorCell(uint id) => null;
     /// <summary>The sector id at a grid cell, 0 for none (or without --game-dir).</summary>
     uint SectorAt(int cellX, int cellY) => 0;
+    /// <summary>The id of the game region (0: none) the sector lies in, from the game files (sectors.keyx and bin/Balance.bin).</summary>
+    int SectorRegion(int sector) => 0;
+    /// <summary>The game's regions (id, name, sector count); empty without --game-dir.</summary>
+    IReadOnlyList<ScriptRegion> Regions() => [];
+    /// <summary>The sector ids of a region, ascending.</summary>
+    IReadOnlyList<uint> RegionSectors(int region) => [];
     /// <summary>The slot of the player whose game owns the sector (the one that runs its monsters), 0 for none.</summary>
     int SectorOwner(int sector) => 0;
     /// <summary>Drops a gold pile of <paramref name="amount"/> (1..<see cref="GoldPile.MaximumAmount"/>) next to the player's hero.</summary>
@@ -94,6 +103,8 @@ public partial interface IScriptServer
 /// server.creature_name(type) / server.item_name(type)  -- the game's names for a type number, or nil
 /// server.hero(player or slot) -> table or nil, message  -- the server's view of a hero: skills, equipment, quest pairs (needs the web UI or --authoritative)
 /// server.sector_cell(id) -> { x, y } / server.sector_at(x, y) -> id  -- the sector grid (needs --game-dir), or nil
+/// server.sector_region(sector) -> region id or nil  -- the game region the sector lies in (needs --game-dir)
+/// server.regions() -> { {id, key, name, sectors = count, kills, boss}, ... };  server.region_sectors(id) -> { sector ids }
 /// server.sector_owner(sector) -> slot or nil  -- the player whose game owns the sector
 /// server.endpoint(path, fn [, { public = true, description = "..." }])  -- GET /mods/{script}/{path} (ScriptEndpoints.cs)
 /// server.page(path, html or fn [, { public = true, title = "..." }])  -- a sandboxed single-file HTML page at the same address
@@ -603,6 +614,26 @@ public sealed partial class ScriptHost
         {
             var sector = c.GetArgument<double>(0);
             return sector >= 1 && sector <= ushort.MaxValue && _server.SectorOwner((int)sector) is var slot and > 0 ? c.Return(slot) : c.Return(LuaValue.Nil);
+        });
+        server["sector_region"] = Fn("sector_region", c =>
+        {
+            var sector = c.GetArgument<double>(0);
+            return sector >= 1 && sector <= ushort.MaxValue && _server.SectorRegion((int)sector) is var region and > 0 ? c.Return(region) : c.Return(LuaValue.Nil);
+        });
+        server["regions"] = Fn("regions", c =>
+        {
+            var regions = _server.Regions();
+            var table = new LuaTable(regions.Count, 0);
+            for (var i = 0; i < regions.Count; i++)
+                table[i + 1] = new LuaTable(0, 6) { ["id"] = regions[i].Id, ["key"] = regions[i].Key, ["name"] = regions[i].Name, ["sectors"] = regions[i].SectorCount, ["kills"] = regions[i].KillsNeeded, ["boss"] = regions[i].Boss };
+            return c.Return(table);
+        });
+        server["region_sectors"] = Fn("region_sectors", c =>
+        {
+            var sectors = _server.RegionSectors((int)c.GetArgument<double>(0));
+            var table = new LuaTable(sectors.Count, 0);
+            for (var i = 0; i < sectors.Count; i++) table[i + 1] = sectors[i];
+            return c.Return(table);
         });
         server["sector_at"] = Fn("sector_at", c =>
             c.Return(_server.SectorAt((int)c.GetArgument<double>(0), (int)c.GetArgument<double>(1)) is var id and not 0 ? (LuaValue)id : LuaValue.Nil));

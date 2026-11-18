@@ -56,6 +56,8 @@ local CONFIG = {
 --   sectors   sector ids and inclusive ranges: { 2909, 2910, { 2915, 2920 } }   (`ranges` = { { 2915, 2920 } } is the same)
 --   rect      { x1, y1, x2, y2 }: every sector of those cells of the 128 x 128 sector grid (needs --game-dir)
 --   near      n: plus every sector within n grid cells of the ones above (needs --game-dir)
+--   regions   { 3, 5 }: every sector of those game regions (needs --game-dir; `server.regions()` lists them with their names, the area editor and
+--             the Events page have a picker). The sector -> region mapping is read from the game files, so server and clients agree.
 --   circle    { x = , y = , r = } in world units: a point inside it counts (a tile is 53.67 units, a sector 64 tiles = 3435 units);
 --             finer than sectors, for a village inside a big sector. !here prints your x and y.
 -- Areas recorded in game (!area) and by the area editor are kept in this mod's storage (key "areas") in this same format; a
@@ -250,6 +252,7 @@ end
 -- of them fire), are limited (see CONFIG: creatures per wave and per minute) and are shown on the dashboard, in !event hooks and in the
 -- client's tooltip. This part checks them (never throws).
 
+local region_name        -- defined with the areas below (the name of a game region)
 local HOOK_LIMITS = { hooks = 12, actions = 6, kinds = 8 }
 local HOOK_TARGETS = { killer = true, host = true, random = true, owner = true, players = true, global = true }
 local HOOK_ACTIONS = { spawn = true, item = true, message = true, gold = true }
@@ -333,7 +336,7 @@ local function hooks_of(raw, event_id)
         if type(creature) == "string" and creature:match("%S") then creature = hk_text(creature, 48):match("^%s*(.-)%s*$")
         elseif type(creature) == "number" then creature = hk_int(creature, 1, 4294967295) else creature = nil end
         local count = hk_int(h.kills.count, 1, 100000)
-        if creature and count then hook.kills = { creature = creature, count = count, per_player = h.kills.per_player == true }
+        if creature and count then hook.kills = { creature = creature, count = count, per_player = h.kills.per_player == true, region = hk_int(h.kills.region, 1, 255) }
         else why = "kills needs a creature and a count" end
       elseif tonumber(h.at_time) then
         hook.at_time = hk_int(h.at_time, 1, 30 * 86400)
@@ -456,6 +459,13 @@ local function add_parts(def, ids, circles)
   for _, part in ipairs(def.ranges or {}) do
     if type(part) == "table" then add_range(own, tonumber(part[1]) or 0, tonumber(part[2]) or tonumber(part[1]) or 0) end
   end
+  local wanted_regions = def.regions
+  if tonumber(wanted_regions) then wanted_regions = { wanted_regions } end
+  for _, region_id in ipairs(type(wanted_regions) == "table" and wanted_regions or {}) do
+    local list = tonumber(region_id) and server.region_sectors and server.region_sectors(math.floor(region_id)) or {}
+    if #list == 0 then server.log("region " .. tostring(region_id) .. " has no sectors (unknown region, or the server has no --game-dir)") end
+    for _, sector in ipairs(list) do own[sector] = true end
+  end
   if type(def.rect) == "table" and #def.rect >= 4 then
     local x1, y1 = math.min(def.rect[1], def.rect[3]), math.min(def.rect[2], def.rect[4])
     local x2, y2 = math.max(def.rect[1], def.rect[3]), math.max(def.rect[2], def.rect[4])
@@ -494,6 +504,15 @@ end
 
 -- The region of an event definition as it is stored with the event: { name, ids = {sorted}, margin = {sorted}, circles = {..} },
 -- or nil for "everywhere". A region with no sector and no circle is empty: it matches nothing (the event is not offered).
+local region_names
+function region_name(id)
+  if not region_names then
+    region_names = {}
+    for _, r in ipairs(server.regions and server.regions() or {}) do region_names[r.id] = r.name end
+  end
+  return region_names[id] or ("region " .. tostring(id))
+end
+
 local function region_of(def)
   local names, ids, circles = {}, {}, {}
   local wanted = {}
@@ -509,7 +528,13 @@ local function region_of(def)
     end
   end
   if def.sectors then add_parts({ sectors = def.sectors }, ids, circles) end
-  if #wanted == 0 and not def.sectors then return nil end
+  local game_regions = def.regions
+  if tonumber(game_regions) then game_regions = { game_regions } end
+  if type(game_regions) == "table" and #game_regions > 0 then
+    add_parts({ regions = game_regions }, ids, circles)
+    for _, id in ipairs(game_regions) do names[#names + 1] = clean_name(region_name(math.floor(tonumber(id) or 0))) end
+  end
+  if #wanted == 0 and not def.sectors and not (type(game_regions) == "table" and #game_regions > 0) then return nil end
   local region = { ids = sorted_ids(ids), circles = circles }
   if #names > 0 then region.name = table.concat(names, " & ") end
   region.margin = sorted_ids(grow(ids, CONFIG.margin))
@@ -752,6 +777,7 @@ local function sanitize_event(id, raw)
     area = type(raw.area) == "string" and raw.area ~= "" and text_of(raw.area, 40) or nil,
     areas = words_of(raw.areas, function(v) if type(v) == "string" and v ~= "" then return text_of(v, 40) end end, 10),
     sectors = type(raw.sectors) == "table" and raw.sectors or nil,
+    regions = words_of(raw.regions, function(v) return int_in(v, 1, 255) end, 16),
     where = (raw.where == "victim" or raw.where == "player" or raw.where == "either") and raw.where or nil,
     text = type(raw.text) == "string" and raw.text:match("%S") and text_of(raw.text, 200) or nil,
     unit = type(raw.unit) == "string" and raw.unit:match("%S") and text_of(raw.unit, 30) or nil,
@@ -935,7 +961,8 @@ local function trigger_text(h)
   elseif h.on == "success" then return "When the goal is reached"
   elseif h.on == "fail" then return "When the time runs out"
   elseif h.kills then
-    return string.format("When %s has defeated %d x %s", h.kills.per_player and "a hero" or "the realm", h.kills.count, tostring(h.kills.creature))
+    return string.format("When %s has defeated %d x %s%s", h.kills.per_player and "a hero" or "the realm", h.kills.count, tostring(h.kills.creature),
+      h.kills.region and (" in " .. region_name(h.kills.region)) or "")
   elseif h.at_time then return "After " .. duration_text(h.at_time)
   end
   return "At " .. percent_text(h.at) .. " of the goal"
@@ -1110,6 +1137,10 @@ local function hooks_kill(ev, player, monster)
     local key = "h" .. number
     if k and not (ev.fired and ev.fired[key]) then
       local match = false
+      if k.region then
+        local at = monster.sector or player.sector
+        if not (at and server.sector_region and server.sector_region(at) == k.region) then goto continue end
+      end
       if type(k.creature) == "number" then match = monster.type == k.creature
       elseif monster.name then match = monster.name:lower():find(tostring(k.creature):lower(), 1, true) ~= nil end
       if match then
@@ -1121,6 +1152,7 @@ local function hooks_kill(ev, player, monster)
         if counters[who] >= k.count then fire_hook(ev, number, hook, { killer = player }) end
       end
     end
+    ::continue::
   end
 end
 
@@ -1785,7 +1817,7 @@ server.endpoint("state", function() return public_state() end,
 -- For the area editor page of the web UI (admin only, not public): the areas as defined (the script file's and the saved ones, which win)
 -- and where the heroes are. The page saves areas into this mod's storage through POST /api/mod-store.
 local function area_json(a, source)
-  return { name = a.name, sectors = a.sectors or {}, ranges = a.ranges, rect = a.rect, near = a.near, circle = a.circle, source = source }
+  return { name = a.name, sectors = a.sectors or {}, ranges = a.ranges, rect = a.rect, near = a.near, circle = a.circle, regions = a.regions, source = source }
 end
 
 server.endpoint("areas", function()
@@ -1808,7 +1840,7 @@ local function editable(def)
   end
   return {
     id = tostring(def.id), title = def.title, target = def.target, duration = def.duration, names = def.names, types = def.types,
-    area = def.area, areas = def.areas, sectors = def.sectors, where = def.where, text = def.text, unit = def.unit, min_contribution = def.min_contribution,
+    area = def.area, areas = def.areas, sectors = def.sectors, regions = def.regions, where = def.where, text = def.text, unit = def.unit, min_contribution = def.min_contribution,
     created = def.created, hooks = def.hooks,
     reward = { gold = reward.gold, gold_each = reward.gold_each, item = reward.item, top_item = reward.top_item, milestones = milestones, on_fail = reward.on_fail },
   }

@@ -53,6 +53,10 @@ public class WorldEventsHooksTests
             return 1;
         }
         public int SectorOwner(int sector) => Owners.GetValueOrDefault(sector);
+        public readonly Dictionary<int, int> RegionOf = [];
+        public int SectorRegion(int sector) => RegionOf.GetValueOrDefault(sector);
+        public IReadOnlyList<ScriptRegion> Regions() => [new(1, "UI_REGION_NORTH", "Northkern", RegionOf.Count(kv => kv.Value == 1), 500, false), new(2, "UI_REGION_SOUTH", "Southkern", RegionOf.Count(kv => kv.Value == 2), 300, true)];
+        public IReadOnlyList<uint> RegionSectors(int region) => RegionOf.Where(kv => kv.Value == region).Select(kv => (uint)kv.Key).Order().ToArray();
         public ScriptPlayer Alice => All[0];
         public ScriptPlayer Bob => All[1];
         public ScriptPlayer Cara => All[2];
@@ -430,5 +434,51 @@ public class WorldEventsHooksTests
         Assert.AreEqual(30, hook.GetProperty("at").GetDouble());
         Assert.AreEqual("Orc Warrior", hook.GetProperty("actions")[0].GetProperty("kinds")[0].GetProperty("type").GetString());
         Assert.AreEqual(0, host.Errors);
+    }
+
+    // ---- game regions as a scope -----------------------------------------------------------------------------------------------
+
+    private static ScriptMonster OrcIn(uint reference, int sector) => new(reference, 38, 5, "Orc Warrior", sector, 1, 1);
+
+    [TestMethod]
+    public void AnEventCanBeBoundToAGameRegionAndOnlyItsSectorsCount()
+    {
+        using var folder = new Folder();
+        var server = new Fake();
+        server.RegionOf[2909] = 2; server.RegionOf[3000] = 2; server.RegionOf[5000] = 1;
+        var (host, _) = Start(folder, Script(Event("nil", target: 10, extra: "regions = { 2 },", duration: 3600)), server);
+        server.Tick(host);
+        Assert.AreEqual("Southkern", State(host).GetProperty("active").GetProperty("area").GetString(), "the region's name labels the area");
+        host.FireKill(server.Alice, OrcIn(1, 5000));                       // the creature died in the other region
+        Assert.AreEqual(0, State(host).GetProperty("active").GetProperty("count").GetInt32());
+        host.FireKill(server.Alice, OrcIn(2, 3000));
+        host.FireKill(server.Alice, OrcIn(3, 2909));
+        Assert.AreEqual(2, State(host).GetProperty("active").GetProperty("count").GetInt32());
+        Assert.AreEqual(0, host.Errors);
+    }
+
+    [TestMethod]
+    public void AKillsHookCanCountOnlyInOneRegionAndAnUnknownRegionIsHarmless()
+    {
+        using var folder = new Folder();
+        var server = new Fake();
+        server.RegionOf[2909] = 2; server.RegionOf[5000] = 1;
+        var hooks = """{ { kills = { creature = "orc", count = 2, region = 2 }, actions = { { action = "gold", amount = 321, target = "killer" } } } }""";
+        var (host, _) = Start(folder, Script(Event(hooks, target: 100)), server);
+        server.Tick(host);
+        host.FireKill(server.Alice, OrcIn(1, 5000)); host.FireKill(server.Alice, OrcIn(2, 5000)); host.FireKill(server.Alice, OrcIn(3, 5000));
+        Assert.AreEqual(0, server.Gold.Count, "kills in another region do not count");
+        host.FireKill(server.Bob, OrcIn(4, 2909));
+        Assert.AreEqual(0, server.Gold.Count);
+        host.FireKill(server.Alice, OrcIn(5, 2909));
+        CollectionAssert.AreEqual(new[] { (1, 321u) }, server.Gold);
+        StringAssert.Contains(State(host).GetProperty("active").GetProperty("hooks")[0].GetProperty("text").GetString(), "in Southkern");
+        // a region that does not exist: the event is empty (never offered / matches nothing), nothing crashes
+        using var folder2 = new Folder();
+        var server2 = new Fake();
+        var (host2, _) = Start(folder2, Script(Event("nil", extra: "regions = { 99 },")), server2);
+        server2.Tick(host2);
+        host2.FireKill(server2.Alice, OrcIn(1, 2909));
+        Assert.AreEqual(0, host2.Errors);
     }
 }
