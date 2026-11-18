@@ -195,7 +195,7 @@ internal static partial class Pages
         var sb = new StringBuilder(12 * 1024);
         sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">")
           .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>Areas - ")
-          .Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style).Append(AreaEditorAssets.Css).Append("</style></head><body><div class=\"app\">");
+          .Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style).Append(AreaEditorAssets.Css).Append(FormControls.Css(".ae")).Append("</style></head><body><div class=\"app\">");
         sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>")
           .Append(E(o.Name)).Append("</small></div></div>");
         Tabs(sb, "areas", admin.Mods().Count);
@@ -230,7 +230,7 @@ internal static partial class Pages
         var sb = new StringBuilder(8 * 1024);
         sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
           .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>Events - ")
-          .Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style).Append(EventsPageAssets.Css).Append("</style></head><body><div class=\"app\">");
+          .Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style).Append(EventsPageAssets.Css).Append(FormControls.Css(".ev")).Append("</style></head><body><div class=\"app\">");
         sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>")
           .Append(E(o.Name)).Append("</small></div></div>");
         Tabs(sb, "events", admin.Mods().Count);
