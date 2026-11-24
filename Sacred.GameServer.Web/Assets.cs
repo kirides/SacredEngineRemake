@@ -46,7 +46,7 @@ internal static class Assets
         return sb.ToString();
     }
 
-    /// <summary>The page layout (<c>page.html</c>): head with theme script, title and style, the body and the page script.</summary>
-    public static string Page(string title, string style, string body, string script, string viewport = "width=device-width, initial-scale=1") =>
-        Fill(Text("page.html"), ("viewport", viewport), ("theme", Text("theme-init.js")), ("title", title), ("style", style), ("script", script), ("body", body));
+    /// <summary>The page layout (<c>page.html</c>): head with theme script, title and style, the body and the page script (a <c>script</c> element only when there is one).</summary>
+    public static string Page(string title, string style, string body, string script = "", string viewport = "width=device-width, initial-scale=1") =>
+        Fill(Text("page.html"), ("viewport", viewport), ("theme", Text("theme-init.js")), ("title", title), ("style", style), ("script", script.Length == 0 ? "" : "<script>" + script + "</script>"), ("body", body));
 }
