@@ -46,6 +46,7 @@ internal static class Pages
           .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>").Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style)
           .Append("</style></head><body><div class=\"app\">");
         sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>management</small></div></div>");
+        Tabs(sb, "server", admin.Mods().Count);
         Head(sb, o);
         sb.Append("<button id=\"theme\" type=\"button\" class=\"themebtn ghost\" aria-label=\"Change theme\"></button></header><main class=\"grid\"><div class=\"col\">");
         Players(sb, players);
@@ -169,6 +170,71 @@ internal static class Pages
         Form(sb, action, $"<input type=\"hidden\" name=\"value\" value=\"{(on ? 0 : 1)}\"><button class=\"tile {(on ? "active" : "")}\" data-alt=\"{E(Inner(!on))}\">{Inner(on)}</button>");
     }
 
+    /// <summary>The header tabs: the server page and the mods page.</summary>
+    private static void Tabs(StringBuilder sb, string current, int mods)
+    {
+        sb.Append("<nav class=\"tabs\" aria-label=\"Sections\">")
+          .Append("<a href=\"./\"").Append(current == "server" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("pulse")).Append("Server</a>")
+          .Append("<a href=\"mods\"").Append(current == "mods" ? " aria-current=\"page\"" : "").Append(">").Append(Icon("users")).Append("Mods <span class=\"count\">")
+          .Append(mods).Append("</span></a></nav>");
+    }
+
+    /// <summary>
+    /// <c>GET /mods</c>: one card per mod (script file) with its pages and its endpoints listed apart. Links open in a new tab; pages
+    /// run sandboxed (see WebUiServer.ModEndpoint). Public ones show their <c>/public/mods/...</c> address too.
+    /// </summary>
+    public static string ModsPage(IServerAdmin admin, bool publicApi)
+    {
+        var o = admin.Overview();
+        var mods = admin.Mods().OrderBy(m => m.Mod, StringComparer.OrdinalIgnoreCase).ToList();
+        var sb = new StringBuilder(8 * 1024);
+        sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+          .Append("<meta name=\"color-scheme\" content=\"dark light\"><script>try{var m=localStorage.getItem('gsTheme');if(m==='light'||m==='dark')document.documentElement.dataset.theme=m;}catch(e){}</script><title>Mods - ")
+          .Append(E(o.Name)).Append(" - Sacred GameServer</title><style>").Append(Style).Append("</style></head><body><div class=\"app\">");
+        sb.Append("<header class=\"top\"><div class=\"brand\"><span class=\"logo\">").Append(Icon("shield")).Append("</span><div><b>Sacred GameServer</b><small>")
+          .Append(E(o.Name)).Append("</small></div></div>");
+        Tabs(sb, "mods", mods.Count);
+        sb.Append("</header><main class=\"modgrid\">");
+        if (mods.Count == 0)
+            sb.Append("<section class=\"card\"><div class=\"empty\">").Append(Icon("users")).Append("<p>No mods installed.</p>")
+              .Append("<small>Put .lua scripts into the scripts folder; they load without a restart.</small></div></section>");
+        foreach (var mod in mods)
+        {
+            var pages = mod.Items.Where(m => m.Page).OrderBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
+            var endpoints = mod.Items.Where(m => !m.Page).OrderBy(m => m.Path, StringComparer.OrdinalIgnoreCase).ToList();
+            sb.Append("<section class=\"card mod\"><h2>").Append(Icon("pulse")).Append(E(mod.Mod)).Append(".lua");
+            // The description behind a (?): shown on hover, on keyboard focus and on tap (a tap focuses the button), no script needed.
+            if (mod.Description is { Length: > 0 } about)
+                sb.Append("<button type=\"button\" class=\"help\" aria-label=\"About ").Append(E(mod.Mod)).Append("\">?<span class=\"tip\" role=\"tooltip\">")
+                  .Append(E(about)).Append("</span></button>");
+            sb.Append("</h2>");
+            if (mod.Error is { Length: > 0 } error) sb.Append("<p class=\"moderror\">Failed to load: ").Append(E(error)).Append("</p>");
+            ModList(sb, "Pages", pages, publicApi);
+            ModList(sb, "Endpoints", endpoints, publicApi);
+            sb.Append("</section>");
+        }
+        sb.Append("</main></div></body></html>");
+        return sb.ToString();
+    }
+
+    private static void ModList(StringBuilder sb, string title, List<ModEndpointInfo> items, bool publicApi)
+    {
+        sb.Append("<h3>").Append(title).Append(" <span class=\"count\">").Append(items.Count).Append("</span></h3>");
+        if (items.Count == 0) { sb.Append("<p class=\"dim small\">none</p>"); return; }
+        sb.Append("<ul class=\"modlist\">");
+        foreach (var m in items)
+        {
+            var path = "mods/" + Uri.EscapeDataString(m.Mod) + "/" + string.Join('/', m.Path.Split('/').Select(Uri.EscapeDataString));
+            sb.Append("<li><a href=\"").Append(E(path)).Append("\" target=\"_blank\" rel=\"noopener noreferrer\"><b>/").Append(E(m.Path.Length == 0 ? "" : m.Path))
+              .Append(m.Path.Length == 0 ? "(index)" : "").Append("</b></a>");
+            if (m.Public) sb.Append(" <span class=\"pill ").Append(publicApi ? "ok" : "").Append("\">").Append(publicApi ? "public" : "public (API off)").Append("</span>");
+            if (m.Description is { Length: > 0 } d) sb.Append("<small>").Append(E(d)).Append("</small>");
+            if (m.Public && publicApi) sb.Append("<small class=\"dim\">/public/").Append(E(path)).Append("</small>");
+            sb.Append("</li>");
+        }
+        sb.Append("</ul>");
+    }
+
     private static void Bans(StringBuilder sb, IReadOnlyList<BanEntry> bans)
     {
         sb.Append("<section class=\"card\" id=\"bans\"><h2>").Append(Icon("ban")).Append("Bans <span class=\"count\">").Append(bans.Count).Append("</span></h2>");
@@ -235,6 +301,14 @@ body{margin:0;background:radial-gradient(1200px 600px at 10% -10%,var(--bg2),var
 .i{width:1.15em;height:1.15em;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none;vertical-align:-.2em}
 .app{max-width:1280px;margin:0 auto;padding:1rem}
 .top{display:flex;flex-wrap:wrap;align-items:center;gap:1rem 2rem;padding:.9rem 1.1rem;background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);margin-bottom:1rem}
+.tabs{display:flex;gap:.4rem;flex-wrap:wrap}.tabs a{display:inline-flex;align-items:center;gap:.4rem;padding:.4rem .8rem;border-radius:999px;border:1px solid var(--line);color:var(--dim);text-decoration:none}
+.tabs a[aria-current=page]{color:var(--text);border-color:var(--gold);background:var(--card2)}.tabs a:hover{color:var(--text)}
+.help{position:relative;display:inline-flex;align-items:center;justify-content:center;width:1.3rem;height:1.3rem;min-height:0;margin-left:.4rem;padding:0;border-radius:50%;font-size:.75rem;line-height:1;color:var(--dim);background:var(--card2);border:1px solid var(--line);cursor:help;text-transform:none;letter-spacing:0}
+.help .tip{display:none;position:absolute;left:50%;top:calc(100% + .4rem);transform:translateX(-50%);z-index:5;width:max-content;max-width:min(22rem,80vw);padding:.5rem .7rem;border-radius:8px;background:var(--card);border:1px solid var(--gold);color:var(--text);font-size:.85rem;font-weight:400;text-align:left;white-space:normal;box-shadow:var(--shadow)}
+.help:hover .tip,.help:focus .tip,.help:focus-visible .tip{display:block}.moderror{color:var(--bad);font-size:.85rem;margin:.3rem 0}
+.modgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(20rem,1fr));gap:1rem}.mod h3{margin:.8rem 0 .4rem;font-size:.85rem;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+.modlist{list-style:none;margin:0;padding:0;display:grid;gap:.45rem}.modlist li{display:flex;flex-wrap:wrap;align-items:baseline;gap:.2rem .5rem;padding:.45rem .6rem;background:var(--card2);border-radius:8px}
+.modlist small{flex-basis:100%;color:var(--dim)}.modlist a{color:var(--gold2);text-decoration:none}.modlist a:hover{text-decoration:underline}
 .brand{display:flex;align-items:center;gap:.7rem}.brand b{display:block;letter-spacing:.02em}.brand small{color:var(--dim)}
 .logo{display:grid;place-items:center;width:2.4rem;height:2.4rem;border-radius:9px;background:linear-gradient(135deg,var(--gold2),var(--gold));color:#2a1c05}.logo .i{width:1.4rem;height:1.4rem;stroke-width:2}
 .head{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem 1.6rem;flex:1}.head h1{margin:0;font-size:1.2rem;color:var(--gold2);font-weight:650}
