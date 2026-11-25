@@ -69,6 +69,7 @@ try
     using var world = SacredGameplayWorldFactory.Load(options.GameDirectory, options.CampaignScriptsDirectory);
     using var renderer = new WorldRenderSession(pakDirectory, world, textures);
     Directory.CreateDirectory(options.OutputDirectory);
+    if (options.Mega) return await MegaTextureGenerator.RunAsync(options, world, renderer);
     if (options.AllSectors || options.SectorX.HasValue)
         return await SectorGenerator.RunAsync(options, world, textures, renderer);
     var defaultCenter = new Vector2(

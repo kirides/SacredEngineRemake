@@ -26,6 +26,14 @@ internal sealed record RendererOptions(
     public string CampaignScriptsDirectory { get; init; } = SacredCampaignFiles.DefaultDirectoryName;
     public byte? IndoorLevel { get; init; }
     public bool AllSectors { get; init; }
+    public bool Mega { get; init; }
+    public int MegaScale { get; init; } = 8;
+    public int MegaTile { get; init; } = 256;
+    public int MegaPart { get; init; }
+    public int MegaParts { get; init; } = 1;
+    public int MegaRowMin { get; init; }
+    public int MegaRowMax { get; init; } = int.MaxValue;
+    public bool MegaAncariaOnly { get; init; }
     public int? SectorX { get; init; }
     public int? SectorY { get; init; }
     public ImageFormat Format { get; init; } = ImageFormat.Tga;
@@ -60,6 +68,8 @@ internal sealed record RendererOptions(
         var openDoors = false;
         byte? indoorLevel = null;
         var allSectors = false;
+        var mega = false; var megaScale = 8; var megaTile = 256; var megaPart = 0; var megaParts = 1;
+        var megaRowMin = 0; var megaRowMax = int.MaxValue; var megaAncaria = false;
         int? sectorX = null;
         int? sectorY = null;
         var format = ImageFormat.Tga;
@@ -118,6 +128,16 @@ internal sealed record RendererOptions(
                 case "--open-doors": openDoors = true; break;
                 case "--indoor-level": indoorLevel = ParseByte(Read(args, ref index, argument), argument); break;
                 case "--all-sectors": allSectors = true; break;
+                case "--mega": mega = true; break;
+                case "--mega-scale": megaScale = ParsePositiveInt(Read(args, ref index, argument), argument); break;
+                case "--mega-tile": megaTile = ParsePositiveInt(Read(args, ref index, argument), argument); break;
+                case "--mega-part":
+                    var partText = Read(args, ref index, argument).Split('/');
+                    megaPart = int.Parse(partText[0], CultureInfo.InvariantCulture); megaParts = int.Parse(partText[1], CultureInfo.InvariantCulture); break;
+                case "--mega-rows":
+                    var rowText = Read(args, ref index, argument).Split('-');
+                    megaRowMin = int.Parse(rowText[0], CultureInfo.InvariantCulture); megaRowMax = int.Parse(rowText[1], CultureInfo.InvariantCulture); break;
+                case "--mega-ancaria-only": megaAncaria = true; break;
                 case "--resolution": resolutionScale = ParseScale(Read(args, ref index, argument), argument); sectorQualitySpecified = true; break;
                 case "--supersampling": supersampling = ParseScale(Read(args, ref index, argument), argument); sectorQualitySpecified = true; break;
                 case "--sector-x": sectorX = ParseInt(Read(args, ref index, argument), argument); break;
@@ -162,11 +182,13 @@ internal sealed record RendererOptions(
             throw new ArgumentException("Select one of isolated startup, live startup probe or persistent host initialization.");
         if (sectorX.HasValue != sectorY.HasValue)
             throw new ArgumentException("Pass both --sector-x and --sector-y.");
+        if (mega && (worldX.HasValue || allSectors || sectorX.HasValue))
+            throw new ArgumentException("--mega cannot be combined with coordinates or sector options.");
         if (allSectors && sectorX.HasValue)
             throw new ArgumentException("--all-sectors cannot be combined with a single sector.");
         if ((allSectors || sectorX.HasValue) && (worldX.HasValue || worldY.HasValue || viewportSpecified || indoorLevel.HasValue))
             throw new ArgumentException("Sector generation uses authored framing; coordinate, viewport, zoom and indoor options apply to the default view mode.");
-        if (skipExisting && !allSectors)
+        if (skipExisting && !allSectors && !mega)
             throw new ArgumentException("--skip-existing requires --all-sectors.");
         if (sectorQualitySpecified && !allSectors && !sectorX.HasValue)
             throw new ArgumentException("--resolution and --supersampling require sector generation mode.");
@@ -192,6 +214,8 @@ internal sealed record RendererOptions(
             InitializeNetworkHostProfile = initializeNetworkHostProfile,
             MinimalHost = initializeNetworkHostProfile.HasValue && (minimalHost ?? true),
             OpenDoors = openDoors, IndoorLevel = indoorLevel, AllSectors = allSectors,
+            Mega = mega, MegaScale = megaScale, MegaTile = megaTile, MegaPart = megaPart, MegaParts = megaParts,
+            MegaRowMin = megaRowMin, MegaRowMax = megaRowMax, MegaAncariaOnly = megaAncaria,
             CampaignScriptsDirectory = campaign,
             SectorX = sectorX, SectorY = sectorY, Format = format, ParticleSeconds = particleSeconds,
             TextureCacheMegabytes = textureCacheMegabytes, SkipExisting = skipExisting,
@@ -213,6 +237,12 @@ internal sealed record RendererOptions(
         "  --renderer <software|gpu|auto> Default: software; auto currently selects software\n" +
         "  --sector-x <integer>  Generate one MINIMAP texture (requires --sector-y)\n" +
         "  --sector-y <integer>  Sector grid Y, not a world tile coordinate\n" +
+        "  --mega                Render the whole world as map-aligned PNG tiles (see MegaTextureGenerator)\n" +
+        "  --mega-scale <n>      Mega pixels per game-map pixel (default 8: 16384 px for Ancaria)\n" +
+        "  --mega-tile <px>      Output tile size (default 256)\n" +
+        "  --mega-part <i/n>     Process the i-th of n contiguous row bands\n" +
+        "  --mega-rows <a-b>     Only tile rows a..b\n" +
+        "  --mega-ancaria-only   Skip the Underworld rows\n" +
         "  --all-sectors         Generate every sector with an authored minimap texture\n" +
         "  --resolution <x1|x2|x4> Sector output dimensions relative to original (default: x1)\n" +
         "  --supersampling <x1|x2|x4> Render scale before area-filtered reduction (default: x2)\n" +
